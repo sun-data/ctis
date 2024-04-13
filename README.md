@@ -8,3 +8,11 @@
 [![PyPI version](https://badge.fury.io/py/ctis.svg)](https://badge.fury.io/py/ctis)
 
 A Python library for analyzing and simulating observations from computed tomography imaging spectrographs (CTIS).
+
+## Installation
+
+The package is published on PyPI and can be installed using `pip`
+
+```shell
+pip install ctis
+```
