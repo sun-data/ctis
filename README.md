@@ -11,7 +11,7 @@ A Python library for analyzing and simulating observations from computed tomogra
 
 ## Installation
 
-The package is published on PyPI and can be installed using `pip`
+This package is published on PyPI and can be installed using `pip`
 
 ```shell
 pip install ctis
