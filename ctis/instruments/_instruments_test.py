@@ -22,9 +22,9 @@ class AbstractTestAbstractInstrument(
             project=lambda x: x,
             deproject=lambda x: x,
         )
-    ]
+    ],
 )
 class TestInstrument(
-    abc.ABC,
+    AbstractTestAbstractInstrument,
 ):
     pass
