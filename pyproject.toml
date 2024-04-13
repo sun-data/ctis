@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools", "setuptools-scm"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ctis"
+authors = [
+    {name = "Roy T. Smart", email = "roytsmart@gmail.com"},
+    {name = "Jacob D. Parker"},
+    {name = "Charles C. Kankelborg"},
+]
+description = "A Python library for characterizing and using the CCD cameras developed by Marshall Space Flight Center."
+readme = "README.md"
+requires-python = ">=3.10"
+classifiers = [
+    "Programming Language :: Python :: 3",
+]
+dependencies = [
+    "astropy",
+    "named-arrays",
+    "optika",
+]
+dynamic = ["version"]
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+]
+doc = [
+    "pytest",
+    "matplotlib",
+    "graphviz",
+    "sphinx-autodoc-typehints",
+    "sphinxcontrib-bibtex",
+    "pydata-sphinx-theme",
+    "ipykernel",
+    "jupyter-sphinx",
+    "sphinx-codeautolink",
+    "sphinx-favicon",
+]
+
+[project.urls]
+Homepage = "https://github.com/sun-data/ctis"
+Documentation = "https://ctis.readthedocs.io/en/latest"
+
+[tool.setuptools]
+packages = ["ctis"]
+
+[tool.setuptools_scm]
