@@ -23,31 +23,41 @@ class AbstractInstrument(
     An interface describing a CTIS instrument.
 
     This consists of a forward model
-    (which maps spectral/spatial points on the skyplane to positions on the detector)
+    (which maps the spectral radiance of a physical scene to counts on a detector)
     and a deprojection model
-    (which maps positions on the detector to spectral/spatial points on the skyplane).
+    (which maps detector counts to the spectral radiance of a physical scene).
     """
 
-    @property
     @abc.abstractmethod
     def project(
         self,
-    ) -> ProjectionCallable:
+        scene: na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar],
+    ) -> na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar]:
         """
         The forward model of the CTIS instrument.
         Maps spectral and spatial coordinates on the field to coordinates
         on the detector.
+
+        Parameters
+        ----------
+        scene
+            The spectral radiance of each spatial/spectral point in the scene.
         """
 
-    @property
     @abc.abstractmethod
     def deproject(
         self,
+        projections: na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar],
     ) -> ProjectionCallable:
         """
         The deprojection model of the CTIS instrument.
         Maps spectral and spatial coordinates on the detector to coordinates
         on the field.
+
+        Parameters
+        ----------
+        projections
+            The counts gathered by each detector in the CTIS instrument.
         """
 
 
