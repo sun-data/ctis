@@ -144,7 +144,7 @@ careful backprojection, and finally, accurate correction.
 
 .. figure:: figures/bishop-2.svg
 
-    If we backproject naively, like the movement of the bishop on a chess board, _the paths of projection intersect, yet fail to overlap_.
+    If we backproject naively, like the movement of the bishop on a chess board, *the paths of projection intersect, yet fail to overlap*.
     Once the corrections are multiplied, no source is found in :math:`\hat{u}`.
     In the absence of any background intensity, we just get zeros everywhere!
     If there is a flat background, we'll get a plaid pattern, but the intensity is no higher in the neighborhood of the intersection of diagonal plaid elements.
