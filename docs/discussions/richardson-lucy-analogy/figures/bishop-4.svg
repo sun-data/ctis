@@ -1,0 +1,137 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!-- Creator: fig2dev Version 3.2.9a -->
+<!-- CreationDate: 2025-04-12 21:00:39 -->
+<!-- Magnification: 1 -->
+<svg	xmlns="http://www.w3.org/2000/svg"
+	xmlns:xlink="http://www.w3.org/1999/xlink"
+	width="506pt" height="273pt"
+	viewBox="-12 2067 8424 4545">
+<g fill="none">
+<!-- Line -->
+<rect x="4200" y="3600" width="600" height="600" fill="#ff7fff"
+	stroke="#000000" stroke-width="8px"/>
+<!-- Line -->
+<rect x="600" y="6000" width="600" height="600"
+	stroke="#000000" stroke-width="8px"/>
+<!-- Line -->
+<rect x="0" y="6000" width="600" height="600"
+	stroke="#000000" stroke-width="8px"/>
+<!-- Line -->
+<rect x="5400" y="6000" width="600" height="600"
+	stroke="#000000" stroke-width="8px"/>
+<!-- Line -->
+<rect x="6000" y="6000" width="600" height="600"
+	stroke="#000000" stroke-width="8px"/>
+<!-- Line -->
+<rect x="7200" y="6000" width="600" height="600"
+	stroke="#000000" stroke-width="8px"/>
+<!-- Line -->
+<rect x="7800" y="6000" width="600" height="600"
+	stroke="#000000" stroke-width="8px"/>
+<!-- Line -->
+<rect x="1200" y="6000" width="600" height="600" fill="#7f7fff"
+	stroke="#000000" stroke-width="8px"/>
+<!-- Line -->
+<rect x="6600" y="6000" width="600" height="600" fill="#ff7f7f"
+	stroke="#000000" stroke-width="8px"/>
+<!-- Line -->
+<rect x="3600" y="3000" width="600" height="600" fill="#ff7fff"
+	stroke="#000000" stroke-width="8px"/>
+<!-- Line -->
+<rect x="4200" y="3000" width="600" height="600" fill="#ff7fff"
+	stroke="#000000" stroke-width="8px"/>
+<!-- Line -->
+<rect x="3600" y="3600" width="600" height="600" fill="#ff7fff"
+	stroke="#000000" stroke-width="8px"/>
+<!-- Line -->
+<rect x="1800" y="6000" width="600" height="600"
+	stroke="#000000" stroke-width="8px"/>
+<!-- Line -->
+<rect x="2400" y="6000" width="600" height="600"
+	stroke="#000000" stroke-width="8px"/>
+<!-- Line -->
+<rect x="3600" y="4200" width="600" height="600"
+	stroke="#000000" stroke-width="8px"/>
+<!-- Line -->
+<rect x="4200" y="4200" width="600" height="600"
+	stroke="#000000" stroke-width="8px"/>
+<!-- Line -->
+<rect x="4800" y="4200" width="600" height="600"
+	stroke="#000000" stroke-width="8px"/>
+<!-- Line -->
+<rect x="4800" y="3600" width="600" height="600"
+	stroke="#000000" stroke-width="8px"/>
+<!-- Line -->
+<rect x="4800" y="3000" width="600" height="600"
+	stroke="#000000" stroke-width="8px"/>
+<!-- Line -->
+<rect x="4800" y="2400" width="600" height="600"
+	stroke="#000000" stroke-width="8px"/>
+<!-- Line -->
+<rect x="4200" y="2400" width="600" height="600"
+	stroke="#000000" stroke-width="8px"/>
+<!-- Line -->
+<rect x="3600" y="2400" width="600" height="600"
+	stroke="#000000" stroke-width="8px"/>
+<!-- Line -->
+<rect x="3000" y="2400" width="600" height="600"
+	stroke="#000000" stroke-width="8px"/>
+<!-- Line -->
+<rect x="3000" y="3000" width="600" height="600"
+	stroke="#000000" stroke-width="8px"/>
+<!-- Line -->
+<rect x="3000" y="3600" width="600" height="600"
+	stroke="#000000" stroke-width="8px"/>
+<!-- Line -->
+<rect x="3000" y="4200" width="600" height="600"
+	stroke="#000000" stroke-width="8px"/>
+<!-- Line -->
+<defs>
+<clipPath id="cp0">
+	<path clip-rule="evenodd" d="M -12,2067 H 8412 V 6612 H -12 z
+		M 5176,2239 5261,2324 5425,2100 5400,2075z"/>
+</clipPath>
+</defs>
+<polyline points=" 1200,6300 5400,2100" clip-path="url(#cp0)"
+	stroke="#000000" stroke-width="30px"/>
+<!-- Forward arrow to point 5400,2100 -->
+<polygon points=" 5261,2324 5389,2111 5176,2239 5261,2324"
+	stroke="#000000" stroke-width="8px" stroke-miterlimit="8" fill="#000000"/>
+<!-- Line -->
+<defs>
+<clipPath id="cp1">
+	<path clip-rule="evenodd" d="M -12,2067 H 8412 V 6612 H -12 z
+		M 5776,2239 5861,2324 6025,2100 6000,2075z"/>
+</clipPath>
+</defs>
+<polyline points=" 1800,6300 6000,2100" clip-path="url(#cp1)"
+	stroke="#000000" stroke-width="30px"/>
+<!-- Forward arrow to point 6000,2100 -->
+<polygon points=" 5861,2324 5989,2111 5776,2239 5861,2324"
+	stroke="#000000" stroke-width="8px" stroke-miterlimit="8" fill="#000000"/>
+<!-- Line -->
+<defs>
+<clipPath id="cp2">
+	<path clip-rule="evenodd" d="M -12,2067 H 8412 V 6612 H -12 z
+		M 3139,2324 3224,2239 3000,2075 2975,2100z"/>
+</clipPath>
+</defs>
+<polyline points=" 7200,6300 3000,2100" clip-path="url(#cp2)"
+	stroke="#000000" stroke-width="30px"/>
+<!-- Forward arrow to point 3000,2100 -->
+<polygon points=" 3224,2239 3011,2111 3139,2324 3224,2239"
+	stroke="#000000" stroke-width="8px" stroke-miterlimit="8" fill="#000000"/>
+<!-- Line -->
+<defs>
+<clipPath id="cp3">
+	<path clip-rule="evenodd" d="M -12,2067 H 8412 V 6612 H -12 z
+		M 2539,2324 2624,2239 2400,2075 2375,2100z"/>
+</clipPath>
+</defs>
+<polyline points=" 6600,6300 2400,2100" clip-path="url(#cp3)"
+	stroke="#000000" stroke-width="30px"/>
+<!-- Forward arrow to point 2400,2100 -->
+<polygon points=" 2624,2239 2411,2111 2539,2324 2624,2239"
+	stroke="#000000" stroke-width="8px" stroke-miterlimit="8" fill="#000000"/>
+</g>
+</svg>
