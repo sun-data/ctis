@@ -125,6 +125,8 @@ I think :math:`P^{\ast}` in RL clarifies at least three things for MART:
 #. Thinking in terms of likelihoods, the backprojection from :math:`d_i` to :math:`\hat{u}^t_j` must include something like
 
 .. math::
+    :label: likelihoods
+
     \Pr(\hat{u}^t_j|d_i) = \frac{\Pr(d_i|\hat{u}^t_j) \Pr(\hat{u}^t_j)}{\Pr(d_i)}.
 
 The second point bears on `MEADOS Issue #1 <https://github.com/jacobdparker/meados/issues/1>`_.
@@ -168,6 +170,7 @@ but my recommendation for the actual application (for RL, MART, and any other an
 1. Formulate the forward model :math:`P` not as a convolution or a projection, but as a sparse matrix:
 
 .. math::
+    :label: forward-model
 
     d = P \hat{u}.
 
@@ -179,6 +182,8 @@ This forward model can incorporate not only blurring and/or projection, but opti
 2. The backprojection is then merely the transpose, :math:`P^T`, so the RL analogue for any inversion is simply
 
 .. math::
+    :label: update-rule
+
     \hat{u}^{(t+1)} = \hat{u}^{(t)}\cdot
         P^T\left( \frac{d}{P \hat{u}^{(t)} }
                 \right),
@@ -189,6 +194,8 @@ For tomography, MART gains much of its power from excluding intensity along diff
 Therefore, it is important to calculate the correction factors separately for each data image :math:`d^k`:
 
 .. math::
+    :label: result
+
     d^k = P_k \hat{u}; \quad \boxed{
     \hat{u}^{(t+1)} = \hat{u}^{(t)}\cdot \prod_k
         P_k^T\left( \frac{d^k}{P_k \hat{u}^{(t)} }
