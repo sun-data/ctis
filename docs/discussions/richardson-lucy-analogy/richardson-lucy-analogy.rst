@@ -62,7 +62,7 @@ I see at least three ways to understand this factor:
 We are used to thinking of the data :math:`d` and the original image :math:`\hat{u}` as living in the same space.
 Point (1) indicates that is not necessarily true.
 They could be sampled at a different pixel size, for instance, which would make :math:`P`
-(or rather, the convolution with :math:`P`)
+(or rather, the convolution with :math:`P` )
 a rectangular matrix rather than square.
 Physically, the units may also differ: radiometric units for :math:`\hat{u}`, data numbers for :math:`d` .
 
@@ -84,7 +84,7 @@ Now suppose that our initial guess is :math:`d`, as anticipated above.
 If we simply treat the image and skyplane spaces as identical and leave out :math:`P^{\ast}`, what happens?
 It will be easiest to imagine this if :math:`\hat{u}` is considered as an image with a star at the origin.
 :math:`d` is then an image of the star shifted one step to the right.
-On the first iteration, the denominator of the correction factor is a delta function (e.g., image of a star) shifted *two* steps to the right
+On the first iteration, the denominator of the correction factor is a delta function (e.g., image of a star) shifted *two* steps to the right.
 Taking the ratio gives us a correction factor that wants take intensity from a location two steps to the right and place it at a location one step to the right.
 That is not a helpful correction.
 But when we convolve with the flipped PSF, the correction factor is properly aligned to shift the star image in :math:`d` back to the origin.
