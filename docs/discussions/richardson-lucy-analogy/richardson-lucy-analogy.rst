@@ -62,7 +62,7 @@ I see at least three ways to understand this factor:
 We are used to thinking of the data :math:`d` and the original image :math:`\hat{u}` as living in the same space.
 Point (1) indicates that is not necessarily true.
 They could be sampled at a different pixel size, for instance, which would make :math:`P`
-(or rather, the convolution with :math:`P` )
+(or rather, the convolution with :math:`P`)
 a rectangular matrix rather than square.
 Physically, the units may also differ: radiometric units for :math:`\hat{u}`, data numbers for :math:`d` .
 
