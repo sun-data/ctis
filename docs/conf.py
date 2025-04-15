@@ -23,6 +23,8 @@ project = 'ctis'
 copyright = '2024, Roy T. Smart, Jacob D. Parker, Charles C. Kankelborg'
 author = 'Roy T. Smart, Jacob D. Parker, Charles C. Kankelborg'
 
+numfig = True
+
 # -- General configuration ---------------------------------------------------
 
 # Add any Sphinx extension module names here, as strings. They can be
