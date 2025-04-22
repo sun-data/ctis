@@ -4,7 +4,7 @@ import astropy.units as u
 import named_arrays as na
 
 __all__ = [
-    "random_gaussians",
+    "gaussians",
 ]
 
 SpectralPositionalVectorT = TypeVar(
@@ -34,31 +34,37 @@ def _gaussian(
         The standard deviation of the Gaussian distribution.
     """
 
+    inputs = inputs.explicit
+
+    if inputs.ndim != 3:  # pragma: nocover
+        raise ValueError(f"The number of logical axes must be 3, got {inputs.ndim=}")
+
+    inputs = inputs.cell_centers()
+
     arg = -np.square(((inputs - center) / width).length) / 2
     return amplitude * np.exp(arg)
 
 
-def random_gaussians(
+def gaussians(
     inputs: SpectralPositionalVectorT,
     width: na.AbstractSpectralPositionalVectorArray,
 ) -> na.FunctionArray[SpectralPositionalVectorT, na.ScalarArray]:
     r"""
-    A scene with a randomly-positioned Gaussian distributions originally
-    prepared by Amy Winebarger.
+    A scene with eight randomly-positioned Gaussian kernels originally
+    prepared by Amy R. Winebarger.
 
     Parameters
     ----------
-    axis
-        The names of the logical axes representing each
-        :math:`\lambda,x,y` coordinate,
-    num
-        The number of pixels along each coordinate:
+    inputs
+        The grid of wavelengths and positions on which to evaluate the scene.
+    width
+        The standard deviation of the Gaussian kernels.
 
     Examples
     --------
 
-    Plot this scene for the input grid and Gaussian widths originally
-    prepared by Amy Winebarger.
+    Plot this scene for an input grid and standard deviations similar to the
+    one originally tested by Amy R. Winebarger.
 
     .. jupyter-execute::
 
@@ -74,7 +80,7 @@ def random_gaussians(
         # Define the grid of positions and velocities on which to evaluate the
         # test pattern
         inputs = na.SpectralPositionalVectorArray(
-            wavelength=na.linspace(-500, 500, axis="wavelength", num=31) * u.km / u.s,
+            wavelength=na.linspace(-500, 500, axis="wavelength", num=21) * u.km / u.s,
             position=na.Cartesian2dVectorLinearSpace(
                 start=-20 * platescale * u.pix,
                 stop=20 * platescale * u.pix,
@@ -91,7 +97,7 @@ def random_gaussians(
 
         # Compute the scene of random Gaussians for the
         # given input grid and standard deviations
-        scene = ctis.scenes.random_gaussians(
+        scene = ctis.scenes.gaussians(
             inputs=inputs,
             width=width,
         )
@@ -119,57 +125,54 @@ def random_gaussians(
             axs[1].yaxis.set_label_position("right")
     """
 
-    amplitude = np.array(
-        [
-            3.38,
-            6,
-            4,
-            3.38,
-            5,
-            7,
-            3.7,
-            5.5,
-        ]
-    )
+    amplitude = [
+        3.38,
+        6,
+        4,
+        3.38,
+        5,
+        7,
+        3.7,
+        5.5,
+    ]
 
-    center_x = np.array(
-        [
-            -2.5,
-            2.5,
-            0,
-            0,
-            0,
-            -4,
-            0,
-            4,
-        ]
-    )
+    center_x = [
+        -2.5,
+        2.5,
+        0,
+        0,
+        0,
+        -4,
+        0,
+        4,
+    ]
 
-    center_y = np.array(
-        [
-            0,
-            0,
-            -2,
-            2,
-            4,
-            4,
-            -4,
-            -4,
-        ]
-    )
+    center_y = [
+        0,
+        0,
+        -2,
+        2,
+        4,
+        4,
+        -4,
+        -4,
+    ]
 
-    center_v = np.array(
-        [
-            +200,
-            -200,
-            -150,
-            +150,
-            -100,
-            +100,
-            -100,
-            -150,
-        ]
-    )
+    center_v = [
+        +200,
+        -200,
+        -150,
+        +150,
+        -100,
+        +100,
+        -100,
+        -150,
+    ]
+
+    amplitude = np.array(amplitude)
+    center_x = np.array(center_x)
+    center_y = np.array(center_y)
+    center_v = np.array(center_v)
 
     axis = "event"
 
