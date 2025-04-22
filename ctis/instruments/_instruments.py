@@ -7,7 +7,6 @@ import named_arrays as na
 __all__ = [
     "AbstractInstrument",
     "IdealInstrument",
-    "Instrument",
 ]
 
 
@@ -22,7 +21,7 @@ class AbstractInstrument(
     abc.ABC,
 ):
     """
-    An interface describing a CTIS instrument.
+    An interface describing a general CTIS instrument.
 
     This consists of a forward model
     (which maps the spectral radiance of a physical scene to counts on a detector)
@@ -47,9 +46,9 @@ class AbstractInstrument(
         """
 
     @abc.abstractmethod
-    def deproject(
+    def backproject(
         self,
-        projections: na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar],
+        images: na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar],
     ) -> ProjectionCallable:
         """
         The deprojection model of the CTIS instrument.
@@ -58,9 +57,34 @@ class AbstractInstrument(
 
         Parameters
         ----------
-        projections
-            The counts gathered by each detector in the CTIS instrument.
+        images
+            The number of electrons gathered by each pixel in every channel.
         """
+
+
+@dataclasses.dataclass
+class AbstractLinearInstrument(
+    AbstractInstrument,
+):
+    """
+    An instrument that can be modeled using matrix multiplication.
+    """
+
+    @property
+    @abc.abstractmethod
+    def _weights(self) -> tuple[na.AbstractScalar, dict[str, int], dict[str, int]]:
+        """
+        A sparse matrix which maps spectral radiance on the skyplane to
+        the number of electrons measured by the sensor.
+        """
+
+    def project(
+        self,
+        scene: na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar],
+    ) -> na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar]:
+
+        pass
+
 
 
 @dataclasses.dataclass
@@ -77,27 +101,3 @@ class IdealInstrument(
 
     angle: u.Quantity | na.AbstractScalar
     """The angle of the dispersion direction with respect to the scene."""
-
-
-@dataclasses.dataclass
-class Instrument(
-    AbstractInstrument,
-):
-    """
-    A CTIS instrument where the forward and deprojection models are explicitly
-    provided.
-    """
-
-    project: ProjectionCallable = dataclasses.MISSING
-    """
-    The forward model of the CTIS instrument.
-    Maps spectral and spatial coordinates on the field to coordinates
-    on the detector.
-    """
-
-    deproject: ProjectionCallable = dataclasses.MISSING
-    """
-    The deprojection model of the CTIS instrument.
-    Maps spectral and spatial coordinates on the detector to coordinates
-    on the field.
-    """
