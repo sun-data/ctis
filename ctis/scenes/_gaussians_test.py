@@ -28,7 +28,7 @@ import ctis
         )
     ],
 )
-def test_random_gaussians(
+def test_gaussians(
     inputs: na.AbstractSpectralPositionalVectorArray,
     width: na.AbstractSpectralPositionalVectorArray,
 ):
