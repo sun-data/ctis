@@ -1,6 +1,7 @@
-from typing import Callable
+from typing import Callable, Sequence
 import abc
 import dataclasses
+import astropy.units as u
 import named_arrays as na
 
 __all__ = [
@@ -59,6 +60,22 @@ class AbstractInstrument(
         projections
             The counts gathered by each detector in the CTIS instrument.
         """
+
+
+@dataclasses.dataclass
+class IdealInstrument(
+    AbstractInstrument,
+):
+    """
+    An idealized CTIS instrument which has a perfect point-spread function
+    and no noise.
+    """
+
+    dispersion: u.Quantity | na.AbstractScalar
+    r"""The magnitude of the dispersion in :math:`\text{m \AA} \,\text{pix}^-1`"""
+
+    angle: u.Quantity | na.AbstractScalar
+    """The angle of the dispersion direction with respect to the scene."""
 
 
 @dataclasses.dataclass
