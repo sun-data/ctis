@@ -74,7 +74,7 @@ def random_gaussians(
         # Define the grid of positions and velocities on which to evaluate the
         # test pattern
         inputs = na.SpectralPositionalVectorArray(
-            wavelength=na.linspace(-500, 500, axis="wavelength", num=101) * u.km / u.s,
+            wavelength=na.linspace(-500, 500, axis="wavelength", num=31) * u.km / u.s,
             position=na.Cartesian2dVectorLinearSpace(
                 start=-20 * platescale * u.pix,
                 stop=20 * platescale * u.pix,
