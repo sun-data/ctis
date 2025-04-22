@@ -174,6 +174,9 @@ def gaussians(
     center_y = np.array(center_y)
     center_v = np.array(center_v)
 
+    scale = 1000 * u.photon / (u.cm**2 * u.arcsec**2 * u.mAA * u.s)
+    amplitude = amplitude * scale
+
     axis = "event"
 
     amplitude = na.ScalarArray(amplitude, axis)
