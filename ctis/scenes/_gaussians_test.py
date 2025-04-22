@@ -31,7 +31,7 @@ def test_random_gaussians(
     inputs: na.AbstractSpectralPositionalVectorArray,
     width: na.AbstractSpectralPositionalVectorArray,
 ):
-    result = ctis.scenes.random_gaussians(
+    result = ctis.scenes.gaussians(
         inputs=inputs,
         width=width,
     )
