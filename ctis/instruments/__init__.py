@@ -2,9 +2,14 @@
 Models of CTIS instruments used during inversions.
 """
 
-from ._instruments import AbstractInstrument, Instrument
+from ._instruments import (
+    AbstractInstrument,
+    AbstractLinearInstrument,
+    IdealInstrument,
+)
 
 __all__ = [
     "AbstractInstrument",
-    "Instrument",
+    "AbstractLinearInstrument",
+    "IdealInstrument",
 ]

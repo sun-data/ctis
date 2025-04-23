@@ -6,6 +6,7 @@ import named_arrays as na
 
 __all__ = [
     "AbstractInstrument",
+    "AbstractLinearInstrument",
     "IdealInstrument",
 ]
 
