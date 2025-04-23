@@ -23,6 +23,9 @@ class AbstractInstrument(
     """
     An interface describing a general CTIS instrument.
 
+    The only member of this interface is :meth:`image`,
+    which represents the forward model of the instrument.
+
     This consists of a forward model
     (which maps the spectral radiance of a physical scene to counts on a detector)
     and a deprojection model
@@ -30,35 +33,30 @@ class AbstractInstrument(
     """
 
     @abc.abstractmethod
-    def project(
+    def image(
         self,
         scene: na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar],
     ) -> na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar]:
-        """
-        The forward model of the CTIS instrument.
-        Maps spectral and spatial coordinates on the field to coordinates
-        on the detector.
-
+        f"""
+        The forward model of this CTIS instrument, which maps spectral radiance
+        on the skyplane to counts on the detectors.
+        
         Parameters
         ----------
         scene
-            The spectral radiance of each spatial/spectral point in the scene.
+            The spectral radiance in units equivalent to 
+            {(u.erg / (u.cm**2 * u.sr * u.AA * u.s)):latex_inline}.
         """
 
+    @property
     @abc.abstractmethod
-    def backproject(
-        self,
-        images: na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar],
-    ) -> ProjectionCallable:
+    def coordinates_scene(self) -> na.AbstractSpectralPositionalVectorArray:
         """
-        The deprojection model of the CTIS instrument.
-        Maps spectral and spatial coordinates on the detector to coordinates
-        on the field.
+        A grid of wavelength and position coordinates on the skyplane
+        which will be used to construct the inverted scene.
 
-        Parameters
-        ----------
-        images
-            The number of electrons gathered by each pixel in every channel.
+        Normally the pitch of this grid is chosen to be the average
+        plate scale of the instrument.
         """
 
 
@@ -78,13 +76,18 @@ class AbstractLinearInstrument(
         the number of electrons measured by the sensor.
         """
 
+    def image(
+        self,
+        scene: na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar],
+    ) -> na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar]:
+        pass
+
     def project(
         self,
         scene: na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar],
     ) -> na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar]:
 
         pass
-
 
 
 @dataclasses.dataclass
