@@ -1,8 +1,7 @@
-from typing import Sequence
+import numpy as np
 import named_arrays as na
 
 __all__ = [
-
     "weights"
 ]
 
@@ -16,8 +15,8 @@ def weights(
     axis_position_output: tuple[str, str],
 ) -> tuple[na.AbstractScalar, dict[str, int], dict[str, int]]:
     """
-    A version of :func:`named_arrays.weights` targeted for use with
-    the spatial-spectral cubes used in this package.
+    A version of :func:`named_arrays.regridding.weights` tailored for use with
+    the spatial-spectral cubes in this package.
 
     Parameters
     ----------
@@ -33,7 +32,7 @@ def weights(
     position_input = position_input.cell_centers(axis_wavelength)
     position_output = position_output.cell_centers(axis_wavelength)
 
-    _weights, shape_input, shape_output = na.regridding.weights(
+    _weights_2d, shape_input, shape_output = na.regridding.weights(
         coordinates_input=position_input,
         coordinates_output=position_output,
         axis_input=axis_position_input,
@@ -42,3 +41,21 @@ def weights(
     )
 
 
+def _weights_3d(
+    weights_2d: na.ScalarArray,
+    shape_inputs: dict[str, int],
+    shape_outputs: dict[str, int],
+    axis_wavelength: str,
+) -> tuple[na.AbstractScalar, dict[str, int], dict[str, int]]:
+
+    pass
+
+
+def weights_3d_numpy(
+    weights_2d: np.ndarray,
+    shape_inputs: tuple[int, ...],
+    shape_outputs: tuple[int, ...],
+    axis_wavelength: int,
+) -> tuple[np.ndarray, tuple[int, ...], tuple[int, ...]]:
+
+    pass
