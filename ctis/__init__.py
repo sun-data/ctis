@@ -4,7 +4,9 @@ spectrograph.
 """
 
 from . import scenes
+from . import instruments
 
 __all__ = [
     "scenes",
+    "instruments",
 ]
