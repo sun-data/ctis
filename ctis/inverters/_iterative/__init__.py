@@ -7,11 +7,14 @@ class AbstractIterativeMethod(
     "Interface for iterative inversion methods like MART or RL"
 
 
-    def project:
+    def project(self):
         pass
 
-    def deproject:
+    def back_project(self):
         pass
 
-    def merit:
+    def correction(self):
+        pass
+
+    def filter(self):
         pass

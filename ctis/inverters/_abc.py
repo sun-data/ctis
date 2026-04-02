@@ -38,3 +38,10 @@ class AbstractInverter(
             implementations.
         """
 
+    def merit(self):
+        """
+        Something to calculate inversion accuracy
+        Returns
+        -------
+        float
+        """

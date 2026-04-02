@@ -8,4 +8,6 @@ class AbstractResults(
     """
     An interface describing the results of various inversion routines.
     """
-    pass
+    solution: na.FunctionArray
+    merit: float
+    converged=None
