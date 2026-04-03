@@ -7,6 +7,17 @@ images captured by
 (CTISs), particularly those designed for observing the Sun in extreme
 ultraviolet.
 
+Discussions
+===========
+
+Some explanations of the theory behind inversion
+
+.. toctree::
+    :maxdepth: 1
+
+    discussions/richardson-lucy-analogy/richardson-lucy-analogy
+
+
 API Reference
 =============
 
