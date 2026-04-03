@@ -4,8 +4,9 @@ import dataclasses
 class MART(
     ctis.inverters._inverters._iterative.AbstractIterativeMethod,
 ):
+
     weights_forward: na.ScalarArray(np.ndarray[list[tuple[float, float, float]]])
-    shape_solution: dict
+
     weights_backward: np.ndarray[list[tuple[float, float, float]]] = None
 
     def __call__(
@@ -24,3 +25,19 @@ class MART(
         return ctis.results.Result(
             guess,
         )
+
+    def merit(self):
+        """
+
+        Returns
+        -------
+
+        """
+
+    def correction(self):
+        """
+
+        Returns
+        -------
+
+        """

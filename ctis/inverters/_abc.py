@@ -16,9 +16,21 @@ class AbstractInverter(
     An interface describing an algorithm which can invert CTIS observations
     to yield a reconstruction of the observed scene.
     """
-    weights_forward: na.ScalarArray(np.ndarray[list[tuple[float, float, float]]])
-    shape_solution: dict
-    weights_backward: np.ndarray[list[tuple[float, float, float]]] = None
+    @property
+    @abc.abstractmethod
+    def weights(self) -> na.ScalarArray(np.ndarray[list[tuple[float, float, float]]]):
+        """
+        tuple returned by weights (shape_input, shape_output, weights)
+        Returns
+        -------
+
+        """
+
+    @property
+    @abs.abstractmethod
+    def weights_backward(self) -> np.ndarray[list[tuple[float, float, float]]]:
+        return
+
 
     def __call__(
         self,
@@ -38,10 +50,20 @@ class AbstractInverter(
             implementations.
         """
 
-    def merit(self):
+    @abc.abstractmethod
+    def project(self):
         """
-        Something to calculate inversion accuracy
+
         Returns
         -------
-        float
+
+        """
+
+    @abc.abstractmethod
+    def back_project(self):
+        """
+
+        Returns
+        -------
+
         """
