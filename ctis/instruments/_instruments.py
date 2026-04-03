@@ -1,5 +1,6 @@
 from typing import Callable, Sequence
 import abc
+import functools
 import dataclasses
 import astropy.units as u
 import named_arrays as na
@@ -185,6 +186,18 @@ class IdealInstrument(
     A grid of wavelength and position coordinates on the detector plane.
     """
 
+    axis_scene_xy: tuple[str, str]
+    """
+    The logical axes in :attr:`coordinates_scene` corresponding to changing
+    spatial coordinates.
+    """
+
+    axis_sensor_xy: tuple[str, str]
+    """
+    The logical axes in :attr:`coordinates_sensor` corresponding to changing
+    spatial coordinates.
+    """
+
     def distortion(self, coordinates: na.SpectralPositionalVectorArray):
         delta_lambda = self.plate_scale / self.dispersion
         rot = na.Cartesian2dRotationMatrixArray(self.angle)
@@ -224,3 +237,16 @@ class IdealInstrument(
             wavelength=coordinates.wavelength,
             position=projected_grid.position + self.position_ref,
         )
+
+    @functools.cached_property
+    def weights(self) -> tuple[na.AbstractScalar, dict[str, int], dict[str, int]]:
+        return na.regridding.weights(
+            coordinates_input=self.distortion(self.coordinates_scene),
+            coordinates_output=self.coordinates_sensor,
+            axis_input=self.axis_scene_xy,
+            axis_output=self.axis_sensor_xy,
+            method="conservative",
+        )
+
+    def weights_transpose(self):
+        raise NotImplementedError
