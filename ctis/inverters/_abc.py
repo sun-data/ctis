@@ -16,16 +16,14 @@ class AbstractInverter(
     An interface describing an algorithm which can invert CTIS observations
     to yield a reconstruction of the observed scene.
     """
+
     @property
     @abc.abstractmethod
-    def instrument(self) -> na.ScalarArray(np.ndarray[list[tuple[float, float, float]]]):
+    def instrument(self) -> ctis.instrument.AbstractInstrument:
         """
-        tuple returned by weights (shape_input, shape_output, weights)
-        Returns
-        -------
-
+        An instrument maps data in coordinates_scene to coordinates_detector, and possibly back, using project and backproject
+        methods.
         """
-
 
     def __call__(
         self,
@@ -33,7 +31,7 @@ class AbstractInverter(
         **kwargs,
     )-> ctis.results.AbstractResults:
         """
-        Invert the given image deprojections to reconstruct the original scene.
+        Calculate a reconstruction of a scene (observered by instrument) that is consistent with observed data.
 
         Parameters
         ----------

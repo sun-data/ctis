@@ -1,6 +1,8 @@
 from typing import TypeVar
 import numpy as np
 import astropy.units as u
+
+import ctis.scenes
 import named_arrays as na
 
 __all__ = [
@@ -198,7 +200,7 @@ def gaussians(
 
     outputs = outputs.sum(axis)
 
-    return na.FunctionArray(
+    return ctis.scenes.Scene(
         inputs=inputs,
         outputs=outputs,
     )

@@ -8,6 +8,25 @@ class AbstractResults(
     """
     An interface describing the results of various inversion routines.
     """
-    solution: na.FunctionArray
-    merit: float
-    converged=None
+
+    @property
+    @abc.abstractmethod
+    def solution(self) -> na.FunctionArray:
+        """
+        Inverted scene
+        """
+
+    @property
+    @abc.abstractmethod
+    def convergence_message(self) -> str:
+        """
+        Exit message of inverted communicating success/failure
+        """
+
+    @property
+    @abc.abstractmethod
+    def merit(self) -> float:
+        """
+        Value of function evaluated to determine convergence
+        """
+
