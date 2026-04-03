@@ -24,13 +24,13 @@ class AbstractInstrument(
     """
     An interface describing a general CTIS instrument.
 
-    The only member of this interface is :meth:`image`,
-    which represents the forward model of the instrument.
+    The most important method of this interface is :meth:`image`,
+    which represents the forward model of the instrument and maps the
+    spectral radiance of the skyplane to detector counts.
 
-    This consists of a forward model
-    (which maps the spectral radiance of a physical scene to counts on a detector)
-    and a deprojection model
-    (which maps detector counts to the spectral radiance of a physical scene).
+    The other important method of this interface is :meth:`deproject`,
+    which is the transpose of image and maps detector counts from an
+    observed image to the corresponding spectral radiance on the skyplane.
     """
 
     @abc.abstractmethod
@@ -38,7 +38,7 @@ class AbstractInstrument(
         self,
         scene: na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar],
     ) -> na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar]:
-        f"""
+        r"""
         The forward model of this CTIS instrument, which maps spectral radiance
         on the skyplane to counts on the detectors.
         
@@ -46,7 +46,29 @@ class AbstractInstrument(
         ----------
         scene
             The spectral radiance in units equivalent to 
+            erg / cm^2 / sr^2 / nm / s.
+            :math:`\unit{\erg\per\cm\squared\per\steradian\per\nm\per\second}`
             {(u.erg / (u.cm**2 * u.sr * u.AA * u.s)):latex_inline}.
+        """
+
+    @abc.abstractmethod
+    def deproject(
+        self,
+        image: na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar],
+    ) -> na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar]:
+        """
+        A quasi-inverse model of this CTIS instrument, which maps counts
+        on the detectors to spectral radiance on the skyplane.
+
+        This is not a true inverse, since this just spreads intensity out
+        evenly along each projection direction, and doesn't concentrate it
+        in its true location.
+
+        Parameters
+        ----------
+        image
+            A series of images captured by a CTIS instrument.
+            Should be in units of electrons.
         """
 
     @property
@@ -60,21 +82,29 @@ class AbstractInstrument(
         plate scale of the instrument.
         """
 
+    @property
+    @abc.abstractmethod
+    def coordinates_sensor(self) -> na.AbstractSpectralPositionalVectorArray:
+        """
+        A grid of wavelength and position coordinates on the detector plane.
+        """
+
 
 @dataclasses.dataclass
 class AbstractLinearInstrument(
     AbstractInstrument,
 ):
     """
-    An instrument that can be modeled using matrix multiplication.
+    An instrument where the forward model can be represented using
+    matrix multiplication.
     """
 
     @property
     @abc.abstractmethod
-    def _weights(self) -> tuple[na.AbstractScalar, dict[str, int], dict[str, int]]:
+    def weights(self) -> tuple[na.AbstractScalar, dict[str, int], dict[str, int]]:
         """
-        A sparse matrix which maps spectral radiance on the skyplane to
-        the number of electrons measured by the sensor.
+        The contribution of each voxel on the skyplane to each pixel on the
+        detector.
         """
 
     def image(
@@ -99,6 +129,12 @@ class IdealInstrument(
     An idealized CTIS instrument which has a perfect point-spread function
     and no noise.
     """
+
+    response: u.Quantity | na.AbstractScalar
+    """The number of electrons measured for a given spectral radiance on the skyplane."""
+
+    plate_scale: u.Quantity | na.AbstractScalar
+    r"""The spatial scale of the image on the sensor in :math:`\text{arcsec} \,\text{pix}^-1`"""
 
     dispersion: u.Quantity | na.AbstractScalar
     r"""The magnitude of the dispersion in :math:`\text{m \AA} \,\text{pix}^-1`"""
