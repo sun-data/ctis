@@ -18,18 +18,13 @@ class AbstractInverter(
     """
     @property
     @abc.abstractmethod
-    def weights(self) -> na.ScalarArray(np.ndarray[list[tuple[float, float, float]]]):
+    def instrument(self) -> na.ScalarArray(np.ndarray[list[tuple[float, float, float]]]):
         """
         tuple returned by weights (shape_input, shape_output, weights)
         Returns
         -------
 
         """
-
-    @property
-    @abs.abstractmethod
-    def weights_backward(self) -> np.ndarray[list[tuple[float, float, float]]]:
-        return
 
 
     def __call__(
@@ -50,20 +45,3 @@ class AbstractInverter(
             implementations.
         """
 
-    @abc.abstractmethod
-    def project(self):
-        """
-
-        Returns
-        -------
-
-        """
-
-    @abc.abstractmethod
-    def back_project(self):
-        """
-
-        Returns
-        -------
-
-        """

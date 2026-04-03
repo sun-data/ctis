@@ -5,9 +5,7 @@ class MART(
     ctis.inverters._inverters._iterative.AbstractIterativeMethod,
 ):
 
-    weights_forward: na.ScalarArray(np.ndarray[list[tuple[float, float, float]]])
-
-    weights_backward: np.ndarray[list[tuple[float, float, float]]] = None
+    instrument
 
     def __call__(
             self,
