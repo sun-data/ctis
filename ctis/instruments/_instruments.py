@@ -45,10 +45,8 @@ class AbstractInstrument(
         Parameters
         ----------
         scene
-            The spectral radiance in units equivalent to 
-            erg / cm^2 / sr^2 / nm / s.
-            :math:`\unit{\erg\per\cm\squared\per\steradian\per\nm\per\second}`
-            {(u.erg / (u.cm**2 * u.sr * u.AA * u.s)):latex_inline}.
+            The spectral radiance in units equivalent to
+            :math:`\text{erg} \, \text{cm}^{-2} \, \text{sr}^{-1} \, \AA^{-1} \, \text{s}^{-1}`.
         """
 
     @abc.abstractmethod
@@ -107,23 +105,44 @@ class AbstractLinearInstrument(
         detector.
         """
 
+    @property
+    @abc.abstractmethod
+    def weights_transpose(self):
+        """
+        The contribution of each pixel on the detector to each voxel on the
+        skyplane.
+        """
+
     def image(
         self,
         scene: na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar],
     ) -> na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar]:
-        pass
 
-    def project(
+        return na.FunctionArray(
+            inputs=self.coordinates_scene,
+            outputs=na.regridding.regrid_from_weights(
+                *self.weights,
+                values_input=scene.outputs,
+            )
+        )
+
+    def backproject(
         self,
-        scene: na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar],
+        image: na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar],
     ) -> na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar]:
 
-        pass
+        return na.FunctionArray(
+            inputs=self.coordinates_sensor,
+            outputs=na.regridding.regrid_from_weights(
+                *self.weights_transpose,
+                values_input=image.outputs,
+            )
+        )
 
 
 @dataclasses.dataclass
 class IdealInstrument(
-    AbstractInstrument,
+    AbstractLinearInstrument,
 ):
     """
     An idealized CTIS instrument which has a perfect point-spread function
@@ -141,3 +160,67 @@ class IdealInstrument(
 
     angle: u.Quantity | na.AbstractScalar
     """The angle of the dispersion direction with respect to the scene."""
+
+    wavelength_ref: u.Quantity | na.AbstractScalar
+    """
+    The reference wavelength at which the center of the FOV lands at :attr:`position_ref`
+    """
+
+    position_ref: u.Quantity | na.AbstractScalar
+    """
+    The position where the reference wavelength is designed to land.
+    """
+
+    coordinates_scene: na.AbstractSpectralPositionalVectorArray
+    """
+    A grid of wavelength and position coordinates on the skyplane
+    which will be used to construct the inverted scene.
+
+    Normally the pitch of this grid is chosen to be the average
+    plate scale of the instrument.
+    """
+
+    coordinates_sensor: na.AbstractSpectralPositionalVectorArray
+    """
+    A grid of wavelength and position coordinates on the detector plane.
+    """
+
+    def distortion(self, coordinates: na.SpectralPositionalVectorArray):
+        delta_lambda = self.plate_scale / self.dispersion
+        rot = na.Cartesian2dRotationMatrixArray(self.angle)
+        rot_grid = na.SpectralPositionalVectorArray(
+            wavelength=coordinates.wavelength - self.wavelength_ref,
+            position=rot @ coordinates.position
+        )
+        disperse = na.SpectralPositionalMatrixArray(
+            wavelength=na.SpectralPositionalVectorArray(
+                wavelength=1,
+                position=na.Cartesian2dVectorArray(
+                    x=0 * u.angstrom / u.arcsec,
+                    y=0 * u.angstrom / u.arcsec,
+                ),
+            ),
+            position=na.Cartesian2dMatrixArray(
+                x=na.SpectralPositionalVectorArray(
+                    wavelength=1 / delta_lambda,
+                    position=na.Cartesian2dVectorArray(
+                        # originally I had this as x = -1 which resulted in the grid not being in ascending order.  This caused the interpolator to puke.
+                        x=1,
+                        y=0,
+                    ),
+                ),
+                y=na.SpectralPositionalVectorArray(
+                    wavelength=0 * u.arcsec / u.angstrom,
+                    position=na.Cartesian2dVectorArray(
+                        x=0,
+                        y=1,
+                    ),
+                ),
+            ),
+        )
+        projected_grid = disperse @ rot_grid
+        # projected_grid = projected_grid - self.ref_position
+        return na.SpectralPositionalVectorArray(
+            wavelength=coordinates.wavelength,
+            position=projected_grid.position + self.position_ref,
+        )
