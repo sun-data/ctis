@@ -1,4 +1,4 @@
-from typing import Callable, Sequence
+from typing import Callable
 import abc
 import functools
 import dataclasses
