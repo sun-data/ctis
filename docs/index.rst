@@ -17,6 +17,15 @@ Some explanations of the theory behind inversion
 
     discussions/richardson-lucy-analogy/richardson-lucy-analogy
 
+Tutorials
+=========
+
+Examples on how to use this package.
+
+.. toctree::
+    :maxdepth: 1
+
+    tutorials/ideal-instrument
 
 API Reference
 =============
