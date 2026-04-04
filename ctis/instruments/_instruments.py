@@ -42,7 +42,7 @@ class AbstractInstrument(
         r"""
         The forward model of this CTIS instrument, which maps spectral radiance
         on the skyplane to counts on the detectors.
-        
+
         Parameters
         ----------
         scene
@@ -124,7 +124,7 @@ class AbstractLinearInstrument(
             outputs=na.regridding.regrid_from_weights(
                 *self.weights,
                 values_input=scene.outputs,
-            )
+            ),
         )
 
     def backproject(
@@ -137,7 +137,7 @@ class AbstractLinearInstrument(
             outputs=na.regridding.regrid_from_weights(
                 *self.weights_transpose,
                 values_input=image.outputs,
-            )
+            ),
         )
 
 
@@ -203,7 +203,7 @@ class IdealInstrument(
         rot = na.Cartesian2dRotationMatrixArray(self.angle)
         rot_grid = na.SpectralPositionalVectorArray(
             wavelength=coordinates.wavelength - self.wavelength_ref,
-            position=rot @ coordinates.position
+            position=rot @ coordinates.position,
         )
         disperse = na.SpectralPositionalMatrixArray(
             wavelength=na.SpectralPositionalVectorArray(
