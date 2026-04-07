@@ -258,5 +258,6 @@ class IdealInstrument(
             method="conservative",
         )
 
+    @functools.cached_property
     def weights_transpose(self):
-        raise NotImplementedError
+        return na.regridding.transpose_weights(self.weights)
