@@ -120,7 +120,7 @@ class AbstractLinearInstrument(
     ) -> na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar]:
 
         return na.FunctionArray(
-            inputs=self.coordinates_scene,
+            inputs=self.coordinates_sensor,
             outputs=na.regridding.regrid_from_weights(
                 *self.weights,
                 values_input=scene.outputs,
@@ -133,7 +133,7 @@ class AbstractLinearInstrument(
     ) -> na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar]:
 
         return na.FunctionArray(
-            inputs=self.coordinates_sensor,
+            inputs=self.coordinates_scene,
             outputs=na.regridding.regrid_from_weights(
                 *self.weights_transpose,
                 values_input=image.outputs,
@@ -184,6 +184,11 @@ class IdealInstrument(
     coordinates_sensor: na.AbstractSpectralPositionalVectorArray = dataclasses.MISSING
     """
     A grid of wavelength and position coordinates on the detector plane.
+    """
+
+    axis_wavelength: str
+    """
+    The logical axis corresponding to changing wavelength.
     """
 
     axis_scene_xy: tuple[str, str]
@@ -241,6 +246,9 @@ class IdealInstrument(
 
         coordinates_input = self.distortion(self.coordinates_scene)
         coordinates_output = self.coordinates_sensor
+
+        coordinates_input = coordinates_input.cell_centers(self.axis_wavelength)
+        coordinates_output = coordinates_output.cell_centers(self.axis_wavelength)
 
         return na.regridding.weights(
             coordinates_input=coordinates_input.position,
