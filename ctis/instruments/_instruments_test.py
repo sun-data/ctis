@@ -11,7 +11,7 @@ position_scene = na.Cartesian2dVectorLinearSpace(
     start=-10 * u.arcsec,
     stop=10 * u.arcsec,
     axis=na.Cartesian2dVectorArray("scene_x", "scene_y"),
-    num=64,
+    num=na.Cartesian2dVectorArray(64, 64),
 )
 
 position_sensor = na.Cartesian2dVectorArray(
@@ -28,7 +28,8 @@ gaussians = ctis.scenes.gaussians(
 )
 
 instrument_ideal = ctis.instruments.IdealInstrument(
-    response=1,
+    area_effective=1 * u.cm**2,
+    timedelta_exposure=10 * u.s,
     plate_scale=.4 * u.arcsec / u.pix,
     dispersion=10 * u.km / u.s / u.pix,
     angle=0 * u.deg,
@@ -45,21 +46,31 @@ class AbstractTestAbstractInstrument(
     abc.ABC,
 ):
 
-    @pytest.mark.parametrize("scene", [gaussians])
+    @pytest.mark.parametrize(
+        argnames="scene",
+        argvalues=[
+            gaussians.outputs,
+        ],
+    )
     def test_image(
         self,
         a: ctis.instruments.AbstractInstrument,
-        scene: na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar],
+        scene: na.AbstractScalar,
     ):
         result = a.image(scene)
         assert np.all(result.inputs == coordinates_sensor)
         assert result.outputs.sum() > 0
 
-    @pytest.mark.parametrize("image", [instrument_ideal.image(gaussians)])
+    @pytest.mark.parametrize(
+        argnames="image",
+        argvalues=[
+            instrument_ideal.image(gaussians.outputs).outputs,
+        ],
+    )
     def test_backproject(
         self,
         a: ctis.instruments.AbstractInstrument,
-        image: na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar],
+        image: na.AbstractScalar,
     ):
         result = a.backproject(image)
         assert np.all(result.inputs == coordinates_scene)

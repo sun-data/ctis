@@ -37,37 +37,40 @@ class AbstractInstrument(
     @abc.abstractmethod
     def image(
         self,
-        scene: na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar],
+        scene: na.AbstractScalar,
     ) -> na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar]:
         r"""
         The forward model of this CTIS instrument, which maps spectral radiance
-        on the skyplane to counts on the detectors.
+        on the skyplane to photons measured by the instrument's sensor.
+
+        This method does `not` sum over wavelength, the result still has a
+        wavelength axis so that this method is directly invertible.
 
         Parameters
         ----------
         scene
-            The spectral radiance in units equivalent to
+            The spectral radiance of an observed scene,
+            evaluated on :attr:`coordinates_scene`,
+            in units equivalent to
             :math:`\text{erg} \, \text{cm}^{-2} \, \text{sr}^{-1} \, \AA^{-1} \, \text{s}^{-1}`.
         """
 
     @abc.abstractmethod
     def backproject(
         self,
-        image: na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar],
+        image: na.AbstractScalar,
     ) -> na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar]:
         """
-        A quasi-inverse model of this CTIS instrument, which maps counts
-        on the detectors to spectral radiance on the skyplane.
-
-        This is not a true inverse, since this just spreads intensity out
-        evenly along each projection direction, and doesn't concentrate it
-        in its true location.
+        The inverse of the forward model of this CTIS instrument.
+        Since the forward model, :meth:`image`, does not sum over wavelength,
+        :meth:`backproject` can find the true inverse.
 
         Parameters
         ----------
         image
-            A series of images captured by a CTIS instrument.
-            Should be in units of electrons.
+            A series of images captured by a CTIS instrument,
+            evaluated on :attr:`coordinates_sensor`,
+            in units of photons.
         """
 
     @property
@@ -86,6 +89,30 @@ class AbstractInstrument(
     def coordinates_sensor(self) -> na.AbstractSpectralPositionalVectorArray:
         """
         A grid of wavelength and position coordinates on the detector plane.
+        """
+
+    @property
+    @abc.abstractmethod
+    def axis_wavelength(self) -> str:
+        """
+        The logical axis of :attr:`coordinates_scene` and :attr:`coordinates_sensor`
+        corresponding to changing wavelength coordinate.
+        """
+
+    @property
+    @abc.abstractmethod
+    def axis_scene_xy(self) -> tuple[str, str]:
+        """
+        The logical axes of :attr:`coordinates_scene` corresponding to
+        changing position coordinate.
+        """
+
+    @property
+    @abc.abstractmethod
+    def axis_sensor_xy(self) -> tuple[str, str]:
+        """
+        The logical axes of :attr:`coordinates_sensor` corresponding to
+        changing position coordinate.
         """
 
 
@@ -114,29 +141,50 @@ class AbstractLinearInstrument(
         skyplane.
         """
 
+    @property
+    def _volume_scene(self) -> na.AbstractScalar:
+        """
+        The volume of each voxel in :attr:`coordinates_scene`.
+        """
+        coords = self.coordinates_scene
+
+        dw = coords.wavelength.volume_cell(self.axis_wavelength)
+
+        dA = coords.position.volume_cell(self.axis_scene_xy)
+        dA = na.as_named_array(dA)
+        dA = dA.cell_centers(self.axis_wavelength)
+
+        dV = dw * dA
+
+        return dV
+
     def image(
         self,
-        scene: na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar],
+        scene: na.AbstractScalar,
     ) -> na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar]:
+
+        values_input = scene * self._volume_scene
 
         return na.FunctionArray(
             inputs=self.coordinates_sensor,
             outputs=na.regridding.regrid_from_weights(
                 *self.weights,
-                values_input=scene.outputs,
+                values_input=values_input,
             ),
         )
 
     def backproject(
         self,
-        image: na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar],
+        image: na.AbstractScalar,
     ) -> na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar]:
+
+        values_input = image / self._volume_scene
 
         return na.FunctionArray(
             inputs=self.coordinates_scene,
             outputs=na.regridding.regrid_from_weights(
                 *self.weights_transpose,
-                values_input=image.outputs,
+                values_input=values_input,
             ),
         )
 
@@ -150,8 +198,16 @@ class IdealInstrument(
     and no noise.
     """
 
-    response: u.Quantity | na.AbstractScalar
-    """The number of electrons measured for a given spectral radiance on the skyplane."""
+    area_effective: u.Quantity | na.AbstractScalar
+    r"""
+    The effective area of the instrument aperture in units equivalent to
+    :math:`\text{cm}^2`.
+    """
+
+    timedelta_exposure: u.Quantity | na.AbstractScalar
+    r"""
+    The exposure time of the instrument in units equivalent to :math:`\text{s}.
+    """
 
     plate_scale: u.Quantity | na.AbstractScalar
     r"""The spatial scale of the image on the sensor in :math:`\text{arcsec} \,\text{pix}^-1`"""
@@ -186,21 +242,22 @@ class IdealInstrument(
     A grid of wavelength and position coordinates on the detector plane.
     """
 
-    axis_wavelength: str
+    axis_wavelength: str = dataclasses.MISSING
     """
-    The logical axis corresponding to changing wavelength.
-    """
-
-    axis_scene_xy: tuple[str, str]
-    """
-    The logical axes in :attr:`coordinates_scene` corresponding to changing
-    spatial coordinates.
+    The logical axis of :attr:`coordinates_scene` and :attr:`coordinates_sensor`
+    corresponding to changing wavelength coordinate.
     """
 
-    axis_sensor_xy: tuple[str, str]
+    axis_scene_xy: tuple[str, str] = dataclasses.MISSING
     """
-    The logical axes in :attr:`coordinates_sensor` corresponding to changing
-    spatial coordinates.
+    The logical axes of :attr:`coordinates_scene` corresponding to
+    changing position coordinate.
+    """
+
+    axis_sensor_xy: tuple[str, str] = dataclasses.MISSING
+    """
+    The logical axes of :attr:`coordinates_sensor` corresponding to
+    changing position coordinate.
     """
 
     def distortion(self, coordinates: na.SpectralPositionalVectorArray):
@@ -261,3 +318,21 @@ class IdealInstrument(
     @functools.cached_property
     def weights_transpose(self):
         return na.regridding.transpose_weights(self.weights)
+
+    def image(
+        self,
+        scene: na.AbstractScalar,
+    ) -> na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar]:
+
+        scene = scene * self.area_effective * self.timedelta_exposure
+
+        return super().image(scene)
+
+    def backproject(
+        self,
+        image: na.AbstractScalar,
+    ) -> na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar]:
+
+        image = image / (self.area_effective * self.timedelta_exposure)
+
+        return super().backproject(image)
