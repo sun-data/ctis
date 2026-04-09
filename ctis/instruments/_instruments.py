@@ -3,6 +3,7 @@ import abc
 import functools
 import dataclasses
 import astropy.units as u
+import astropy.constants
 import named_arrays as na
 
 __all__ = [
@@ -38,6 +39,7 @@ class AbstractInstrument(
     def image(
         self,
         scene: na.AbstractScalar,
+        noise: bool = True,
     ) -> na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar]:
         r"""
         The forward model of this CTIS instrument, which maps spectral radiance
@@ -53,6 +55,8 @@ class AbstractInstrument(
             evaluated on :attr:`coordinates_scene`,
             in units equivalent to
             :math:`\text{erg} \, \text{cm}^{-2} \, \text{sr}^{-1} \, \AA^{-1} \, \text{s}^{-1}`.
+        noise
+            Whether to include the effect of noise in the final image.
         """
 
     @abc.abstractmethod
@@ -162,12 +166,35 @@ class AbstractLinearInstrument(
 
         return dV
 
+    @property
+    def _energy_per_photon(self) -> u.Quantity | na.AbstractScalar:
+        """
+        The energy per photon for each wavelength of the scene.
+        """
+
+        h = astropy.constants.h
+        c = astropy.constants.c
+
+        w = self.coordinates_scene.wavelength.cell_centers(self.axis_wavelength)
+
+        energy_per_photon = h * c / w / u.photon
+
+        return energy_per_photon
+
     def image(
         self,
         scene: na.AbstractScalar,
+        noise: bool = True,
     ) -> na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar]:
 
         values_input = scene * self._volume_scene
+
+        values_input = values_input / self._energy_per_photon
+
+        values_input = values_input.to(u.photon)
+
+        if noise:
+            values_input = na.random.poisson(values_input)
 
         return na.FunctionArray(
             inputs=self.coordinates_sensor,
@@ -182,7 +209,11 @@ class AbstractLinearInstrument(
         image: na.AbstractScalar,
     ) -> na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar]:
 
-        values_input = image / self._volume_scene
+        values_input = image * self._energy_per_photon
+
+        values_input = values_input.to(u.erg)
+
+        values_input = values_input / self._volume_scene
 
         return na.FunctionArray(
             inputs=self.coordinates_scene,
@@ -326,6 +357,7 @@ class IdealInstrument(
     def image(
         self,
         scene: na.AbstractScalar,
+        noise: bool = True,
     ) -> na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar]:
 
         scene = scene * self.area_effective * self.timedelta_exposure
@@ -337,6 +369,8 @@ class IdealInstrument(
         image: na.AbstractScalar,
     ) -> na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar]:
 
-        image = image / (self.area_effective * self.timedelta_exposure)
+        result = super().backproject(image)
 
-        return super().backproject(image)
+        result = result / (self.area_effective * self.timedelta_exposure)
+
+        return result
