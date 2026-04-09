@@ -30,7 +30,7 @@ gaussians = ctis.scenes.gaussians(
 instrument_ideal = ctis.instruments.IdealInstrument(
     area_effective=1 * u.cm**2,
     timedelta_exposure=10 * u.s,
-    plate_scale=.4 * u.arcsec / u.pix,
+    plate_scale=0.4 * u.arcsec / u.pix,
     dispersion=10 * u.km / u.s / u.pix,
     angle=0 * u.deg,
     wavelength_ref=0 * u.km / u.s,
@@ -41,6 +41,7 @@ instrument_ideal = ctis.instruments.IdealInstrument(
     axis_scene_xy=("scene_x", "scene_y"),
     axis_sensor_xy=("sensor_x", "sensor_y"),
 )
+
 
 class AbstractTestAbstractInstrument(
     abc.ABC,
@@ -85,7 +86,7 @@ class AbstractTestAbstractLinearInstrument(
 
 @pytest.mark.parametrize(
     argnames="a",
-    argvalues=[instrument_ideal]
+    argvalues=[instrument_ideal],
 )
 class TestIdealInstrument(
     AbstractTestAbstractLinearInstrument,

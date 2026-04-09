@@ -127,7 +127,9 @@ class AbstractLinearInstrument(
 
     @property
     @abc.abstractmethod
-    def weights(self) -> tuple[na.AbstractScalar, dict[str, int], dict[str, int]]:
+    def weights(
+        self,
+    ) -> tuple[na.AbstractScalar, dict[str, int], dict[str, int]]:
         """
         The contribution of each voxel on the skyplane to each pixel on the
         detector.
@@ -135,7 +137,9 @@ class AbstractLinearInstrument(
 
     @property
     @abc.abstractmethod
-    def weights_transpose(self) -> tuple[na.AbstractScalar, dict[str, int], dict[str, int]]:
+    def weights_transpose(
+        self,
+    ) -> tuple[na.AbstractScalar, dict[str, int], dict[str, int]]:
         """
         The contribution of each pixel on the detector to each voxel on the
         skyplane.
