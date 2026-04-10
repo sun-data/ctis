@@ -39,4 +39,4 @@ def test_gaussians(
 
     assert result.inputs is inputs
     assert result.axes == inputs.axes
-    assert np.all(result >= 0 * u.photon / (u.cm**2 * u.sr * u.s * u.AA))
+    assert np.all(result >= 0 * u.erg / (u.cm**2 * u.sr * u.s * u.AA))
