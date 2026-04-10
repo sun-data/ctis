@@ -5,7 +5,7 @@ import astropy.units as u
 import named_arrays as na
 import ctis
 
-wavelength = na.linspace(-500, 500, axis="wavelength", num=21) * u.km / u.s
+velocity = na.linspace(-500, 500, axis="wavelength", num=21) * u.km / u.s
 
 position_scene = na.Cartesian2dVectorLinearSpace(
     start=-10 * u.arcsec,
@@ -19,21 +19,34 @@ position_sensor = na.Cartesian2dVectorArray(
     y=na.arange(0, 64, axis="sensor_y") * u.pix,
 )
 
-coordinates_scene = na.SpectralPositionalVectorArray(wavelength, position_scene)
-coordinates_sensor = na.SpectralPositionalVectorArray(wavelength, position_sensor)
+coordinates_scene = na.SpectralPositionalVectorArray(velocity, position_scene)
+coordinates_sensor = na.SpectralPositionalVectorArray(velocity, position_sensor)
 
 gaussians = ctis.scenes.gaussians(
     inputs=coordinates_scene,
     width=na.SpectralPositionalVectorArray(30 * u.km / u.s, 1 * u.arcsec),
 )
 
+wavelength_rest = 171 * u.AA
+
+AA = dict(
+    unit=u.AA,
+    equivalencies=u.doppler_optical(wavelength_rest),
+)
+
+coordinates_scene.wavelength = coordinates_scene.wavelength.to(**AA)
+coordinates_sensor.wavelength = coordinates_sensor.wavelength.to(**AA)
+
+dispersion = 10 * u.km / u.s
+dispersion = (dispersion.to(**AA) - wavelength_rest) / u.pix
+
 instrument_ideal = ctis.instruments.IdealInstrument(
     area_effective=1 * u.cm**2,
     timedelta_exposure=10 * u.s,
     plate_scale=0.4 * u.arcsec / u.pix,
-    dispersion=10 * u.km / u.s / u.pix,
+    dispersion=dispersion,
     angle=0 * u.deg,
-    wavelength_ref=0 * u.km / u.s,
+    wavelength_ref=wavelength_rest,
     position_ref=32 * u.pix,
     coordinates_scene=coordinates_scene,
     coordinates_sensor=coordinates_sensor,
