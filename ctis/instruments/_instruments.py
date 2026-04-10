@@ -1,3 +1,4 @@
+import numpy as np
 from typing import Callable
 import abc
 import functools
@@ -193,15 +194,19 @@ class AbstractLinearInstrument(
 
         values_input = values_input.to(u.photon)
 
+        values_output = na.regridding.regrid_from_weights(
+            *self.weights,
+            values_input=values_input,
+        )
+
+        values_output = np.maximum(values_output, 0)
+
         if noise:
-            values_input = na.random.poisson(values_input)
+            values_output = na.random.poisson(values_output)
 
         return na.FunctionArray(
             inputs=self.coordinates_sensor,
-            outputs=na.regridding.regrid_from_weights(
-                *self.weights,
-                values_input=values_input,
-            ),
+            outputs=values_output,
         )
 
     def backproject(
@@ -341,6 +346,10 @@ class IdealInstrument(
 
         coordinates_input = coordinates_input.cell_centers(self.axis_wavelength)
         coordinates_output = coordinates_output.cell_centers(self.axis_wavelength)
+
+        p = coordinates_output.position
+        coordinates_output.position.x = na.random.normal(p.x, 1e-6 * u.pix)
+        coordinates_output.position.y = na.random.normal(p.y, 1e-6 * u.pix)
 
         return na.regridding.weights(
             coordinates_input=coordinates_input.position,
