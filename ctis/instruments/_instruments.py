@@ -101,7 +101,7 @@ class AbstractInstrument(
     def axis_wavelength(self) -> str:
         """
         The logical axis of :attr:`coordinates_scene` and :attr:`coordinates_sensor`
-        corresponding to changing wavelength coordinate.
+        that corresponds to changing wavelength coordinate.
         """
 
     @property
@@ -234,8 +234,13 @@ class IdealInstrument(
     AbstractLinearInstrument,
 ):
     """
-    An idealized CTIS instrument which has a perfect point-spread function
-    and no noise.
+    An idealized CTIS instrument model.
+
+    This ideal instrument is characterized by an effective area,
+    exposure time, plate scale and dispersion magnitude/angle.
+
+    It has no point-spread function, distortion, or vignetting, and it
+    considers only photon shot noise.
     """
 
     area_effective: u.Quantity | na.AbstractScalar
@@ -246,26 +251,35 @@ class IdealInstrument(
 
     timedelta_exposure: u.Quantity | na.AbstractScalar
     r"""
-    The exposure time of the instrument in units equivalent to :math:`\text{s}.
+    The exposure time of the instrument in units equivalent to :math:`\text{s}`.
     """
 
-    plate_scale: u.Quantity | na.AbstractScalar
-    r"""The spatial scale of the image on the sensor in :math:`\text{arcsec} \,\text{pix}^-1`"""
+    plate_scale: u.Quantity | na.AbstractScalar | na.Cartesian2dVectorArray
+    r"""
+    The spatial scale of the image on the sensor in units equivalent to
+    :math:`\text{arcsec} \,\text{pix}^-1`
+    """
 
     dispersion: u.Quantity | na.AbstractScalar
-    r"""The magnitude of the dispersion in :math:`\text{m \AA} \,\text{pix}^-1`"""
+    r"""
+    The magnitude of the spectral dispersion in units equivalent to 
+    :math:`\text{m \AA} \,\text{pix}^-1`.
+    """
 
     angle: u.Quantity | na.AbstractScalar
-    """The angle of the dispersion direction with respect to the scene."""
+    """
+    The angle of the dispersion direction with respect to the scene.
+    """
 
     wavelength_ref: u.Quantity | na.AbstractScalar
     """
     The reference wavelength at which the center of the FOV lands at :attr:`position_ref`
     """
 
-    position_ref: u.Quantity | na.AbstractScalar
+    position_ref: u.Quantity | na.AbstractScalar | na.Cartesian2dVectorArray
     """
-    The position where the reference wavelength is designed to land.
+    The position on the sensor where center of the FOV lands at the reference
+    wavelength. 
     """
 
     coordinates_scene: na.AbstractSpectralPositionalVectorArray = dataclasses.MISSING
@@ -279,13 +293,13 @@ class IdealInstrument(
 
     coordinates_sensor: na.AbstractSpectralPositionalVectorArray = dataclasses.MISSING
     """
-    A grid of wavelength and position coordinates on the detector plane.
+    A grid of wavelength and position coordinates on the sensor plane.
     """
 
     axis_wavelength: str = dataclasses.MISSING
     """
     The logical axis of :attr:`coordinates_scene` and :attr:`coordinates_sensor`
-    corresponding to changing wavelength coordinate.
+    that corresponds to changing wavelength coordinate.
     """
 
     axis_scene_xy: tuple[str, str] = dataclasses.MISSING
@@ -301,6 +315,14 @@ class IdealInstrument(
     """
 
     def distortion(self, coordinates: na.SpectralPositionalVectorArray):
+        """
+        A linear mapping between skyplane coordinates and sensor coordinates.
+
+        Parameters
+        ----------
+        coordinates
+            Grid of spatial/spectral coordinates on the skyplane.
+        """
         unit_wavelength = coordinates.wavelength.unit
         rot = na.Cartesian2dRotationMatrixArray(self.angle)
         rot_grid = na.SpectralPositionalVectorArray(
