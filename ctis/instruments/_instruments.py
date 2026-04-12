@@ -223,7 +223,7 @@ class AbstractLinearInstrument(
                 wavelength=na.stack(
                     arrays=[
                         coordinates.wavelength[{axis: +0}],
-                        coordinates.wavelength[{axis: ~0}]
+                        coordinates.wavelength[{axis: ~0}],
                     ],
                     axis=axis,
                 )
