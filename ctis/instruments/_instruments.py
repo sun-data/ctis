@@ -183,7 +183,7 @@ class AbstractLinearInstrument(
 
         axis_channel = self.axis_channel
         if isinstance(axis_channel, str):
-            axis_channel = axis_channel,
+            axis_channel = (axis_channel,)
 
         num_channels = 1
         for ax in axis_channel:
