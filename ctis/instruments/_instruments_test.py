@@ -95,6 +95,14 @@ class AbstractTestAbstractInstrument(
 
         assert np.allclose(image.sum(), image_check.sum())
 
+    def test_num_channel(
+        self,
+        a: ctis.instruments.AbstractInstrument,
+    ):
+        result = a.num_channel
+
+        assert isinstance(result, int)
+
 
 class AbstractTestAbstractLinearInstrument(
     AbstractTestAbstractInstrument,
