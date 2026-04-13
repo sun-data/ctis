@@ -45,11 +45,12 @@ instrument_ideal = ctis.instruments.IdealInstrument(
     timedelta_exposure=10 * u.s,
     plate_scale=2 * u.arcsec / u.pix,
     dispersion=dispersion,
-    angle=0 * u.deg,
+    angle=na.linspace(0, 360, axis="channel", num=3, endpoint=False),
     wavelength_ref=wavelength_rest,
     position_ref=32 * u.pix,
     coordinates_scene=coordinates_scene,
     coordinates_sensor=coordinates_sensor,
+    axis_channel="channel",
     axis_wavelength="wavelength",
     axis_scene_xy=("scene_x", "scene_y"),
     axis_sensor_xy=("sensor_x", "sensor_y"),
@@ -94,6 +95,14 @@ class AbstractTestAbstractInstrument(
         image_check = a.image(result.outputs, noise=False).outputs
 
         assert np.allclose(image.sum(), image_check.sum())
+
+    def test_num_channel(
+        self,
+        a: ctis.instruments.AbstractInstrument,
+    ):
+        result = a.num_channel
+
+        assert isinstance(result, int)
 
 
 class AbstractTestAbstractLinearInstrument(

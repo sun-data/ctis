@@ -108,6 +108,14 @@ class AbstractInstrument(
 
     @property
     @abc.abstractmethod
+    def axis_channel(self) -> str | tuple[str, ...]:
+        """
+        The logical axis or axes of this instrument corresponding to
+        the different dispersion magnitudes and angles.
+        """
+
+    @property
+    @abc.abstractmethod
     def axis_wavelength(self) -> str:
         """
         The logical axis of :attr:`coordinates_scene` and :attr:`coordinates_sensor`
@@ -128,6 +136,14 @@ class AbstractInstrument(
         """
         The logical axes of :attr:`coordinates_sensor` corresponding to
         changing position coordinate.
+        """
+
+    @property
+    @abc.abstractmethod
+    def num_channel(self) -> int:
+        """
+        The total number of dispersion magnitudes/angles observed by this
+        instrument.
         """
 
 
@@ -159,6 +175,21 @@ class AbstractLinearInstrument(
         The contribution of each pixel on the detector to each voxel on the
         skyplane.
         """
+
+    @property
+    def num_channel(self) -> int:
+
+        shape = self.weights[0].shape
+
+        axis_channel = self.axis_channel
+        if isinstance(axis_channel, str):
+            axis_channel = (axis_channel,)
+
+        num_channels = 1
+        for ax in axis_channel:
+            num_channels = num_channels * shape[ax]
+
+        return num_channels
 
     @property
     def _volume_scene(self) -> na.AbstractScalar:
@@ -336,6 +367,12 @@ class IdealInstrument(
     coordinates_sensor: na.AbstractSpectralPositionalVectorArray = dataclasses.MISSING
     """
     A grid of wavelength and position coordinates on the sensor plane.
+    """
+
+    axis_channel: str | tuple[str, ...] = dataclasses.MISSING
+    """
+    The logical axis or axes of this instrument corresponding to
+    the different dispersion magnitudes and angles.
     """
 
     axis_wavelength: str = dataclasses.MISSING
