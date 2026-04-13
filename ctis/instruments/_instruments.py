@@ -369,7 +369,7 @@ class IdealInstrument(
     A grid of wavelength and position coordinates on the sensor plane.
     """
 
-    axis_channel: str = dataclasses.MISSING
+    axis_channel: str | tuple[str, ...] = dataclasses.MISSING
     """
     The logical axis or axes of this instrument corresponding to
     the different dispersion magnitudes and angles.
