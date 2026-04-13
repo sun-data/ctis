@@ -47,9 +47,6 @@ class AbstractInstrument(
         The forward model of this CTIS instrument, which maps spectral radiance
         on the skyplane to photons measured by the instrument's sensor.
 
-        This method does `not` sum over wavelength, the result still has a
-        wavelength axis so that this method is directly invertible.
-
         Parameters
         ----------
         scene
@@ -70,11 +67,16 @@ class AbstractInstrument(
     def backproject(
         self,
         image: na.AbstractScalar,
+        integrate: bool = True,
     ) -> na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar]:
         """
-        The inverse of the forward model of this CTIS instrument.
-        Since the forward model, :meth:`image`, does not sum over wavelength,
-        :meth:`backproject` can find the true inverse.
+        The backward model of this CTIS instrument, which maps photons measured
+        by the sensor to spectral radiance on the skyplane.
+
+        This is the complementary operation to :meth:`image`, but it is not
+        an inverse of :meth:`image`, this method will spread out the photons
+        from each pixel evenly across the voxels in the scene that `could` have
+        contributed to the measured signal.
 
         Parameters
         ----------
@@ -82,6 +84,8 @@ class AbstractInstrument(
             A series of images captured by a CTIS instrument,
             evaluated on :attr:`coordinates_sensor`,
             in units of photons.
+        integrate
+            Complement of the `integrate` keyword of :meth:`image`.
         """
 
     @property
@@ -237,6 +241,7 @@ class AbstractLinearInstrument(
     def backproject(
         self,
         image: na.AbstractScalar,
+        integrate: bool = True,
     ) -> na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar]:
 
         coordinates = self.coordinates_scene
@@ -244,7 +249,10 @@ class AbstractLinearInstrument(
         axis_wavelength = self.axis_wavelength
         num_wavelength = coordinates.wavelength.shape[axis_wavelength] - 1
 
-        values_input = image / num_wavelength
+        values_input = image
+
+        if integrate:
+            values_input = values_input / num_wavelength
 
         values_output = na.regridding.regrid_from_weights(
             *self.weights_transpose,
@@ -470,10 +478,12 @@ class IdealInstrument(
     def backproject(
         self,
         image: na.AbstractScalar,
+        integrate: bool = True,
     ) -> na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar]:
 
         result = super().backproject(
             image=image,
+            integrate=integrate,
         )
 
         result = result / (self.area_effective * self.timedelta_exposure)
