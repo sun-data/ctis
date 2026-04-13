@@ -40,14 +40,12 @@ class AbstractInstrument(
     def image(
         self,
         scene: na.AbstractScalar,
+        integrate: bool = True,
         noise: bool = True,
     ) -> na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar]:
         r"""
         The forward model of this CTIS instrument, which maps spectral radiance
         on the skyplane to photons measured by the instrument's sensor.
-
-        This method does `not` sum over wavelength, the result still has a
-        wavelength axis so that this method is directly invertible.
 
         Parameters
         ----------
@@ -56,6 +54,11 @@ class AbstractInstrument(
             evaluated on :attr:`coordinates_scene`,
             in units equivalent to
             :math:`\text{erg} \, \text{cm}^{-2} \, \text{sr}^{-1} \, \AA^{-1} \, \text{s}^{-1}`.
+        integrate
+            Whether to integrate along the wavelength axis.
+            A real CTIS instrument integrates along wavelength,
+            but sometimes it's useful to keep the wavelengths separate
+            for demonstration purposes.
         noise
             Whether to include the effect of noise in the final image.
         """
@@ -64,11 +67,16 @@ class AbstractInstrument(
     def backproject(
         self,
         image: na.AbstractScalar,
+        integrate: bool = True,
     ) -> na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar]:
         """
-        The inverse of the forward model of this CTIS instrument.
-        Since the forward model, :meth:`image`, does not sum over wavelength,
-        :meth:`backproject` can find the true inverse.
+        The backward model of this CTIS instrument, which maps photons measured
+        by the sensor to spectral radiance on the skyplane.
+
+        This is the complementary operation to :meth:`image`, but it is not
+        an inverse of :meth:`image`, this method will spread out the photons
+        from each pixel evenly across the voxels in the scene that `could` have
+        contributed to the measured signal.
 
         Parameters
         ----------
@@ -76,6 +84,8 @@ class AbstractInstrument(
             A series of images captured by a CTIS instrument,
             evaluated on :attr:`coordinates_sensor`,
             in units of photons.
+        integrate
+            Complement of the `integrate` keyword of :meth:`image`.
         """
 
     @property
@@ -185,6 +195,7 @@ class AbstractLinearInstrument(
     def image(
         self,
         scene: na.AbstractScalar,
+        integrate: bool = True,
         noise: bool = True,
     ) -> na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar]:
 
@@ -204,28 +215,59 @@ class AbstractLinearInstrument(
         if noise:
             values_output = na.random.poisson(values_output)
 
+        coordinates = self.coordinates_sensor
+
+        if integrate:
+
+            axis = self.axis_wavelength
+
+            values_output = values_output.sum(axis)
+
+            coordinates = coordinates.replace(
+                wavelength=na.stack(
+                    arrays=[
+                        coordinates.wavelength[{axis: +0}],
+                        coordinates.wavelength[{axis: ~0}],
+                    ],
+                    axis=axis,
+                )
+            )
+
         return na.FunctionArray(
-            inputs=self.coordinates_sensor,
+            inputs=coordinates,
             outputs=values_output,
         )
 
     def backproject(
         self,
         image: na.AbstractScalar,
+        integrate: bool = True,
     ) -> na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar]:
 
-        values_input = image * self._energy_per_photon
+        coordinates = self.coordinates_scene
 
-        values_input = values_input.to(u.erg)
+        axis_wavelength = self.axis_wavelength
+        num_wavelength = coordinates.wavelength.shape[axis_wavelength] - 1
 
-        values_input = values_input / self._volume_scene
+        values_input = image
+
+        if integrate:
+            values_input = values_input / num_wavelength
+
+        values_output = na.regridding.regrid_from_weights(
+            *self.weights_transpose,
+            values_input=values_input,
+        )
+
+        values_output = values_output * self._energy_per_photon
+
+        values_output = values_output.to(u.erg)
+
+        values_output = values_output / self._volume_scene
 
         return na.FunctionArray(
-            inputs=self.coordinates_scene,
-            outputs=na.regridding.regrid_from_weights(
-                *self.weights_transpose,
-                values_input=values_input,
-            ),
+            inputs=coordinates,
+            outputs=values_output,
         )
 
 
@@ -361,17 +403,40 @@ class IdealInstrument(
         )
 
     @functools.cached_property
-    def weights(self) -> tuple[na.AbstractScalar, dict[str, int], dict[str, int]]:
+    def _coordinates_input(self) -> na.AbstractSpectralPositionalVectorArray:
+        """
+        The :attr:`coordinates_scene` property mapped onto the sensor plane and
+        transformed onto cell centers along the wavelength axis.
+        """
 
         coordinates_input = self.distortion(self.coordinates_scene)
-        coordinates_output = self.coordinates_sensor
 
         coordinates_input = coordinates_input.cell_centers(self.axis_wavelength)
+
+        return coordinates_input
+
+    @functools.cached_property
+    def _coordinates_output(self) -> na.AbstractSpectralPositionalVectorArray:
+        """
+        The :attr:`coordinates_sensor` perturbed to avoid degeneracies while
+        resampling and transformed onto cell centers along the wavelength axis.
+        """
+
+        coordinates_output = self.coordinates_sensor
+
         coordinates_output = coordinates_output.cell_centers(self.axis_wavelength)
 
         p = coordinates_output.position
         coordinates_output.position.x = na.random.normal(p.x, 1e-3 * u.pix)
         coordinates_output.position.y = na.random.normal(p.y, 1e-3 * u.pix)
+
+        return coordinates_output
+
+    @functools.cached_property
+    def weights(self) -> tuple[na.AbstractScalar, dict[str, int], dict[str, int]]:
+
+        coordinates_input = self._coordinates_input
+        coordinates_output = self._coordinates_output
 
         return na.regridding.weights(
             coordinates_input=coordinates_input.position,
@@ -383,24 +448,43 @@ class IdealInstrument(
 
     @functools.cached_property
     def weights_transpose(self):
-        return na.regridding.transpose_weights(self.weights)
+
+        coordinates_input = self._coordinates_input
+        coordinates_output = self._coordinates_output
+
+        return na.regridding.weights(
+            coordinates_input=coordinates_output.position,
+            coordinates_output=coordinates_input.position,
+            axis_input=self.axis_sensor_xy,
+            axis_output=self.axis_scene_xy,
+            method="conservative",
+        )
 
     def image(
         self,
         scene: na.AbstractScalar,
+        integrate: bool = True,
         noise: bool = True,
     ) -> na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar]:
 
         scene = scene * self.area_effective * self.timedelta_exposure
 
-        return super().image(scene)
+        return super().image(
+            scene=scene,
+            integrate=integrate,
+            noise=noise,
+        )
 
     def backproject(
         self,
         image: na.AbstractScalar,
+        integrate: bool = True,
     ) -> na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar]:
 
-        result = super().backproject(image)
+        result = super().backproject(
+            image=image,
+            integrate=integrate,
+        )
 
         result = result / (self.area_effective * self.timedelta_exposure)
 
