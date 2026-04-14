@@ -405,6 +405,7 @@ class IdealInstrument(
     def uncertainty(self) -> Callable[[na.ScalarArray], na.ScalarArray]:
         def _shot_noise(image: na.ScalarArray) -> na.ScalarArray:
             return np.sqrt(image.to_value(u.ph)) * u.ph
+
         return _shot_noise
 
     def distortion(self, coordinates: na.SpectralPositionalVectorArray):
