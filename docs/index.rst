@@ -26,6 +26,7 @@ Examples on how to use this package.
     :maxdepth: 1
 
     tutorials/ideal-instrument
+    tutorials/simple-mart
 
 API Reference
 =============
