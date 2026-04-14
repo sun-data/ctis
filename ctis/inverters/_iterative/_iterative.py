@@ -1,5 +1,7 @@
+from typing import ClassVar
 import abc
 import dataclasses
+import named_arrays as na
 from .. import AbstractInverter, InversionResult
 
 __all__ = [
@@ -20,6 +22,9 @@ class AbstractIterativeInverter(
     convergence criteria is met.
     """
 
+    axis_iteration: ClassVar[str] = "iteration"
+    """The logical axis associated with changing iteration index."""
+
     @property
     @abc.abstractmethod
     def num_iteration(self):
@@ -37,11 +42,23 @@ class IterativeInversionResult(
 ):
     """The results of an iterative inversion attempt."""
 
+    inverter: AbstractIterativeInverter
+
     num_iteration: int
     """The number of iterations performed by the inverter."""
 
-    axis_intermediate: None | str = None
-    """
-    The logical axis representing potential intermediate results.
-    If :obj:`None` (the default), there are no intermediate results.
-    """
+    merit: na.ScalarArray
+    """The value of the merit function for each iteration."""
+
+    merit_name: str
+    """Human-readable name of the merit function."""
+
+    @property
+    def iteration(self) -> na.ScalarArray:
+        """The iteration value for each iteration."""
+        return na.arange(
+            start=0,
+            stop=self.num_iteration,
+            axis=self.inverter.axis_iteration,
+        )
+

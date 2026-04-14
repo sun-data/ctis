@@ -45,8 +45,6 @@ class MartInverter(
     a warning is raised and an unsuccessful result is returned. 
     """
 
-    axis_intermediate: ClassVar[str] = "_intermediate"
-
     intermediate: bool = False
     """
     Whether to save intermediate solutions.
@@ -101,18 +99,15 @@ class MartInverter(
 
         chi_squared = self._mean_chi_squared(images, 0 * images.unit)
 
-        for i in range(self.num_iteration):
+        merit = []
 
-            print(f"{i=}")
+        for i in range(self.num_iteration):
 
             images_new = instrument.image(scene, noise=False).outputs
 
             chi_squared_new = self._mean_chi_squared(images, images_new)
 
-            print(f"{chi_squared_new=}")
-
             if (chi_squared - chi_squared_new) < 1e-2:
-
             # if self._converged(images, images_new):
                 message = "Achieved mean chi squared of less than 1."
                 success = True
@@ -142,9 +137,9 @@ class MartInverter(
             else:
                 scene *= correction
 
-            chi_squared = chi_squared_new
+            merit.append(chi_squared_new)
 
-            print(f"{scene.sum().ndarray=}")
+            chi_squared = chi_squared_new
 
         else:
             message = f"Max number of iterations ({self.num_iteration}) exceeded."
@@ -152,12 +147,10 @@ class MartInverter(
             success = False
 
         if self.intermediate:
-            intermediate = na.stack(intermediate, axis=self.axis_intermediate)
+            intermediate = na.stack(intermediate, axis=self.axis_iteration)
             solution = intermediate
-            axis_intermediate = self.axis_intermediate
         else:
             solution = scene
-            axis_intermediate = ()
 
         return IterativeInversionResult(
             solution=solution,
@@ -166,7 +159,8 @@ class MartInverter(
             inverter=self,
             message=message,
             num_iteration=i,
-            axis_intermediate=axis_intermediate,
+            merit=na.stack(merit, axis=self.axis_iteration),
+            merit_name=r"$\langle \chi^2 \rangle$",
         )
 
     def _converged(
