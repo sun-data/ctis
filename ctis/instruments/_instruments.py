@@ -108,6 +108,14 @@ class AbstractInstrument(
 
     @property
     @abc.abstractmethod
+    def uncertainty(self) -> Callable[[na.ScalarArray], na.ScalarArray]:
+        """
+        A function that returns the standard deviation of the uncertainty
+        for a given number of photons.
+        """
+
+    @property
+    @abc.abstractmethod
     def axis_channel(self) -> str | tuple[str, ...]:
         """
         The logical axis or axes of this instrument corresponding to
@@ -392,6 +400,13 @@ class IdealInstrument(
     The logical axes of :attr:`coordinates_sensor` corresponding to
     changing position coordinate.
     """
+
+    @property
+    def uncertainty(self) -> Callable[[na.ScalarArray], na.ScalarArray]:
+        def _shot_noise(image: na.ScalarArray) -> na.ScalarArray:
+            return np.sqrt(image.to_value(u.ph)) * u.ph
+
+        return _shot_noise
 
     def distortion(self, coordinates: na.SpectralPositionalVectorArray):
         """

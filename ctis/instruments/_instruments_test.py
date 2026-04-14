@@ -104,6 +104,21 @@ class AbstractTestAbstractInstrument(
 
         assert isinstance(result, int)
 
+    @pytest.mark.parametrize(
+        argnames="image",
+        argvalues=[
+            instrument_ideal.image(gaussians.outputs).outputs,
+        ],
+    )
+    def test_uncertainty(
+        self,
+        a: ctis.instruments.AbstractInstrument,
+        image: na.ScalarArray,
+    ):
+        result = a.uncertainty(image)
+
+        assert np.all(result >= 0 * u.photon)
+
 
 class AbstractTestAbstractLinearInstrument(
     AbstractTestAbstractInstrument,
