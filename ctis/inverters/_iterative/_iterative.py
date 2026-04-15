@@ -27,7 +27,7 @@ class AbstractIterativeInverter(
 
     @property
     @abc.abstractmethod
-    def num_iteration(self):
+    def num_iteration(self) -> int:
         """
         The maximum number of iterations to perform.
 
