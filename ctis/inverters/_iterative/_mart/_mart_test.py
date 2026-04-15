@@ -57,6 +57,7 @@ inverter = ctis.inverters.MartInverter(
     instrument=instrument,
 )
 
+
 @pytest.mark.parametrize("a", [inverter])
 class TestMartInverter(
     AbstractTestAbstractIterativeInverter,
