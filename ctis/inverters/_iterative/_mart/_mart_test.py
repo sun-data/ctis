@@ -53,7 +53,22 @@ instrument = ctis.instruments.IdealInstrument(
 
 images = instrument.image(scene.outputs)
 
+inverter = ctis.inverters.MartInverter(
+    instrument=instrument,
+)
 
-class TestMartInverter:
+@pytest.mark.parametrize("a", [inverter])
+class TestMartInverter(
+    AbstractTestAbstractIterativeInverter,
+):
 
-    pass
+    @pytest.mark.parametrize("images", [images])
+    def test__call__(
+        self,
+        a: ctis.inverters.AbstractInverter,
+        images: na.FunctionArray[na.SpectralPositionalVectorArray, na.ScalarArray],
+    ):
+        super().test__call__(
+            a=a,
+            images=images,
+        )

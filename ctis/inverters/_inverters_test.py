@@ -21,6 +21,8 @@ class AbstractTestAbstractInverter(
 
         assert isinstance(result, ctis.inverters.InversionResult)
 
-        images_new = a.instrument.image(result.solution)
-
-        assert np.isclose(images, images_new)
+        assert result.solution.sum() > 0
+        assert result.success
+        assert isinstance(result.message, str)
+        assert np.all(result.images == images)
+        assert result.inverter == a

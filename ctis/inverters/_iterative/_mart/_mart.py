@@ -63,7 +63,7 @@ class MartInverter(
 
     def __call__(
         self,
-        images: na.ScalarArray,
+        images: na.ScalarArray | na.FunctionArray,
         guess: None | na.ScalarArray = None,
     ) -> IterativeInversionResult:
         """
@@ -84,6 +84,16 @@ class MartInverter(
         """
 
         instrument = self.instrument
+
+        if isinstance(images, na.AbstractFunctionArray):
+            position_images = images.inputs.position
+            position_sensor = instrument.coordinates_sensor.position
+            if not np.all(position_images == position_sensor):
+                raise ValueError(
+                    "`images.inputs.position` and `self.coordinates_sensor.position` "
+                    "are not equal."
+                )
+            images = images.outputs
 
         if guess is None:
             scene = instrument.backproject(images).outputs
