@@ -11,6 +11,7 @@ __all__ = [
     "MartInverter",
 ]
 
+
 @dataclasses.dataclass
 class MartInverter(
     AbstractIterativeInverter,
@@ -108,7 +109,7 @@ class MartInverter(
             chi_squared_new = self._mean_chi_squared(images, images_new)
 
             if (chi_squared - chi_squared_new) < 1e-2:
-            # if self._converged(images, images_new):
+                # if self._converged(images, images_new):
                 message = "Achieved mean chi squared of less than 1."
                 success = True
                 break
@@ -124,7 +125,7 @@ class MartInverter(
                 neginf=1,
             )
 
-            correction = correction ** gamma
+            correction = correction**gamma
 
             correction = np.prod(correction, axis=instrument.axis_channel)
 
@@ -173,7 +174,7 @@ class MartInverter(
         """
         X2 = self._mean_chi_squared(images, images_new)
         print(f"{X2=}")
-        return X2 < 1/2
+        return X2 < 1 / 2
 
     def _mean_chi_squared(
         self,
@@ -186,6 +187,6 @@ class MartInverter(
 
         uncertainty = self.instrument.uncertainty(images_new)
 
-        uncertainty = np.maximum(uncertainty, 1  * u.photon)
+        uncertainty = np.maximum(uncertainty, 1 * u.photon)
 
         return np.mean(np.square((images_new - images) / uncertainty))
