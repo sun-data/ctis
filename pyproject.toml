@@ -47,3 +47,10 @@ Documentation = "https://ctis.readthedocs.io/en/latest"
 packages = ["ctis"]
 
 [tool.setuptools_scm]
+
+[tool.coverage.report]
+exclude_also = [
+    "return NotImplemented",
+    "raise ValueError",
+    "raise NotImplementedError",
+]
