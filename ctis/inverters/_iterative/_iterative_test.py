@@ -9,4 +9,4 @@ class AbstractTestAbstractIterativeInverter(
     def test_num_iteration(self, a: ctis.inverters.AbstractIterativeInverter):
         result = a.num_iteration
         assert isinstance(result, int)
-        assert  result > 0
+        assert result > 0

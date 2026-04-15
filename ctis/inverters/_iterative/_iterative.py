@@ -61,4 +61,3 @@ class IterativeInversionResult(
             stop=self.num_iteration,
             axis=self.inverter.axis_iteration,
         )
-

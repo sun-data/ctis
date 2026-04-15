@@ -31,7 +31,7 @@ class AbstractInverter(
         self,
         images: na.FunctionArray[na.SpectralPositionalVectorArray, na.ScalarArray],
         **kwargs,
-    )-> InversionResult:
+    ) -> InversionResult:
         """
         Reconstruct a scene using the observed images.
 

@@ -2,7 +2,7 @@
 
 from ._results import InversionResult
 from ._inverters import AbstractInverter
-from ._iterative import(
+from ._iterative import (
     AbstractIterativeInverter,
     MartInverter,
     IterativeInversionResult,

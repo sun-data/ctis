@@ -36,9 +36,9 @@ coordinates_scene.wavelength = wavelength
 coordinates_sensor.wavelength = wavelength
 
 instrument = ctis.instruments.IdealInstrument(
-    area_effective=1 * u.cm ** 2,
+    area_effective=1 * u.cm**2,
     timedelta_exposure=20 * u.s,
-    plate_scale=.4 * u.arcsec / u.pix,
+    plate_scale=0.4 * u.arcsec / u.pix,
     dispersion=((10 * u.km / u.s).to(**AA) - wavelength_rest) / u.pix,
     angle=na.linspace(0, 360, num=4, axis="channel", endpoint=False) * u.deg,
     wavelength_ref=wavelength_rest,
