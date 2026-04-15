@@ -70,7 +70,7 @@ class AbstractTestAbstractInstrument(
     def test_image(
         self,
         a: ctis.instruments.AbstractInstrument,
-        scene: na.AbstractScalar,
+        scene: na.AbstractScalar | na.AbstractFunctionArray,
     ):
         result = a.image(scene)
         assert np.all(result.inputs.position == coordinates_sensor.position)
@@ -79,20 +79,23 @@ class AbstractTestAbstractInstrument(
     @pytest.mark.parametrize(
         argnames="image",
         argvalues=[
-            instrument_ideal.image(gaussians.outputs, noise=False).outputs,
+            instrument_ideal.image(gaussians, noise=False),
         ],
     )
     def test_backproject(
         self,
         a: ctis.instruments.AbstractInstrument,
-        image: na.AbstractScalar,
+        image: na.AbstractScalar | na.AbstractFunctionArray,
     ):
         result = a.backproject(image)
 
         assert np.all(result.inputs == coordinates_scene)
         assert result.outputs.sum() > 0
 
-        image_check = a.image(result.outputs, noise=False).outputs
+        if isinstance(image, na.AbstractFunctionArray):
+            image = image.outputs
+
+        image_check = a.image(result, noise=False).outputs
 
         assert np.allclose(image.sum(), image_check.sum())
 
