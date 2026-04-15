@@ -39,7 +39,7 @@ class AbstractInstrument(
     @abc.abstractmethod
     def image(
         self,
-        scene: na.AbstractScalar,
+        scene: na.AbstractScalar | na.AbstractFunctionArray,
         integrate: bool = True,
         noise: bool = True,
     ) -> na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar]:
@@ -66,7 +66,7 @@ class AbstractInstrument(
     @abc.abstractmethod
     def backproject(
         self,
-        image: na.AbstractScalar,
+        image: na.AbstractScalar | na.AbstractFunctionArray,
         integrate: bool = True,
     ) -> na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar]:
         """
@@ -233,10 +233,17 @@ class AbstractLinearInstrument(
 
     def image(
         self,
-        scene: na.AbstractScalar,
+        scene: na.AbstractScalar | na.AbstractFunctionArray,
         integrate: bool = True,
         noise: bool = True,
     ) -> na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar]:
+
+        if isinstance(scene, na.AbstractFunctionArray):
+            if not np.all(scene.inputs == self.coordinates_scene):
+                raise ValueError(
+                    "`scene.inputs` and `self.coordinates_scene` are not equal."
+                )
+            scene = scene.outputs
 
         values_input = scene * self._volume_scene
 
@@ -279,9 +286,16 @@ class AbstractLinearInstrument(
 
     def backproject(
         self,
-        image: na.AbstractScalar,
+        image: na.AbstractScalar | na.AbstractFunctionArray,
         integrate: bool = True,
     ) -> na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar]:
+
+        if isinstance(image, na.AbstractFunctionArray):
+            if not np.all(image.inputs.position == self.coordinates_sensor.position):
+                raise ValueError(
+                    "`image.inputs` and `self.coordinates_sensor` are not equal."
+                )
+            image = image.outputs
 
         coordinates = self.coordinates_scene
 
@@ -514,7 +528,7 @@ class IdealInstrument(
 
     def image(
         self,
-        scene: na.AbstractScalar,
+        scene: na.AbstractScalar | na.AbstractFunctionArray,
         integrate: bool = True,
         noise: bool = True,
     ) -> na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar]:
@@ -529,7 +543,7 @@ class IdealInstrument(
 
     def backproject(
         self,
-        image: na.AbstractScalar,
+        image: na.AbstractScalar | na.AbstractFunctionArray,
         integrate: bool = True,
     ) -> na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar]:
 
