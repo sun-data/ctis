@@ -1,4 +1,3 @@
-from typing import ClassVar
 import warnings
 import dataclasses
 import numpy as np
@@ -173,7 +172,6 @@ class MartInverter(
         Return true if :math:`\langle \chi^2 \rangle < 1`
         """
         X2 = self._mean_chi_squared(images, images_new)
-        print(f"{X2=}")
         return X2 < 1 / 2
 
     def _mean_chi_squared(
