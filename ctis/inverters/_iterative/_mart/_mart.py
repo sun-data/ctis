@@ -83,9 +83,14 @@ class MartInverter(
             attribute of :attr:`instrument`.
         """
 
-        scene = guess.copy()
-
         instrument = self.instrument
+
+        if guess is None:
+            scene = instrument.backproject(images).outputs
+            scene = scene.mean(axis=instrument.axis_channel)
+            scene.ndarray[:] = scene.ndarray.mean()
+        else:
+            scene = guess.copy()
 
         num_channel = instrument.num_channel
 
