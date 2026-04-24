@@ -23,11 +23,33 @@ Vanilla MART
 The basic version of MART starts with an initial guess at the solution, :math:`\hat{u}_0`,
 which can be all ones, or some other informed choice.
 Given this boundary condition, we then loop through the following steps until
-a convergence criterion is reached:
+the convergence criterion is reached:
 
 - Compute the images corresponding to the current guess, :math:`d_i = P \hat{u}_i`,
-  where :math:`P` is a projection operator corresponding to a forward model of
-  a CTIS instrument.
-- Compute the mean chi squared, :math:`\langle \chi^2 \rangle = \biggl\langle \left( \frac{d_i - d}{\sigma} \right)^2 \biggr \rangle`
+  where :math:`P` is a projection operator representing the forward model of
+  a CTIS instrument, and :math:`i` is the current iteration index.
+- Compute the mean chi squared,
+  :math:`\langle \chi_i^2 \rangle = \biggl\langle \left( \frac{d_i - d}{\sigma} \right)^2 \biggr \rangle`,
+  where :math:`d` are the actual images measured by the CTIS, and :math:`\sigma`
+  is the uncertainty of the predicted images, :math:`d_i`.
+- Check if the algorithm has converged by making sure
+  :math:`\langle \chi^2 \rangle` is still decreasing,
+  :math:`\langle \chi_{i}^2 \rangle - \langle \chi_{i-1}^2 \rangle < T`,
+  where :math:`T` is some threshold close to zero.
+- If convergence has not been reached, compute the correction factor for each channel,
+  :math:`C_i = \frac{P^* d}{P^* d_i}`,
+  where :math:`P^*` is a deprojection operator, similar to :math:`P^T`,
+  which spreads the intensity gathered by each CTIS channel evenly along
+  the projection direction.
+- Generate the actual correction factor for each channel,
+  :math:`C_i' = C_i^\gamma`, where :math:`\gamma` is the learning rate.
+- Find the total correction factor,
+  :math:`\overline{C}_i` by taking the geometric average of each channel's
+  correction factor.
+- Finally, generate a new guess by applying the correction factor to the current
+  guess, :math:`\hat{u}_{i+1} = \overline{C}_i \hat{u}_i`
 
-Here, will describe how MART is implemented in this package
+The main difference of this implementation from the one described in :cite:t:`Parker2022`
+is that the correction factor is calculated in the coordinate system of the scene
+instead of the sensors.
+This is to allow us to conserve flux on both the forward and backward passes.
