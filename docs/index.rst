@@ -15,6 +15,7 @@ Some explanations of the theory behind inversion
 .. toctree::
     :maxdepth: 1
 
+    discussions/mart-discussion
     discussions/richardson-lucy-analogy/richardson-lucy-analogy
 
 Tutorials
