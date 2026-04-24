@@ -50,6 +50,8 @@ the convergence criterion is reached:
   guess, :math:`\hat{u}_{i+1} = \overline{C}_i \hat{u}_i`
 
 The main difference of this implementation from the one described in :cite:t:`Parker2022`
-is that the correction factor is calculated in the coordinate system of the scene
+is that there is no contrast-enhancement filtering yet.
+Another difference is that the correction factor is calculated in the coordinate system of the scene
 instead of the sensors.
-This is to allow us to conserve flux on both the forward and backward passes.
+This is to allow us to conserve flux on both the forward and backward passes,
+potentially increasing the stability of the algorithm.
