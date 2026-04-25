@@ -1,7 +1,6 @@
 import warnings
 import dataclasses
 import numpy as np
-import astropy.units as u
 import named_arrays as na
 import ctis
 from .. import AbstractIterativeInverter, IterativeInversionResult
