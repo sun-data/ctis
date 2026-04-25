@@ -35,16 +35,19 @@ scene = ctis.scenes.gaussians(
 coordinates_scene.wavelength = wavelength
 coordinates_sensor.wavelength = wavelength
 
+angle = na.linspace(0, 360, num=4, axis="channel", endpoint=False) * u.deg
+
 instrument = ctis.instruments.IdealInstrument(
     area_effective=1 * u.cm**2,
     timedelta_exposure=20 * u.s,
     plate_scale=0.4 * u.arcsec / u.pix,
     dispersion=((10 * u.km / u.s).to(**AA) - wavelength_rest) / u.pix,
-    angle=na.linspace(0, 360, num=4, axis="channel", endpoint=False) * u.deg,
+    angle=angle,
     wavelength_ref=wavelength_rest,
     position_ref=na.Cartesian2dVectorArray(64, 32) * u.pix,
     coordinates_scene=coordinates_scene,
     coordinates_sensor=coordinates_sensor,
+    channel=angle,
     axis_channel="channel",
     axis_wavelength="wavelength",
     axis_scene_xy=("scene_x", "scene_y"),
