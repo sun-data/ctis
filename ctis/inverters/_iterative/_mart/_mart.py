@@ -18,7 +18,7 @@ class MartInverter(
     An inversion routine based on the Richardson-Lucy algorithm
     :cite:t:`Richardson1972,Lucy1974`.
 
-    For further information, see the discussion :doc:`discussions/mart-discussion`.
+    For further information, see the discussion :doc:`../discussions/mart-discussion`.
     """
 
     instrument: ctis.instruments.AbstractInstrument = dataclasses.MISSING
