@@ -28,6 +28,7 @@ test = [
 doc = [
     "pytest",
     "matplotlib",
+    "interface-region-imaging-spectrograph",
     "graphviz",
     "sphinx-autodoc-typehints",
     "sphinxcontrib-bibtex",
