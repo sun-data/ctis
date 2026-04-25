@@ -29,10 +29,10 @@ class MartInverter(
 
     gamma: None | float = None
     r"""
-    Contrast-enhancement factor, :math:`\gamma`.
+    Learning rate, :math:`\gamma`.
     
-    At every iteration, the current guess, :math:`G`, is replaced by 
-    :math:`G^\gamma`.
+    At every iteration, the current correction, :math:`C`, is replaced by 
+    :math:`C^\gamma`.
     
     If :obj:`None`, :math:`\gamma = 2 / N`, where :math:`N` is the number of
     channels.
