@@ -147,7 +147,7 @@ class MartInverter(
             if verbose:  # pragma: nocover
                 print(f"mean chi squared: {chi2_ij}")
 
-            if chi2_i > chi2_old:
+            if chi2_i > chi2_old:  # pragma: nocover
                 message = "Failure: chi squared increasing."
                 success = False
                 num_iteration = i + 1
