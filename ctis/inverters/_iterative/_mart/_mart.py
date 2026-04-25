@@ -15,8 +15,8 @@ class MartInverter(
     AbstractIterativeInverter,
 ):
     """
-    An inversion routine based on the Richardson-Lucy algorithm
-    :cite:t:`Richardson1972,Lucy1974`.
+    An inversion routine based on the multiplicative algebraic reconstruction
+    technique (MART) :cite:t:`Gordon1970`.
 
     For further information, see the discussion :doc:`../discussions/mart-discussion`.
     """
