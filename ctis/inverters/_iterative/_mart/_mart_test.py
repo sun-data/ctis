@@ -77,7 +77,7 @@ inverter = ctis.inverters.MartInverter(
             instrument=instrument,
             intermediate=True,
             threshold_convergence=1e-2,
-        )
+        ),
     ],
 )
 class TestMartInverter(
@@ -90,7 +90,7 @@ class TestMartInverter(
         argvalues=[
             None,
             na.ScalarArray.ones(scene.outputs.shape) * scene.outputs.unit,
-        ]
+        ],
     )
     def test__call__(
         self,

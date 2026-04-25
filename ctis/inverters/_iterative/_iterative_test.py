@@ -11,13 +11,13 @@ class AbstractTestAbstractIterativeInverter(
         self,
         a: ctis.inverters.AbstractIterativeInverter,
         images: na.FunctionArray[na.SpectralPositionalVectorArray, na.ScalarArray],
-        **kwargs
+        **kwargs,
     ) -> ctis.inverters.IterativeInversionResult:
 
         result = super().test__call__(
             a=a,
             images=images,
-            **kwargs
+            **kwargs,
         )
 
         axis_iteration = result.inverter.axis_iteration
