@@ -42,7 +42,7 @@ def correlation_residual(
     axis: None | str | Sequence[str] = None,
 ) -> na.ScalarArray:
     """
-    Compute the Spearman correlation coefficient between the expected values
+    Compute Pearson's correlation coefficient between the expected values
     and the residual.
 
     Parameters
@@ -57,6 +57,6 @@ def correlation_residual(
 
     residual = observed - expected
 
-    r = na.stats.spearmanr(expected, residual, axis=axis)
+    r = na.stats.pearsonr(expected, residual, axis=axis)
 
     return r
