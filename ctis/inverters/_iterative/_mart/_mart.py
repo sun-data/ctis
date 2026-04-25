@@ -42,7 +42,7 @@ class MartInverter(
     r"""
     The convergence threshold, :math:`T`, which halts the iteration.
     
-    If :math:`\langle \chi_{i}^2 \rangle - \langle \chi_{i-1}^2 \rangle < T`,
+    If :math:`\langle \chi_{i-1}^2 \rangle - \langle \chi_{i}^2 \rangle < T`,
     then the algorithm is considered to be converged.
     """
 
