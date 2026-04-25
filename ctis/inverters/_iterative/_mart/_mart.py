@@ -136,7 +136,6 @@ class MartInverter(
 
             images_new = instrument.image(scene, noise=False).outputs
 
-
             chi2_ij = self.mean_chi_squared(images, images_new)
             r_ij = self.correlation_residual(images, images_new)
 
@@ -224,4 +223,3 @@ class MartInverter(
             mean_chi_squared=mean_chi_squared,
             correlation_residual=correlation_residual,
         )
-

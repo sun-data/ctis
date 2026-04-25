@@ -7,6 +7,7 @@ __all__ = [
     "correlation_residual",
 ]
 
+
 def mean_chi_squared(
     observed: na.ScalarArray,
     expected: na.ScalarArray,
