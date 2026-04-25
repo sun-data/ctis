@@ -120,15 +120,16 @@ class MartInverter(
         backprojected = np.maximum(backprojected, 0)
 
         intermediate = []
-        if self.intermediate:
-            intermediate.append(scene)
 
         chi2_old = np.inf
 
         chi2 = []
         correlation_residual = []
 
-        for i in range(1, self.num_iteration):
+        for i in range(self.num_iteration):
+
+            if self.intermediate:
+                intermediate.append(scene)
 
             if verbose:  # pragma: nocover
                 print(f"{i=}")
@@ -149,14 +150,14 @@ class MartInverter(
             if chi2_i > chi2_old:
                 message = "Failure: chi squared increasing."
                 success = False
-                num_iteration = i
+                num_iteration = i + 1
                 warnings.warn(message)
                 break
 
             elif (chi2_old - chi2_i) < self.threshold_convergence:
                 message = "Achieved mean chi squared of less than 1."
                 success = True
-                num_iteration = i
+                num_iteration = i + 1
                 break
 
             backprojected_new = instrument.backproject(images_new).outputs
@@ -181,9 +182,6 @@ class MartInverter(
                 scene = scene * correction
             else:
                 scene *= correction
-
-            if self.intermediate:
-                intermediate.append(scene)
 
             chi2_old = chi2_i
 

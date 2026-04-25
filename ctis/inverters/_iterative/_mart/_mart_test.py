@@ -61,18 +61,45 @@ inverter = ctis.inverters.MartInverter(
 )
 
 
-@pytest.mark.parametrize("a", [inverter])
+@pytest.mark.parametrize(
+    argnames="a",
+    argvalues=[
+        ctis.inverters.MartInverter(
+            instrument=instrument,
+            threshold_convergence=1e-2,
+        ),
+        ctis.inverters.MartInverter(
+            instrument=instrument,
+            num_iteration=2,
+            threshold_convergence=1e-2,
+        ),
+        ctis.inverters.MartInverter(
+            instrument=instrument,
+            intermediate=True,
+            threshold_convergence=1e-2,
+        )
+    ],
+)
 class TestMartInverter(
     AbstractTestAbstractIterativeInverter,
 ):
 
     @pytest.mark.parametrize("images", [images])
+    @pytest.mark.parametrize(
+        argnames="guess",
+        argvalues=[
+            None,
+            na.ScalarArray.ones(scene.outputs.shape) * scene.outputs.unit,
+        ]
+    )
     def test__call__(
         self,
         a: ctis.inverters.AbstractInverter,
         images: na.FunctionArray[na.SpectralPositionalVectorArray, na.ScalarArray],
+        guess: na.ScalarArray,
     ):
         super().test__call__(
             a=a,
             images=images,
+            guess=guess,
         )

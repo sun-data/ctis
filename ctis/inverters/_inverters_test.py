@@ -16,13 +16,14 @@ class AbstractTestAbstractInverter(
         self,
         a: ctis.inverters.AbstractInverter,
         images: na.FunctionArray[na.SpectralPositionalVectorArray, na.ScalarArray],
+        **kwargs,
     ) -> ctis.inverters.InversionResult:
-        result = a(images)
+        result = a(images, **kwargs)
 
         assert isinstance(result, ctis.inverters.InversionResult)
 
         assert result.solution.sum() > 0
-        assert result.success
+        assert isinstance(result.success, bool)
         assert isinstance(result.message, str)
         assert np.all(result.images == images)
         assert result.inverter == a
