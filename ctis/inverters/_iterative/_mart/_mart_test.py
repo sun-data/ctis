@@ -51,7 +51,7 @@ instrument = ctis.instruments.IdealInstrument(
     axis_sensor_xy=("sensor_x", "sensor_y"),
 )
 
-images = instrument.image(scene.outputs)
+images = instrument.image(scene)
 
 inverter = ctis.inverters.MartInverter(
     instrument=instrument,

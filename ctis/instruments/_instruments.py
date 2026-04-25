@@ -116,10 +116,17 @@ class AbstractInstrument(
 
     @property
     @abc.abstractmethod
+    def channel(self):
+        """
+        Human-readable name of each independent CTIS channel.
+        """
+
+    @property
+    @abc.abstractmethod
     def axis_channel(self) -> str | tuple[str, ...]:
         """
         The logical axis or axes of this instrument corresponding to
-        the different dispersion magnitudes and angles.
+        the different CTIS channels.
         """
 
     @property
@@ -389,6 +396,11 @@ class IdealInstrument(
     coordinates_sensor: na.AbstractSpectralPositionalVectorArray = dataclasses.MISSING
     """
     A grid of wavelength and position coordinates on the sensor plane.
+    """
+
+    channel: str | na.AbstractScalar = dataclasses.MISSING
+    """
+    Human-readable name of each independent CTIS channel.
     """
 
     axis_channel: str | tuple[str, ...] = dataclasses.MISSING

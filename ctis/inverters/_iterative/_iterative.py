@@ -1,7 +1,10 @@
 from typing import ClassVar
 import abc
 import dataclasses
+import numpy as np
+import astropy.units as u
 import named_arrays as na
+import ctis
 from .. import AbstractInverter, InversionResult
 
 __all__ = [
@@ -35,6 +38,55 @@ class AbstractIterativeInverter(
         a warning is raised and an unsuccessful result is returned.
         """
 
+    def mean_chi_squared(
+        self,
+        images_observed: na.ScalarArray,
+        images_predicted: na.ScalarArray,
+    ) -> na.ScalarArray:
+        r"""
+        Evaluate :math:`\langle \chi^2 \rangle` for each observed/predicted
+        image pair.
+
+        Parameters
+        ----------
+        images_observed
+            The actual measured images.
+        images_predicted
+            The images predicted by the inversion.
+        """
+
+        uncertainty = self.instrument.uncertainty(images_predicted)
+
+        uncertainty = np.maximum(uncertainty, 1 * u.photon)
+
+        return ctis.inverters.merit.mean_chi_squared(
+            observed=images_observed,
+            expected=images_predicted,
+            uncertainty=uncertainty,
+            axis=self.instrument.axis_sensor_xy,
+        )
+
+    def correlation_residual(
+        self,
+        images_observed: na.ScalarArray,
+        images_predicted: na.ScalarArray,
+    ) -> na.ScalarArray:
+        """
+        Evaluate the correlation between the predicted images and the residual.
+
+        Parameters
+        ----------
+        images_observed
+            The actual measured images.
+        images_predicted
+            The images predicted by the inversion.
+        """
+        return ctis.inverters.merit.correlation_residual(
+            observed=images_observed,
+            expected=images_predicted,
+            axis=self.instrument.axis_sensor_xy,
+        )
+
 
 @dataclasses.dataclass
 class IterativeInversionResult(
@@ -47,11 +99,14 @@ class IterativeInversionResult(
     num_iteration: int
     """The number of iterations performed by the inverter."""
 
-    merit: na.ScalarArray
-    """The value of the merit function for each iteration."""
+    mean_chi_squared: na.ScalarArray
+    """The mean chi squared statistic for each iteration."""
 
-    merit_name: str
-    """Human-readable name of the merit function."""
+    correlation_residual: na.ScalarArray
+    """
+    The correlation between the predicted images and the residuals 
+    for each iteration.
+    """
 
     @property
     def iteration(self) -> na.ScalarArray:

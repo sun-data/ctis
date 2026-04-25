@@ -40,16 +40,19 @@ coordinates_sensor.wavelength = coordinates_sensor.wavelength.to(**AA)
 dispersion = 200 * u.km / u.s
 dispersion = (dispersion.to(**AA) - wavelength_rest) / u.pix
 
+angle = na.linspace(0, 360, axis="channel", num=3, endpoint=False)
+
 instrument_ideal = ctis.instruments.IdealInstrument(
     area_effective=1 * u.cm**2,
     timedelta_exposure=10 * u.s,
     plate_scale=2 * u.arcsec / u.pix,
     dispersion=dispersion,
-    angle=na.linspace(0, 360, axis="channel", num=3, endpoint=False),
+    angle=angle,
     wavelength_ref=wavelength_rest,
     position_ref=32 * u.pix,
     coordinates_scene=coordinates_scene,
     coordinates_sensor=coordinates_sensor,
+    channel=angle,
     axis_channel="channel",
     axis_wavelength="wavelength",
     axis_scene_xy=("scene_x", "scene_y"),
