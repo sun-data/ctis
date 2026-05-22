@@ -46,22 +46,6 @@ class MartInverter(
     then the algorithm is considered to be converged.
     """
 
-    num_iteration: int = 100
-    """
-    The maximum number of iterations to perform.
-    
-    If convergence is not reached before this number is exceeded,
-    a warning is raised and an unsuccessful result is returned. 
-    """
-
-    intermediate: bool = False
-    """
-    Whether to save intermediate solutions.
-    
-    This is set to :obj:`False` during normal operation, but can be useful for
-    debugging or demonstration purposes.
-    """
-
     def __post_init__(self):
 
         if self.gamma is None:
@@ -121,7 +105,7 @@ class MartInverter(
 
         intermediate = []
 
-        chi2_old = np.inf
+        merit_old = np.inf
 
         chi2 = []
         correlation_residual = []
@@ -142,20 +126,20 @@ class MartInverter(
             chi2.append(chi2_ij)
             correlation_residual.append(r_ij)
 
-            chi2_i = chi2_ij.mean(axis_channel)
+            merit = chi2_ij.mean(axis_channel)
 
             if verbose:  # pragma: nocover
-                print(f"mean chi squared: {chi2_ij}")
+                print(f"merit: {merit}")
 
-            if chi2_i > chi2_old:  # pragma: nocover
-                message = "Failure: chi squared increasing."
+            if merit > merit_old:  # pragma: nocover
+                message = "Failure: merit increasing."
                 success = False
                 num_iteration = i + 1
                 warnings.warn(message)
                 break
 
-            elif (chi2_old - chi2_i) < self.threshold_convergence:
-                message = "Achieved mean chi squared of less than 1."
+            elif (merit_old - merit) < self.threshold_convergence:
+                message = f"Achieved merit less than {self.threshold_convergence}."
                 success = True
                 num_iteration = i + 1
                 break
@@ -183,7 +167,7 @@ class MartInverter(
             else:
                 scene *= correction
 
-            chi2_old = chi2_i
+            merit_old = merit
 
         else:
             message = f"Max number of iterations ({self.num_iteration}) exceeded."
@@ -193,13 +177,13 @@ class MartInverter(
 
         if self.intermediate:
             intermediate = na.stack(intermediate, axis=self.axis_iteration)
-            solution = intermediate
+            solutions = intermediate
         else:
-            solution = scene
+            solutions = scene.add_axes(self.axis_iteration)
 
-        solution = na.FunctionArray(
+        solutions = na.FunctionArray(
             inputs=self.instrument.coordinates_scene,
-            outputs=solution,
+            outputs=solutions,
         )
 
         images = na.FunctionArray(
@@ -211,7 +195,7 @@ class MartInverter(
         correlation_residual = na.stack(correlation_residual, axis=self.axis_iteration)
 
         return IterativeInversionResult(
-            solution=solution,
+            solutions=solutions,
             success=success,
             images=images,
             inverter=self,

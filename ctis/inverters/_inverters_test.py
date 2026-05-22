@@ -17,10 +17,10 @@ class AbstractTestAbstractInverter(
         a: ctis.inverters.AbstractInverter,
         images: na.FunctionArray[na.SpectralPositionalVectorArray, na.ScalarArray],
         **kwargs,
-    ) -> ctis.inverters.InversionResult:
+    ) -> ctis.inverters.AbstractInversionResult:
         result = a(images, **kwargs)
 
-        assert isinstance(result, ctis.inverters.InversionResult)
+        assert isinstance(result, ctis.inverters.AbstractInversionResult)
 
         assert result.solution.sum() > 0
         assert isinstance(result.success, bool)

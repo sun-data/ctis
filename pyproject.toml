@@ -17,7 +17,7 @@ classifiers = [
 ]
 dependencies = [
     "astropy",
-    "named-arrays~=1.2",
+    "named-arrays~=1.4",
 ]
 dynamic = ["version"]
 

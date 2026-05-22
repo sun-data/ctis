@@ -1,7 +1,7 @@
 """Inversion algorithms which can reconstruct scenes from observed images."""
 
 from . import merit
-from ._results import InversionResult
+from ._results import AbstractInversionResult, InversionResult
 from ._inverters import AbstractInverter
 from ._iterative import (
     AbstractIterativeInverter,
@@ -14,6 +14,7 @@ __all__ = [
     "AbstractInverter",
     "AbstractIterativeInverter",
     "MartInverter",
+    "AbstractInversionResult",
     "InversionResult",
     "IterativeInversionResult",
 ]

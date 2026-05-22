@@ -1,3 +1,4 @@
+import matplotlib.pyplot as plt
 import pytest
 import astropy.units as u
 import named_arrays as na
@@ -24,13 +25,18 @@ position_sensor = na.Cartesian2dVectorArray(
     y=na.arange(0, 64 + 1, axis="sensor_y") * u.pix,
 )
 
-coordinates_scene = na.SpectralPositionalVectorArray(velocity, position_scene)
-coordinates_sensor = na.SpectralPositionalVectorArray(velocity, position_sensor)
-
-scene = ctis.scenes.gaussians(
-    inputs=coordinates_scene,
-    width=na.SpectralPositionalVectorArray(30 * u.km / u.s, 1 * u.arcsec),
+coordinates_scene = na.DopplerPositionalVectorArray.from_velocity(
+    velocity=velocity,
+    wavelength_rest=wavelength_rest,
+    position=position_scene,
 )
+coordinates_sensor = na.DopplerPositionalVectorArray.from_velocity(
+    velocity=velocity,
+    wavelength_rest=wavelength_rest,
+    position=position_sensor,
+)
+
+scene = ctis.scenes.gaussians(coordinates_scene)
 
 coordinates_scene.wavelength = wavelength
 coordinates_sensor.wavelength = wavelength
@@ -98,8 +104,14 @@ class TestMartInverter(
         images: na.FunctionArray[na.SpectralPositionalVectorArray, na.ScalarArray],
         guess: na.ScalarArray,
     ):
-        super().test__call__(
+        result = super().test__call__(
             a=a,
             images=images,
             guess=guess,
         )
+
+        fig, axs = result.plot_moments(scene)
+
+        assert isinstance(fig, plt.Figure)
+        for ax in axs:
+            assert isinstance(ax, plt.Axes)
