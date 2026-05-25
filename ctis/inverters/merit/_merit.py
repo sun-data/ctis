@@ -18,7 +18,7 @@ def mean_chi_squared(
     Compute :math:`\langle \chi^2 \rangle = \biggl\langle \left( \frac{O - E}{\sigma} \right)^2 \biggr \rangle` ,
     where :math:`O` is the observed value,
     :math:`E` is the expected value,
-     and :math:`\sigma` denotes the standard deviation of the uncertainty.
+    and :math:`\sigma` denotes the standard deviation of the uncertainty.
 
     Parameters
     ----------
