@@ -101,22 +101,32 @@ class AbstractInversionResult(
 
         bins = dict(true=num_bins, reconstructed=num_bins)
 
-        if range_radiance is not None:
-            min_radiance, max_radiance = range_radiance
-        else:
+        if range_radiance is None:
+            range_radiance = (None, None)
+            
+        if range_median is None:
+            range_median = (None, None)
+            
+        if range_iqr is None:
+            range_iqr = (None, None)
+
+        min_radiance, max_radiance = range_radiance
+        min_median, max_median = range_median
+        min_iqr, max_iqr = range_iqr
+        
+        if min_radiance is None:
             min_radiance = 0 * radiance_truth.unit
+        if max_radiance is None:
             max_radiance = radiance_truth.max()
 
-        if range_median is not None:
-            min_median, max_median = range_median
-        else:
+        if min_median is None:
             min_median = np.nanmin(median_truth)
+        if max_median is None:
             max_median = np.nanmax(median_truth)
 
-        if range_iqr is not None:
-            min_iqr, max_iqr = range_iqr
-        else:
+        if min_iqr is None:
             min_iqr = 0 * iqr_truth.unit
+        if max_iqr is None:
             max_iqr = iqr_truth.max()
 
         hist_radiance = na.histogram2d(
