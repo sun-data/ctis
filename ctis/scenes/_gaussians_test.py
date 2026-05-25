@@ -8,24 +8,27 @@ import ctis
 @pytest.mark.parametrize(
     argnames="inputs",
     argvalues=[
-        na.SpectralPositionalVectorArray(
-            wavelength=na.linspace(-500, 500, axis="wavelength", num=101) * u.km / u.s,
+        na.DopplerPositionalVectorArray.from_velocity(
+            velocity=na.linspace(-500, 500, axis="wavelength", num=101) * u.km / u.s,
+            wavelength_rest=171 * u.AA,
             position=na.Cartesian2dVectorLinearSpace(
                 start=-10 * u.arcsec,
                 stop=10 * u.arcsec,
                 axis=na.Cartesian2dVectorArray("x", "y"),
                 num=41,
             ),
-        )
+        ),
     ],
 )
 @pytest.mark.parametrize(
     argnames="width",
     argvalues=[
-        na.SpectralPositionalVectorArray(
-            wavelength=30 * u.km / u.s,
-            position=1 * u.arcsec,
-        )
+        None,
+        na.DopplerPositionalVectorArray.from_velocity(
+            velocity=30 * u.km / u.s,
+            wavelength_rest=304 * u.AA,
+            position=2 * u.arcsec,
+        ),
     ],
 )
 def test_gaussians(
