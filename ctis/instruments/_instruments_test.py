@@ -7,6 +7,8 @@ import ctis
 
 velocity = na.linspace(-500, 500, axis="wavelength", num=21) * u.km / u.s
 
+wavelength_rest = 171 * u.AA
+
 position_scene = na.Cartesian2dVectorLinearSpace(
     start=-20 * u.arcsec,
     stop=20 * u.arcsec,
@@ -19,15 +21,18 @@ position_sensor = na.Cartesian2dVectorArray(
     y=na.arange(0, 64, axis="sensor_y") * u.pix,
 )
 
-coordinates_scene = na.SpectralPositionalVectorArray(velocity, position_scene)
-coordinates_sensor = na.SpectralPositionalVectorArray(velocity, position_sensor)
-
-gaussians = ctis.scenes.gaussians(
-    inputs=coordinates_scene,
-    width=na.SpectralPositionalVectorArray(30 * u.km / u.s, 1 * u.arcsec),
+coordinates_scene = na.DopplerPositionalVectorArray.from_velocity(
+    velocity=velocity,
+    wavelength_rest=wavelength_rest,
+    position=position_scene,
+)
+coordinates_sensor = na.DopplerPositionalVectorArray.from_velocity(
+    velocity=velocity,
+    wavelength_rest=wavelength_rest,
+    position=position_sensor,
 )
 
-wavelength_rest = 171 * u.AA
+gaussians = ctis.scenes.gaussians(coordinates_scene)
 
 AA = dict(
     unit=u.AA,
