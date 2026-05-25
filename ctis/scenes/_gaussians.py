@@ -98,8 +98,9 @@ def gaussians(
 
         # Define the grid of positions and velocities on which to evaluate the
         # test pattern
-        inputs = na.SpectralPositionalVectorArray(
-            wavelength=na.linspace(-500, 500, axis="wavelength", num=21) * u.km / u.s,
+        inputs = na.DopplerPositionalVectorArray.from_velocity(
+            velocityu=na.linspace(-500, 500, axis="wavelength", num=21) * u.km / u.s,
+            wavelength_rest=171 * u.AA,
             position=na.Cartesian2dVectorLinearSpace(
                 start=-20 * platescale * u.pix,
                 stop=20 * platescale * u.pix,
@@ -108,18 +109,9 @@ def gaussians(
             ),
         )
 
-        # Define the standard deviations of the Gaussians in space and velocity
-        width = na.SpectralPositionalVectorArray(
-            wavelength=27 * u.km / u.s,
-            position=2.4 / 2.35 * u.arcsec,
-        )
-
         # Compute the scene of random Gaussians for the
         # given input grid and standard deviations
-        scene = ctis.scenes.gaussians(
-            inputs=inputs,
-            width=width,
-        )
+        scene = ctis.scenes.gaussians(inputs)
 
         # Plot the result
         with astropy.visualization.quantity_support():
