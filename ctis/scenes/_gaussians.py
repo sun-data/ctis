@@ -48,12 +48,12 @@ def _gaussian(
 
     center = na.SpectralPositionalVectorArray(
         wavelength=center.velocity,
-        position=center.position
+        position=center.position,
     )
 
     width = na.SpectralPositionalVectorArray(
         wavelength=width.velocity,
-        position=width.position
+        position=width.position,
     )
 
     arg = -np.square(((inputs - center) / width).length) / 2

@@ -89,7 +89,6 @@ inverter = ctis.inverters.MartInverter(
 class TestMartInverter(
     AbstractTestAbstractIterativeInverter,
 ):
-
     @pytest.mark.parametrize("images", [images])
     @pytest.mark.parametrize(
         argnames="guess",

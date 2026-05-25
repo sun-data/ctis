@@ -22,7 +22,10 @@ class AbstractInversionResult(
     @abc.abstractmethod
     def solution(
         self,
-    ) -> na.FunctionArray[na.AbstractDopplerPositionalVectorArray, na.ScalarArray]:
+    ) -> na.FunctionArray[
+        na.AbstractDopplerPositionalVectorArray,
+        na.ScalarArray,
+    ]:
         """The reconstructed scene found by the inversion."""
 
     @property
@@ -248,15 +251,16 @@ class InversionResult(
     """
 
     solution: na.FunctionArray[
-        na.AbstractDopplerPositionalVectorArray,
-        na.ScalarArray
+        na.AbstractDopplerPositionalVectorArray, na.ScalarArray
     ] = dataclasses.MISSING
     """The reconstructed scene found by the inversion."""
 
     success: bool = dataclasses.MISSING
     """A boolean flag indicating whether the inversion was successful."""
 
-    images: na.FunctionArray[na.SpectralPositionalVectorArray, na.ScalarArray] = dataclasses.MISSING
+    images: na.FunctionArray[na.SpectralPositionalVectorArray, na.ScalarArray] = (
+        dataclasses.MISSING
+    )
     """The observed images on which the inversion was performed."""
 
     inverter: "ctis.inverters.AbstractInverter" = dataclasses.MISSING

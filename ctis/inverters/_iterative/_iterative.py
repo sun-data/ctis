@@ -113,7 +113,10 @@ class IterativeInversionResult(
     success: bool = dataclasses.MISSING
     """A boolean flag indicating whether the inversion was successful."""
 
-    images: na.FunctionArray[na.SpectralPositionalVectorArray, na.ScalarArray] = dataclasses.MISSING
+    images: na.FunctionArray[
+        na.SpectralPositionalVectorArray,
+        na.ScalarArray,
+    ] = dataclasses.MISSING
     """The observed images on which the inversion was performed."""
 
     inverter: "ctis.inverters.AbstractInverter" = dataclasses.MISSING
