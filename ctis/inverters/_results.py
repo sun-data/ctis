@@ -103,17 +103,17 @@ class AbstractInversionResult(
 
         if range_radiance is None:
             range_radiance = (None, None)
-            
+
         if range_median is None:
             range_median = (None, None)
-            
+
         if range_iqr is None:
             range_iqr = (None, None)
 
         min_radiance, max_radiance = range_radiance
         min_median, max_median = range_median
         min_iqr, max_iqr = range_iqr
-        
+
         if min_radiance is None:
             min_radiance = 0 * radiance_truth.unit
         if max_radiance is None:
