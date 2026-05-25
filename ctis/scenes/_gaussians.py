@@ -99,7 +99,7 @@ def gaussians(
         # Define the grid of positions and velocities on which to evaluate the
         # test pattern
         inputs = na.DopplerPositionalVectorArray.from_velocity(
-            velocityu=na.linspace(-500, 500, axis="wavelength", num=21) * u.km / u.s,
+            velocity=na.linspace(-500, 500, axis="wavelength", num=21) * u.km / u.s,
             wavelength_rest=171 * u.AA,
             position=na.Cartesian2dVectorLinearSpace(
                 start=-20 * platescale * u.pix,
