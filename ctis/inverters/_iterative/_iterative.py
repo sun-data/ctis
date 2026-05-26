@@ -62,8 +62,6 @@ class AbstractIterativeInverter(
 
         uncertainty = self.instrument.uncertainty(images_predicted)
 
-        uncertainty = np.maximum(uncertainty, 1 * u.photon)
-
         return ctis.inverters.merit.mean_chi_squared(
             observed=images_observed,
             expected=images_predicted,

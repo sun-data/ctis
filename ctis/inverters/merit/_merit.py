@@ -33,7 +33,13 @@ def mean_chi_squared(
     """
     chisq = np.square((observed - expected) / uncertainty)
 
-    return np.mean(chisq, axis=axis)
+    where = uncertainty != 0
+
+    return np.mean(
+        a=chisq,
+        axis=axis,
+        where=where,
+    )
 
 
 def correlation_residual(
