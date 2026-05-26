@@ -15,6 +15,7 @@ Some explanations of the theory behind inversion
 .. toctree::
     :maxdepth: 1
 
+    discussions/mart-discussion
     discussions/richardson-lucy-analogy/richardson-lucy-analogy
 
 Tutorials
@@ -26,6 +27,7 @@ Examples on how to use this package.
     :maxdepth: 1
 
     tutorials/ideal-instrument
+    tutorials/simple-mart
 
 API Reference
 =============

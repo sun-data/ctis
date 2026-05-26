@@ -14,10 +14,10 @@ SpectralPositionalVectorT = TypeVar(
 
 
 def _gaussian(
-    inputs: na.AbstractSpectralPositionalVectorArray,
+    inputs: na.AbstractDopplerPositionalVectorArray,
     amplitude: u.Quantity | na.AbstractScalar,
-    center: na.AbstractSpectralPositionalVectorArray,
-    width: na.AbstractSpectralPositionalVectorArray,
+    center: na.AbstractDopplerPositionalVectorArray,
+    width: na.AbstractDopplerPositionalVectorArray,
 ) -> na.AbstractScalar:
     """
     Compute a Gaussian kernel.
@@ -41,14 +41,30 @@ def _gaussian(
 
     inputs = inputs.cell_centers()
 
+    inputs = na.SpectralPositionalVectorArray(
+        wavelength=inputs.velocity,
+        position=inputs.position,
+    )
+
+    center = na.SpectralPositionalVectorArray(
+        wavelength=center.velocity,
+        position=center.position,
+    )
+
+    width = na.SpectralPositionalVectorArray(
+        wavelength=width.velocity,
+        position=width.position,
+    )
+
     arg = -np.square(((inputs - center) / width).length) / 2
+
     return amplitude * np.exp(arg)
 
 
 def gaussians(
-    inputs: SpectralPositionalVectorT,
-    width: na.AbstractSpectralPositionalVectorArray,
-) -> na.FunctionArray[SpectralPositionalVectorT, na.ScalarArray]:
+    inputs: na.DopplerPositionalVectorArray,
+    width: None | na.DopplerPositionalVectorArray = None,
+) -> na.FunctionArray[na.DopplerPositionalVectorArray, na.ScalarArray]:
     r"""
     A scene with eight randomly-positioned Gaussian kernels originally
     prepared by Amy R. Winebarger.
@@ -59,6 +75,9 @@ def gaussians(
         The grid of wavelengths and positions on which to evaluate the scene.
     width
         The standard deviation of the Gaussian kernels.
+        If :obj:`None` (the default), the width will be :math:`30\,\text{km/s}
+        in the wavelength direction and :math:`1\,\text{arcsec}` in the spatial
+        directions.
 
     Examples
     --------
@@ -79,8 +98,9 @@ def gaussians(
 
         # Define the grid of positions and velocities on which to evaluate the
         # test pattern
-        inputs = na.SpectralPositionalVectorArray(
-            wavelength=na.linspace(-500, 500, axis="wavelength", num=21) * u.km / u.s,
+        inputs = na.DopplerPositionalVectorArray.from_velocity(
+            velocity=na.linspace(-500, 500, axis="wavelength", num=21) * u.km / u.s,
+            wavelength_rest=171 * u.AA,
             position=na.Cartesian2dVectorLinearSpace(
                 start=-20 * platescale * u.pix,
                 stop=20 * platescale * u.pix,
@@ -89,18 +109,9 @@ def gaussians(
             ),
         )
 
-        # Define the standard deviations of the Gaussians in space and velocity
-        width = na.SpectralPositionalVectorArray(
-            wavelength=27 * u.km / u.s,
-            position=2.4 / 2.35 * u.arcsec,
-        )
-
         # Compute the scene of random Gaussians for the
         # given input grid and standard deviations
-        scene = ctis.scenes.gaussians(
-            inputs=inputs,
-            width=width,
-        )
+        scene = ctis.scenes.gaussians(inputs)
 
         # Plot the result
         with astropy.visualization.quantity_support():
@@ -174,7 +185,7 @@ def gaussians(
     center_y = np.array(center_y)
     center_v = np.array(center_v)
 
-    scale = 1 * u.erg / (u.cm**2 * u.sr * u.mAA * u.s)
+    scale = 1000 * u.erg / (u.cm**2 * u.sr * u.AA * u.s)
     amplitude = amplitude * scale
 
     axis = "event"
@@ -184,10 +195,18 @@ def gaussians(
     center_y = na.ScalarArray(center_y, axis) << u.arcsec
     center_v = na.ScalarArray(center_v, axis) << (u.km / u.s)
 
-    center = na.SpectralPositionalVectorArray(
-        wavelength=center_v,
+    center = na.DopplerPositionalVectorArray.from_velocity(
+        velocity=center_v,
+        wavelength_rest=inputs.wavelength_rest,
         position=na.Cartesian2dVectorArray(center_x, center_y),
     )
+
+    if width is None:
+        width = na.DopplerPositionalVectorArray.from_velocity(
+            velocity=30 * u.km / u.s,
+            wavelength_rest=inputs.wavelength_rest,
+            position=1 * u.arcsec,
+        )
 
     outputs = _gaussian(
         inputs=inputs,

@@ -116,10 +116,17 @@ class AbstractInstrument(
 
     @property
     @abc.abstractmethod
+    def channel(self):
+        """
+        Human-readable name of each independent CTIS channel.
+        """
+
+    @property
+    @abc.abstractmethod
     def axis_channel(self) -> str | tuple[str, ...]:
         """
         The logical axis or axes of this instrument corresponding to
-        the different dispersion magnitudes and angles.
+        the different CTIS channels.
         """
 
     @property
@@ -391,6 +398,11 @@ class IdealInstrument(
     A grid of wavelength and position coordinates on the sensor plane.
     """
 
+    channel: str | na.AbstractScalar = dataclasses.MISSING
+    """
+    Human-readable name of each independent CTIS channel.
+    """
+
     axis_channel: str | tuple[str, ...] = dataclasses.MISSING
     """
     The logical axis or axes of this instrument corresponding to
@@ -492,10 +504,6 @@ class IdealInstrument(
 
         coordinates_output = coordinates_output.cell_centers(self.axis_wavelength)
 
-        p = coordinates_output.position
-        coordinates_output.position.x = na.random.normal(p.x, 1e-3 * u.pix)
-        coordinates_output.position.y = na.random.normal(p.y, 1e-3 * u.pix)
-
         return coordinates_output
 
     @functools.cached_property
@@ -518,12 +526,12 @@ class IdealInstrument(
         coordinates_input = self._coordinates_input
         coordinates_output = self._coordinates_output
 
-        return na.regridding.weights(
-            coordinates_input=coordinates_output.position,
-            coordinates_output=coordinates_input.position,
-            axis_input=self.axis_sensor_xy,
-            axis_output=self.axis_scene_xy,
-            method="conservative",
+        return na.regridding.transpose_weights_conservative(
+            weights=self.weights,
+            coordinates_input=coordinates_input.position,
+            coordinates_output=coordinates_output.position,
+            axis_input=self.axis_scene_xy,
+            axis_output=self.axis_sensor_xy,
         )
 
     def image(
