@@ -59,11 +59,33 @@ class AbstractInversionResult(
             na.AbstractDopplerPositionalVectorArray,
             na.ScalarArray,
         ],
+        axis: str,
         num_bins: int = 50,
         range_radiance: None | tuple[u.Quantity, u.Quantity] = None,
         range_median: None | tuple[u.Quantity, u.Quantity] = None,
         range_iqr: None | tuple[u.Quantity, u.Quantity] = None,
     ) -> tuple[plt.Figure, np.ndarray]:
+        """
+        Plot column-normalized 2D histograms of the true vs. reconstructed
+        radiance, median, and interquartile range of the spectral line profile.
+
+        Parameters
+        ----------
+        truth
+            The true scene which will be compared to the reconstructed scene.
+        axis
+            The axis along which to compute the radiance, median,
+            and interquartile range.
+        num_bins
+            The number of bins along each axis of the histogram.
+        range_radiance
+            The domain of the radiance histogram.
+        range_median
+            The domain of the median histogram.
+        range_iqr
+            The domain of the interquartile range histogram.
+        """
+
         recon = self.solution
 
         axis_wavelength = self.inverter.instrument.axis_wavelength
@@ -80,23 +102,23 @@ class AbstractInversionResult(
         median_truth = na.pdf.median(
             x=truth.inputs.velocity,
             f=truth.outputs,
-            axis="wavelength",
+            axis=axis,
         )
         median_recon = na.pdf.median(
             x=recon.inputs.velocity,
             f=recon.outputs,
-            axis="wavelength",
+            axis=axis,
         )
 
         iqr_truth = na.pdf.iqr(
             x=truth.inputs.velocity,
             f=truth.outputs,
-            axis="wavelength",
+            axis=axis,
         )
         iqr_recon = na.pdf.iqr(
             x=recon.inputs.velocity,
             f=recon.outputs,
-            axis="wavelength",
+            axis=axis,
         )
 
         bins = dict(true=num_bins, reconstructed=num_bins)
