@@ -109,7 +109,7 @@ class TestMartInverter(
             guess=guess,
         )
 
-        fig, axs = result.plot_moments(scene)
+        fig, axs = result.plot_moments(scene, axis="wavelength")
 
         assert isinstance(fig, plt.Figure)
         for ax in axs:
