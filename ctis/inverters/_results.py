@@ -127,7 +127,7 @@ class AbstractInversionResult(
             f=recon.outputs,
             axis=axis,
         )
-        
+
         r_radiance = na.stats.pearsonr(
             x=radiance_truth,
             y=radiance_recon,
@@ -292,7 +292,7 @@ class AbstractInversionResult(
             ax_iqr.set_ylabel(
                 f"reconstructed IQR ({ax_iqr.get_ylabel()})",
             )
-            
+
             ax_radiance.text(
                 x=0.05,
                 y=0.95,
