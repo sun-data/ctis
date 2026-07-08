@@ -127,6 +127,22 @@ class AbstractInversionResult(
             f=recon.outputs,
             axis=axis,
         )
+        
+        r_radiance = na.stats.pearsonr(
+            x=radiance_truth,
+            y=radiance_recon,
+            where=where & np.isfinite(radiance_recon),
+        ).ndarray
+        r_median = na.stats.pearsonr(
+            x=median_truth,
+            y=median_recon,
+            where=where & np.isfinite(median_recon),
+        ).ndarray
+        r_iqr = na.stats.pearsonr(
+            x=iqr_truth,
+            y=iqr_recon,
+            where=where & np.isfinite(iqr_recon),
+        ).ndarray
 
         bins = dict(true=num_bins, reconstructed=num_bins)
 
@@ -275,6 +291,34 @@ class AbstractInversionResult(
             )
             ax_iqr.set_ylabel(
                 f"reconstructed IQR ({ax_iqr.get_ylabel()})",
+            )
+            
+            ax_radiance.text(
+                x=0.05,
+                y=0.95,
+                s=f"Pearson's $r = {r_radiance:.03f}$",
+                transform=ax_radiance.transAxes,
+                ha="left",
+                va="top",
+                color="white",
+            )
+            ax_median.text(
+                x=0.05,
+                y=0.95,
+                s=f"Pearson's $r = {r_median:.03f}$",
+                transform=ax_median.transAxes,
+                ha="left",
+                va="top",
+                color="white",
+            )
+            ax_iqr.text(
+                x=0.05,
+                y=0.95,
+                s=f"Pearson's $r = {r_iqr:.03f}$",
+                transform=ax_iqr.transAxes,
+                ha="left",
+                va="top",
+                color="white",
             )
 
             ax_radiance.set_aspect("equal")
