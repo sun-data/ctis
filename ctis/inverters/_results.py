@@ -64,6 +64,7 @@ class AbstractInversionResult(
         range_radiance: None | tuple[u.Quantity, u.Quantity] = None,
         range_median: None | tuple[u.Quantity, u.Quantity] = None,
         range_iqr: None | tuple[u.Quantity, u.Quantity] = None,
+        percentile_radiance: float = 0,
     ) -> tuple[plt.Figure, np.ndarray]:
         """
         Plot column-normalized 2D histograms of the true vs. reconstructed
@@ -84,6 +85,9 @@ class AbstractInversionResult(
             The domain of the median histogram.
         range_iqr
             The domain of the interquartile range histogram.
+        percentile_radiance
+            Spatial locations below this threshold are excluded from the histogram.
+            The default is to not exclude any pixels.
         """
 
         recon = self.solution
@@ -98,6 +102,9 @@ class AbstractInversionResult(
 
         radiance_truth = (truth.outputs * dw_truth).sum(axis_wavelength)
         radiance_recon = (recon.outputs * dw_recon).sum(axis_wavelength)
+
+        thresh = np.nanpercentile(radiance_truth, percentile_radiance)
+        where = radiance_truth > thresh
 
         median_truth = na.pdf.median(
             x=truth.inputs.velocity,
@@ -157,6 +164,7 @@ class AbstractInversionResult(
             bins=bins,
             min=min_radiance,
             max=max_radiance,
+            weights=where,
         )
         hist_median = na.histogram2d(
             median_truth,
@@ -164,6 +172,7 @@ class AbstractInversionResult(
             bins=bins,
             min=min_median,
             max=max_median,
+            weights=where,
         )
         hist_iqr = na.histogram2d(
             iqr_truth,
@@ -171,6 +180,7 @@ class AbstractInversionResult(
             bins=bins,
             min=min_iqr,
             max=max_iqr,
+            weights=where,
         )
 
         hist_radiance = hist_radiance / hist_radiance.sum("reconstructed")
