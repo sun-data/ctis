@@ -116,19 +116,24 @@ class AbstractTestAbstractInstrument(
         assert isinstance(result, int)
 
     @pytest.mark.parametrize(
-        argnames="image",
+        argnames="scene",
         argvalues=[
-            instrument_ideal.image(gaussians.outputs).outputs,
+            gaussians.outputs,
         ],
     )
-    def test_uncertainty(
+    @pytest.mark.parametrize("integrate", [False, True])
+    def test_image_uncertainty(
         self,
         a: ctis.instruments.AbstractInstrument,
-        image: na.ScalarArray,
+        scene: na.AbstractScalar | na.AbstractFunctionArray,
+        integrate: bool,
     ):
-        result = a.uncertainty(image)
+        result = a.image(scene, integrate=integrate, noise=False, uncertainty=True)
 
-        assert np.all(result >= 0 * u.photon)
+        # the measurement noise is attached as a normal uncertain array
+        assert isinstance(result.outputs, na.NormalUncertainScalarArray)
+        assert result.outputs.width.unit.is_equivalent(u.electron)
+        assert np.all(result.outputs.width >= 0 * u.electron)
 
 
 class AbstractTestAbstractLinearInstrument(

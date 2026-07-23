@@ -6,10 +6,12 @@ from ._instruments import (
     AbstractInstrument,
     AbstractLinearInstrument,
     IdealInstrument,
+    LinearOptikaInstrument,
 )
 
 __all__ = [
     "AbstractInstrument",
     "AbstractLinearInstrument",
     "IdealInstrument",
+    "LinearOptikaInstrument",
 ]
