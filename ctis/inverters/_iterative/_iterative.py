@@ -45,6 +45,7 @@ class AbstractIterativeInverter(
         self,
         images_observed: na.ScalarArray,
         images_predicted: na.ScalarArray,
+        uncertainty: na.ScalarArray,
     ) -> na.ScalarArray:
         r"""
         Evaluate :math:`\langle \chi^2 \rangle` for each observed/predicted
@@ -56,9 +57,10 @@ class AbstractIterativeInverter(
             The actual measured images.
         images_predicted
             The images predicted by the inversion.
+        uncertainty
+            The standard deviation of the measurement noise in the predicted
+            images.
         """
-
-        uncertainty = self.instrument.uncertainty(images_predicted)
 
         return ctis.inverters.merit.mean_chi_squared(
             observed=images_observed,

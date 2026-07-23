@@ -6,11 +6,13 @@ import dataclasses
 import astropy.units as u
 import astropy.constants
 import named_arrays as na
+import optika
 
 __all__ = [
     "AbstractInstrument",
     "AbstractLinearInstrument",
     "IdealInstrument",
+    "LinearOptikaInstrument",
 ]
 
 
@@ -42,10 +44,11 @@ class AbstractInstrument(
         scene: na.AbstractScalar | na.AbstractFunctionArray,
         integrate: bool = True,
         noise: bool = True,
+        uncertainty: bool = False,
     ) -> na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar]:
         r"""
         The forward model of this CTIS instrument, which maps spectral radiance
-        on the skyplane to photons measured by the instrument's sensor.
+        on the skyplane to the electrons measured by the instrument's sensor.
 
         Parameters
         ----------
@@ -61,6 +64,13 @@ class AbstractInstrument(
             for demonstration purposes.
         noise
             Whether to include the effect of noise in the final image.
+        uncertainty
+            Whether to attach the standard deviation of the measurement noise
+            to the result, as a
+            :class:`~named_arrays.NormalUncertainScalarArray`.
+            The variance is computed for each wavelength *before* the
+            integration along the wavelength axis and summed in quadrature, so
+            it is exact even for the integrated image.
         """
 
     @abc.abstractmethod
@@ -104,14 +114,6 @@ class AbstractInstrument(
     def coordinates_sensor(self) -> na.AbstractSpectralPositionalVectorArray:
         """
         A grid of wavelength and position coordinates on the detector plane.
-        """
-
-    @property
-    @abc.abstractmethod
-    def uncertainty(self) -> Callable[[na.ScalarArray], na.ScalarArray]:
-        """
-        A function that returns the standard deviation of the uncertainty
-        for a given number of photons.
         """
 
     @property
@@ -238,6 +240,41 @@ class AbstractLinearInstrument(
 
         return energy_per_photon
 
+    def _integrate_wavelength(
+        self,
+        outputs: na.AbstractScalar,
+        coordinates: na.AbstractSpectralPositionalVectorArray,
+    ) -> tuple[na.AbstractScalar, na.AbstractSpectralPositionalVectorArray]:
+        """
+        Integrate an image along the wavelength axis and collapse the
+        wavelength coordinates to the band edges.
+
+        If `outputs` carries an uncertainty (a
+        :class:`~named_arrays.NormalUncertainScalarArray`), the per-wavelength
+        variances are summed in quadrature, which is exact because the noise in
+        each wavelength bin is independent.
+        """
+        axis = self.axis_wavelength
+
+        if isinstance(outputs, na.NormalUncertainScalarArray):
+            nominal = outputs.nominal.sum(axis)
+            width = np.sqrt(np.square(outputs.width).sum(axis))
+            outputs = na.NormalUncertainScalarArray(nominal, width)
+        else:
+            outputs = outputs.sum(axis)
+
+        coordinates = coordinates.replace(
+            wavelength=na.stack(
+                arrays=[
+                    coordinates.wavelength[{axis: +0}],
+                    coordinates.wavelength[{axis: ~0}],
+                ],
+                axis=axis,
+            )
+        )
+
+        return outputs, coordinates
+
     def image(
         self,
         scene: na.AbstractScalar | na.AbstractFunctionArray,
@@ -271,19 +308,9 @@ class AbstractLinearInstrument(
         coordinates = self.coordinates_sensor
 
         if integrate:
-
-            axis = self.axis_wavelength
-
-            values_output = values_output.sum(axis)
-
-            coordinates = coordinates.replace(
-                wavelength=na.stack(
-                    arrays=[
-                        coordinates.wavelength[{axis: +0}],
-                        coordinates.wavelength[{axis: ~0}],
-                    ],
-                    axis=axis,
-                )
+            values_output, coordinates = self._integrate_wavelength(
+                values_output,
+                coordinates,
             )
 
         return na.FunctionArray(
@@ -381,7 +408,7 @@ class IdealInstrument(
     position_ref: u.Quantity | na.AbstractScalar | na.Cartesian2dVectorArray
     """
     The position on the sensor where center of the FOV lands at the reference
-    wavelength. 
+    wavelength.
     """
 
     coordinates_scene: na.AbstractSpectralPositionalVectorArray = dataclasses.MISSING
@@ -427,12 +454,21 @@ class IdealInstrument(
     changing position coordinate.
     """
 
-    @property
-    def uncertainty(self) -> Callable[[na.ScalarArray], na.ScalarArray]:
-        def _shot_noise(image: na.ScalarArray) -> na.ScalarArray:
-            return np.sqrt(image.to_value(u.ph)) * u.ph
+    quantum_yield: u.Quantity | na.AbstractScalar = 1 * u.electron / u.photon
+    r"""
+    The number of electrons generated in the sensor per incident photon, in
+    units equivalent to :math:`\text{electron} \, \text{photon}^{-1}`.
 
-        return _shot_noise
+    For this idealized instrument the quantum yield is a constant, so it can be
+    applied after integrating over wavelength.
+    """
+
+    def _shot_noise(self, image: na.ScalarArray) -> na.ScalarArray:
+        # photon shot noise, converted back into electrons to match the
+        # electron-valued image
+        photons = image / self.quantum_yield
+        uncertainty = np.sqrt(photons.to_value(u.ph)) * u.ph
+        return uncertainty * self.quantum_yield
 
     def distortion(self, coordinates: na.SpectralPositionalVectorArray):
         """
@@ -539,14 +575,33 @@ class IdealInstrument(
         scene: na.AbstractScalar | na.AbstractFunctionArray,
         integrate: bool = True,
         noise: bool = True,
+        uncertainty: bool = False,
     ) -> na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar]:
 
         scene = scene * self.area_effective * self.timedelta_exposure
 
-        return super().image(
+        # keep the wavelength axis so the uncertainty can be computed for each
+        # wavelength before integrating.
+        result = super().image(
             scene=scene,
-            integrate=integrate,
+            integrate=False,
             noise=noise,
+        )
+
+        # convert the measured photons into electrons
+        electrons = result.outputs * self.quantum_yield
+        coordinates = result.inputs
+
+        if uncertainty:
+            width = self._shot_noise(electrons)
+            electrons = na.NormalUncertainScalarArray(nominal=electrons, width=width)
+
+        if integrate:
+            electrons, coordinates = self._integrate_wavelength(electrons, coordinates)
+
+        return na.FunctionArray(
+            inputs=coordinates,
+            outputs=electrons,
         )
 
     def backproject(
@@ -554,6 +609,12 @@ class IdealInstrument(
         image: na.AbstractScalar | na.AbstractFunctionArray,
         integrate: bool = True,
     ) -> na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar]:
+
+        # convert the measured electrons back into photons
+        if isinstance(image, na.AbstractFunctionArray):
+            image = image.replace(outputs=image.outputs / self.quantum_yield)
+        else:
+            image = image / self.quantum_yield
 
         result = super().backproject(
             image=image,
@@ -563,3 +624,166 @@ class IdealInstrument(
         result = result / (self.area_effective * self.timedelta_exposure)
 
         return result
+
+
+@dataclasses.dataclass
+class LinearOptikaInstrument(
+    AbstractLinearInstrument,
+):
+    """
+    A CTIS instrument whose forward model is an :mod:`optika`
+    :class:`~optika.systems.AbstractLinearSystem`.
+
+    The optika system supplies the distortion, effective area, and vignetting;
+    this class adapts its regridding forward model to the
+    :class:`AbstractLinearInstrument` interface and adds the transpose
+    (:meth:`backproject`) used during inversion. The system may be
+    *channel-aware*: its component models can vary along :attr:`axis_channel`
+    to represent the different CTIS projections.
+    """
+
+    system: optika.systems.AbstractLinearSystem = dataclasses.MISSING
+    """A :mod:`optika` representation of a linear optical system."""
+
+    coordinates_scene: na.AbstractSpectralPositionalVectorArray = dataclasses.MISSING
+    """
+    A grid of wavelength and position coordinates on the skyplane
+    which will be used to construct the inverted scene.
+
+    Normally the pitch of this grid is chosen to be the average
+    plate scale of the instrument.
+    """
+
+    channel: str | na.AbstractScalar = dataclasses.MISSING
+    """
+    Human-readable name of each independent CTIS channel.
+    """
+
+    axis_channel: str | tuple[str, ...] = dataclasses.MISSING
+    """
+    The logical axis or axes of :attr:`system` corresponding to the different
+    CTIS channels.
+    """
+
+    axis_wavelength: str = dataclasses.MISSING
+    """
+    The logical axis of :attr:`coordinates_scene` corresponding to changing
+    wavelength coordinate.
+    """
+
+    axis_scene_xy: tuple[str, str] = dataclasses.MISSING
+    """
+    The logical axes of :attr:`coordinates_scene` corresponding to changing
+    position coordinate.
+    """
+
+    @property
+    def axis_sensor_xy(self) -> tuple[str, str]:
+        axis_pixel = self.system.sensor.axis_pixel
+        return (axis_pixel.x, axis_pixel.y)
+
+    @property
+    def coordinates_sensor(self) -> na.AbstractSpectralPositionalVectorArray:
+        return na.SpectralPositionalVectorArray(
+            wavelength=self.coordinates_scene.wavelength,
+            position=self.system.coordinates_sensor,
+        )
+
+    @functools.cached_property
+    def weights(self) -> tuple[na.AbstractScalar, dict[str, int], dict[str, int]]:
+        return self.system.weights(
+            coordinates=self.coordinates_scene,
+            axis_wavelength=self.axis_wavelength,
+            axis_field=self.axis_scene_xy,
+        )
+
+    @functools.cached_property
+    def weights_transpose(
+        self,
+    ) -> tuple[na.AbstractScalar, dict[str, int], dict[str, int]]:
+        return self.system.weights_transposed(
+            weights=self.weights,
+            coordinates=self.coordinates_scene,
+            axis_wavelength=self.axis_wavelength,
+            axis_field=self.axis_scene_xy,
+        )
+
+    def image(
+        self,
+        scene: na.AbstractScalar | na.AbstractFunctionArray,
+        integrate: bool = True,
+        noise: bool = True,
+        uncertainty: bool = False,
+    ) -> na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar]:
+
+        if isinstance(scene, na.AbstractFunctionArray):
+            if not np.all(scene.inputs == self.coordinates_scene):
+                raise ValueError(
+                    "`scene.inputs` and `self.coordinates_scene` are not equal."
+                )
+        else:
+            scene = na.FunctionArray(inputs=self.coordinates_scene, outputs=scene)
+
+        # apply the optika forward model (effective area, vignetting, and the
+        # sensor response) using the cached regridding weights, giving the
+        # electrons measured in each pixel (optionally with their uncertainty).
+        result = self.system.image_from_weights(
+            self.weights,
+            scene,
+            axis_wavelength=self.axis_wavelength,
+            axis_field=self.axis_scene_xy,
+            noise=noise,
+            uncertainty=uncertainty,
+        )
+
+        coordinates = result.inputs
+        values_output = result.outputs
+
+        if integrate:
+            values_output, coordinates = self._integrate_wavelength(
+                values_output,
+                coordinates,
+            )
+
+        return na.FunctionArray(
+            inputs=coordinates,
+            outputs=values_output,
+        )
+
+    def backproject(
+        self,
+        image: na.AbstractScalar | na.AbstractFunctionArray,
+        integrate: bool = True,
+    ) -> na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar]:
+
+        if isinstance(image, na.AbstractFunctionArray):
+            if not np.all(image.inputs.position == self.coordinates_sensor.position):
+                raise ValueError(
+                    "`image.inputs` and `self.coordinates_sensor` are not equal."
+                )
+            values = image.outputs
+        else:
+            values = image
+
+        axis_wavelength = self.axis_wavelength
+        num_wavelength = self.coordinates_scene.wavelength.shape[axis_wavelength] - 1
+
+        if integrate:
+            values = values / num_wavelength
+
+        # rebuild the detector image over the full sensor wavelength grid so
+        # optika can invert the sensor response for each wavelength.
+        image = na.FunctionArray(
+            inputs=self.coordinates_sensor,
+            outputs=values,
+        )
+
+        # apply the transposed optika model with the cached transpose weights,
+        # inverting the sensor response and recovering the spectral radiance.
+        return self.system.backproject_from_weights(
+            self.weights_transpose,
+            image,
+            coordinates=self.coordinates_scene,
+            axis_wavelength=axis_wavelength,
+            axis_field=self.axis_scene_xy,
+        )
