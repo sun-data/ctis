@@ -1,5 +1,6 @@
 import pytest
 import abc
+import dataclasses
 import numpy as np
 import astropy.units as u
 import named_arrays as na
@@ -100,6 +101,28 @@ class AbstractTestAbstractInstrument(
         assert result.outputs.width.unit.is_equivalent(u.electron)
         assert np.all(result.outputs.width >= 0 * u.electron)
 
+    @abc.abstractmethod
+    def _with_read_noise(
+        self,
+        a: ctis.instruments.AbstractInstrument,
+        read_noise: u.Quantity,
+    ) -> ctis.instruments.AbstractInstrument:
+        """Return a copy of `a` with the given per-readout read noise."""
+
+    def test_read_noise(
+        self,
+        a: ctis.instruments.AbstractInstrument,
+    ):
+        # read noise is added once per readout, so it raises the integrated
+        # uncertainty by exactly `read_noise` in quadrature (not by
+        # sqrt(num_wavelength) * read_noise)
+        scene = _scene(a)
+        a_rn = self._with_read_noise(a, 10 * u.electron)
+        width_0 = a.image(scene.outputs, noise=False, uncertainty=True).outputs.width
+        width_1 = a_rn.image(scene.outputs, noise=False, uncertainty=True).outputs.width
+        contribution = np.sqrt(np.square(width_1) - np.square(width_0))
+        assert np.allclose(contribution.to_value(u.electron), 10)
+
 
 class AbstractTestAbstractLinearInstrument(
     AbstractTestAbstractInstrument,
@@ -172,7 +195,8 @@ instrument_ideal = ctis.instruments.IdealInstrument(
 class TestIdealInstrument(
     AbstractTestAbstractLinearInstrument,
 ):
-    pass
+    def _with_read_noise(self, a, read_noise):
+        return dataclasses.replace(a, read_noise=read_noise)
 
 
 def _instrument_optika() -> ctis.instruments.OptikaInstrument:
@@ -227,4 +251,9 @@ def _instrument_optika() -> ctis.instruments.OptikaInstrument:
 class TestOptikaInstrument(
     AbstractTestAbstractLinearInstrument,
 ):
-    pass
+    def _with_read_noise(self, a, read_noise):
+        sensor = dataclasses.replace(a.system.sensor, read_noise=read_noise)
+        return dataclasses.replace(
+            a,
+            system=dataclasses.replace(a.system, sensor=sensor),
+        )
