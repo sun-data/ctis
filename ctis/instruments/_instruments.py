@@ -463,6 +463,12 @@ class IdealInstrument(
     applied after integrating over wavelength.
     """
 
+    read_noise: u.Quantity | na.AbstractScalar = 0 * u.electron
+    """
+    The standard deviation of the Gaussian read noise added to each pixel
+    once per readout (after integrating over wavelength), in electrons.
+    """
+
     def _shot_noise(self, image: na.ScalarArray) -> na.ScalarArray:
         # photon shot noise, converted back into electrons to match the
         # electron-valued image
@@ -599,6 +605,16 @@ class IdealInstrument(
         if integrate:
             electrons, coordinates = self._integrate_wavelength(electrons, coordinates)
 
+            # add read noise once, at the integrated readout
+            if isinstance(electrons, na.NormalUncertainScalarArray):
+                nominal = electrons.nominal
+                width = np.sqrt(np.square(electrons.width) + np.square(self.read_noise))
+                if noise:
+                    nominal = na.random.normal(loc=nominal, scale=self.read_noise)
+                electrons = na.NormalUncertainScalarArray(nominal=nominal, width=width)
+            elif noise:
+                electrons = na.random.normal(loc=electrons, scale=self.read_noise)
+
         return na.FunctionArray(
             inputs=coordinates,
             outputs=electrons,
@@ -724,30 +740,17 @@ class OptikaInstrument(
         else:
             scene = na.FunctionArray(inputs=self.coordinates_scene, outputs=scene)
 
-        # apply the optika forward model (effective area, vignetting, and the
-        # sensor response) using the cached regridding weights, giving the
-        # electrons measured in each pixel (optionally with their uncertainty).
-        result = self.system.image_from_weights(
+        # optika applies the effective area, vignetting, and sensor response
+        # (including the integration over wavelength and read noise) using the
+        # cached regridding weights.
+        return self.system.image_from_weights(
             self.weights,
             scene,
             axis_wavelength=self.axis_wavelength,
             axis_field=self.axis_scene_xy,
             noise=noise,
             uncertainty=uncertainty,
-        )
-
-        coordinates = result.inputs
-        values_output = result.outputs
-
-        if integrate:
-            values_output, coordinates = self._integrate_wavelength(
-                values_output,
-                coordinates,
-            )
-
-        return na.FunctionArray(
-            inputs=coordinates,
-            outputs=values_output,
+            integrate=integrate,
         )
 
     def backproject(
@@ -765,25 +768,19 @@ class OptikaInstrument(
         else:
             values = image
 
-        axis_wavelength = self.axis_wavelength
-        num_wavelength = self.coordinates_scene.wavelength.shape[axis_wavelength] - 1
-
-        if integrate:
-            values = values / num_wavelength
-
-        # rebuild the detector image over the full sensor wavelength grid so
-        # optika can invert the sensor response for each wavelength.
+        # rebuild the detector image over the full sensor wavelength grid; optika
+        # spreads the integrated readout back over wavelength and inverts the
+        # sensor response with the cached transpose weights.
         image = na.FunctionArray(
             inputs=self.coordinates_sensor,
             outputs=values,
         )
 
-        # apply the transposed optika model with the cached transpose weights,
-        # inverting the sensor response and recovering the spectral radiance.
         return self.system.backproject_from_weights(
             self.weights_transpose,
             image,
             coordinates=self.coordinates_scene,
-            axis_wavelength=axis_wavelength,
+            axis_wavelength=self.axis_wavelength,
             axis_field=self.axis_scene_xy,
+            integrate=integrate,
         )
