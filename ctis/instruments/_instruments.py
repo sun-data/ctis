@@ -12,7 +12,7 @@ __all__ = [
     "AbstractInstrument",
     "AbstractLinearInstrument",
     "IdealInstrument",
-    "LinearOptikaInstrument",
+    "OptikaInstrument",
 ]
 
 
@@ -627,7 +627,7 @@ class IdealInstrument(
 
 
 @dataclasses.dataclass
-class LinearOptikaInstrument(
+class OptikaInstrument(
     AbstractLinearInstrument,
 ):
     """
