@@ -1,9 +1,134 @@
 import pytest
 import abc
+import dataclasses
 import numpy as np
 import astropy.units as u
 import named_arrays as na
+import optika
 import ctis
+
+
+def _scene(
+    a: ctis.instruments.AbstractInstrument,
+) -> na.FunctionArray[na.AbstractSpectralPositionalVectorArray, na.AbstractScalar]:
+    """
+    A compact spectral radiance defined on the scene grid of `a`.
+
+    The signal occupies a single central field cell, so its dispersed image is
+    contained within the sensor and the backprojection is contained within the
+    scene grid. This lets the forward model conserve flux exactly through a
+    round trip.
+    """
+    coordinates = a.coordinates_scene
+    axis_x, axis_y = a.axis_scene_xy
+    shape = na.shape(coordinates.position)
+
+    values = np.zeros((shape[axis_x] - 1, shape[axis_y] - 1))
+    values[values.shape[0] // 2, values.shape[1] // 2] = 1.0
+
+    radiance = 1e-11 * u.erg / u.s / u.cm**2 / u.arcsec**2 / u.nm
+    outputs = na.ScalarArray(values, axes=(axis_x, axis_y)) * radiance
+    return na.FunctionArray(inputs=coordinates, outputs=outputs)
+
+
+class AbstractTestAbstractInstrument(
+    abc.ABC,
+):
+
+    def test_image(
+        self,
+        a: ctis.instruments.AbstractInstrument,
+    ):
+        scene = _scene(a)
+        result = a.image(scene.outputs, noise=False)
+        assert isinstance(result, na.FunctionArray)
+        assert np.all(result.inputs.position == a.coordinates_sensor.position)
+        assert result.outputs.sum() > 0
+
+    def test_backproject(
+        self,
+        a: ctis.instruments.AbstractInstrument,
+    ):
+        scene = _scene(a)
+        image = a.image(scene.outputs, noise=False)
+        result = a.backproject(image)
+
+        assert isinstance(result, na.FunctionArray)
+        assert np.all(result.inputs == a.coordinates_scene)
+        assert np.all(np.isfinite(na.as_named_array(result.outputs).value))
+        assert result.outputs.sum() > 0
+
+    def test_backproject_conserves_flux(
+        self,
+        a: ctis.instruments.AbstractInstrument,
+    ):
+        # backproject is the adjoint of the forward model, so for a scene
+        # contained within the field of view, re-imaging a backprojection
+        # preserves the total number of measured electrons.
+        scene = _scene(a)
+        image = a.image(scene.outputs, noise=False)
+        result = a.backproject(image)
+        image_check = a.image(result, noise=False)
+        assert np.allclose(
+            image.outputs.sum().ndarray.value,
+            image_check.outputs.sum().ndarray.value,
+        )
+
+    def test_num_channel(
+        self,
+        a: ctis.instruments.AbstractInstrument,
+    ):
+        result = a.num_channel
+
+        assert isinstance(result, int)
+
+    @pytest.mark.parametrize("integrate", [False, True])
+    def test_image_uncertainty(
+        self,
+        a: ctis.instruments.AbstractInstrument,
+        integrate: bool,
+    ):
+        scene = _scene(a)
+        result = a.image(
+            scene.outputs,
+            integrate=integrate,
+            noise=False,
+            uncertainty=True,
+        )
+
+        # the measurement noise is attached as a normal uncertain array
+        assert isinstance(result.outputs, na.NormalUncertainScalarArray)
+        assert result.outputs.width.unit.is_equivalent(u.electron)
+        assert np.all(result.outputs.width >= 0 * u.electron)
+
+    @abc.abstractmethod
+    def _with_read_noise(
+        self,
+        a: ctis.instruments.AbstractInstrument,
+        read_noise: u.Quantity,
+    ) -> ctis.instruments.AbstractInstrument:
+        """Return a copy of `a` with the given per-readout read noise."""
+
+    def test_read_noise(
+        self,
+        a: ctis.instruments.AbstractInstrument,
+    ):
+        # read noise is added once per readout, so it raises the integrated
+        # uncertainty by exactly `read_noise` in quadrature (not by
+        # sqrt(num_wavelength) * read_noise)
+        scene = _scene(a)
+        a_rn = self._with_read_noise(a, 10 * u.electron)
+        width_0 = a.image(scene.outputs, noise=False, uncertainty=True).outputs.width
+        width_1 = a_rn.image(scene.outputs, noise=False, uncertainty=True).outputs.width
+        contribution = np.sqrt(np.square(width_1) - np.square(width_0))
+        assert np.allclose(contribution.to_value(u.electron), 10)
+
+
+class AbstractTestAbstractLinearInstrument(
+    AbstractTestAbstractInstrument,
+):
+    pass
+
 
 velocity = na.linspace(-500, 500, axis="wavelength", num=21) * u.km / u.s
 
@@ -31,8 +156,6 @@ coordinates_sensor = na.DopplerPositionalVectorArray.from_velocity(
     wavelength_rest=wavelength_rest,
     position=position_sensor,
 )
-
-gaussians = ctis.scenes.gaussians(coordinates_scene)
 
 AA = dict(
     unit=u.AA,
@@ -65,78 +188,6 @@ instrument_ideal = ctis.instruments.IdealInstrument(
 )
 
 
-class AbstractTestAbstractInstrument(
-    abc.ABC,
-):
-
-    @pytest.mark.parametrize(
-        argnames="scene",
-        argvalues=[
-            gaussians.outputs,
-        ],
-    )
-    def test_image(
-        self,
-        a: ctis.instruments.AbstractInstrument,
-        scene: na.AbstractScalar | na.AbstractFunctionArray,
-    ):
-        result = a.image(scene)
-        assert np.all(result.inputs.position == coordinates_sensor.position)
-        assert result.outputs.sum() > 0
-
-    @pytest.mark.parametrize(
-        argnames="image",
-        argvalues=[
-            instrument_ideal.image(gaussians, noise=False),
-        ],
-    )
-    def test_backproject(
-        self,
-        a: ctis.instruments.AbstractInstrument,
-        image: na.AbstractScalar | na.AbstractFunctionArray,
-    ):
-        result = a.backproject(image)
-
-        assert np.all(result.inputs == coordinates_scene)
-        assert result.outputs.sum() > 0
-
-        if isinstance(image, na.AbstractFunctionArray):
-            image = image.outputs
-
-        image_check = a.image(result, noise=False).outputs
-
-        assert np.allclose(image.sum(), image_check.sum())
-
-    def test_num_channel(
-        self,
-        a: ctis.instruments.AbstractInstrument,
-    ):
-        result = a.num_channel
-
-        assert isinstance(result, int)
-
-    @pytest.mark.parametrize(
-        argnames="image",
-        argvalues=[
-            instrument_ideal.image(gaussians.outputs).outputs,
-        ],
-    )
-    def test_uncertainty(
-        self,
-        a: ctis.instruments.AbstractInstrument,
-        image: na.ScalarArray,
-    ):
-        result = a.uncertainty(image)
-
-        assert np.all(result >= 0 * u.photon)
-
-
-class AbstractTestAbstractLinearInstrument(
-    AbstractTestAbstractInstrument,
-):
-    pass
-
-
 @pytest.mark.parametrize(
     argnames="a",
     argvalues=[instrument_ideal],
@@ -144,4 +195,65 @@ class AbstractTestAbstractLinearInstrument(
 class TestIdealInstrument(
     AbstractTestAbstractLinearInstrument,
 ):
-    pass
+    def _with_read_noise(self, a, read_noise):
+        return dataclasses.replace(a, read_noise=read_noise)
+
+
+def _instrument_optika() -> ctis.instruments.OptikaInstrument:
+    channel = na.linspace(0, 360, axis="channel", num=3, endpoint=False) * u.deg
+    system = optika.systems.LinearSystem(
+        area_effective=optika.radiometry.InterpolatedEffectiveAreaModel(
+            wavelength=na.linspace(400, 700, axis="wavelength", num=10) * u.nm,
+            area=na.linspace(1, 2, axis="wavelength", num=10) * u.cm**2,
+            axis_wavelength="wavelength",
+        ),
+        distortion=optika.distortion.SimpleDistortionModel(
+            plate_scale=0.75 * u.arcsec / u.pix,
+            dispersion=3.75 * u.nm / u.pix,
+            angle=channel,
+            reference=na.SpectralPositionalVectorArray(
+                wavelength=550 * u.nm,
+                position=na.Cartesian2dVectorArray(16, 16) * u.pix,
+            ),
+        ),
+        sensor=optika.sensors.ImagingSensor(
+            width_pixel=15 * u.um,
+            axis_pixel=na.Cartesian2dVectorArray("sensor_x", "sensor_y"),
+            timedelta_exposure=1 * u.s,
+            num_pixel=na.Cartesian2dVectorArray(32, 32),
+        ),
+    )
+    # the scene grid spans the field of view so the backprojection of a
+    # contained source is not clipped
+    coordinates_scene = na.SpectralPositionalVectorArray(
+        wavelength=na.linspace(530, 570, axis="wavelength", num=4) * u.nm,
+        position=na.Cartesian2dVectorLinearSpace(
+            start=-20 * u.arcsec,
+            stop=+20 * u.arcsec,
+            axis=na.Cartesian2dVectorArray("scene_x", "scene_y"),
+            num=21,
+        ),
+    )
+    return ctis.instruments.OptikaInstrument(
+        system=system,
+        coordinates_scene=coordinates_scene,
+        channel=channel,
+        axis_channel="channel",
+        axis_wavelength="wavelength",
+        axis_scene_xy=("scene_x", "scene_y"),
+    )
+
+
+@pytest.mark.parametrize(
+    argnames="a",
+    argvalues=[_instrument_optika()],
+)
+class TestOptikaInstrument(
+    AbstractTestAbstractLinearInstrument,
+):
+    def _with_read_noise(self, a, read_noise):
+        sensor = dataclasses.replace(a.system.sensor, read_noise=read_noise)
+        return dataclasses.replace(
+            a,
+            system=dataclasses.replace(a.system, sensor=sensor),
+        )

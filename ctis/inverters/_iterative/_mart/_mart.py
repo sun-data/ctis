@@ -118,9 +118,10 @@ class MartInverter(
             if verbose:  # pragma: nocover
                 print(f"{i=}")
 
-            images_new = instrument.image(scene, noise=False).outputs
+            predicted = instrument.image(scene, noise=False, uncertainty=True).outputs
+            images_new = predicted.nominal
 
-            chi2_ij = self.mean_chi_squared(images, images_new)
+            chi2_ij = self.mean_chi_squared(images, images_new, predicted.width)
             r_ij = self.correlation_residual(images, images_new)
 
             chi2.append(chi2_ij)
