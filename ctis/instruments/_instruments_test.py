@@ -208,12 +208,12 @@ def _instrument_optika() -> ctis.instruments.OptikaInstrument:
             axis_wavelength="wavelength",
         ),
         distortion=optika.distortion.SimpleDistortionModel(
-            plate_scale=50 * u.arcsec / u.mm,
-            dispersion=250 * u.nm / u.mm,
+            plate_scale=0.75 * u.arcsec / u.pix,
+            dispersion=3.75 * u.nm / u.pix,
             angle=channel,
             reference=na.SpectralPositionalVectorArray(
                 wavelength=550 * u.nm,
-                position=na.Cartesian2dVectorArray(0, 0) * u.mm,
+                position=na.Cartesian2dVectorArray(16, 16) * u.pix,
             ),
         ),
         sensor=optika.sensors.ImagingSensor(
