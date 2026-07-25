@@ -65,19 +65,8 @@ def regrid(
         import named_arrays as na
         import ctis
 
-        # Define the vertices of the input grid.
+        # Define the vertices of the (fine) input grid.
         coordinates_input = na.SpectralPositionalVectorArray(
-            wavelength=na.linspace(500, 600, axis="wavelength", num=5) * u.nm,
-            position=na.Cartesian2dVectorLinearSpace(
-                start=-10 * u.arcsec,
-                stop=+10 * u.arcsec,
-                axis=na.Cartesian2dVectorArray("x", "y"),
-                num=7,
-            ),
-        )
-
-        # Define the vertices of the (finer) output grid.
-        coordinates_output = na.SpectralPositionalVectorArray(
             wavelength=na.linspace(500, 600, axis="wavelength", num=9) * u.nm,
             position=na.Cartesian2dVectorLinearSpace(
                 start=-10 * u.arcsec,
@@ -87,14 +76,25 @@ def regrid(
             ),
         )
 
+        # Define the vertices of the (coarser) output grid.
+        coordinates_output = na.SpectralPositionalVectorArray(
+            wavelength=na.linspace(500, 600, axis="wavelength", num=5) * u.nm,
+            position=na.Cartesian2dVectorLinearSpace(
+                start=-10 * u.arcsec,
+                stop=+10 * u.arcsec,
+                axis=na.Cartesian2dVectorArray("x", "y"),
+                num=7,
+            ),
+        )
+
         # Define a random cube sampled on the input voxel centers.
         values_input = na.random.uniform(
             low=0,
             high=1,
-            shape_random=dict(wavelength=4, x=6, y=6),
+            shape_random=dict(wavelength=8, x=12, y=12),
         )
 
-        # Resample the cube onto the output grid.
+        # Resample the cube onto the coarser output grid.
         values_output = ctis.regrid(
             coordinates_input=coordinates_input,
             coordinates_output=coordinates_output,
@@ -103,27 +103,48 @@ def regrid(
             axis_position=("x", "y"),
         )
 
-        # Plot the input and output grids, with wavelength represented by color.
+        # Plot the input and output grids side by side, with wavelength
+        # represented by color. Coarsening conservatively sums voxels, so the
+        # output voxels are brighter; a shared normalization lets one colorbar
+        # describe both panels.
+        vmax = values_output.max()
+        wavelength_min = coordinates_input.wavelength.min()
+        wavelength_max = coordinates_input.wavelength.max()
         with astropy.visualization.quantity_support():
             fig, ax = plt.subplots(
-                ncols=2,
-                sharex=True,
-                sharey=True,
-                figsize=(8, 4),
+                ncols=3,
+                gridspec_kw=dict(width_ratios=[0.45, 0.45, 0.1]),
+                sharex=False,
+                figsize=(9, 4),
                 constrained_layout=True,
             )
-            na.plt.rgbmesh(
+            colorbar = na.plt.rgbmesh(
                 coordinates_input,
                 C=values_input,
                 axis_wavelength="wavelength",
+                vmin=0,
+                vmax=vmax,
+                wavelength_min=wavelength_min,
+                wavelength_max=wavelength_max,
                 ax=ax[0],
             )
             na.plt.rgbmesh(
                 coordinates_output,
                 C=values_output,
                 axis_wavelength="wavelength",
+                vmin=0,
+                vmax=vmax,
+                wavelength_min=wavelength_min,
+                wavelength_max=wavelength_max,
                 ax=ax[1],
             )
+            na.plt.pcolormesh(
+                C=colorbar,
+                axis_rgb="wavelength",
+                ax=ax[2],
+            )
+            ax[2].yaxis.tick_right()
+            ax[2].yaxis.set_label_position("right")
             ax[0].set_title("input grid")
             ax[1].set_title("output grid")
     """
