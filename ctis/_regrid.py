@@ -59,7 +59,9 @@ def regrid(
 
     .. jupyter-execute::
 
+        import matplotlib.pyplot as plt
         import astropy.units as u
+        import astropy.visualization
         import named_arrays as na
         import ctis
 
@@ -100,6 +102,30 @@ def regrid(
             axis_wavelength="wavelength",
             axis_position=("x", "y"),
         )
+
+        # Plot the input and output grids, with wavelength represented by color.
+        with astropy.visualization.quantity_support():
+            fig, ax = plt.subplots(
+                ncols=2,
+                sharex=True,
+                sharey=True,
+                figsize=(8, 4),
+                constrained_layout=True,
+            )
+            na.plt.rgbmesh(
+                coordinates_input,
+                C=values_input,
+                axis_wavelength="wavelength",
+                ax=ax[0],
+            )
+            na.plt.rgbmesh(
+                coordinates_output,
+                C=values_output,
+                axis_wavelength="wavelength",
+                ax=ax[1],
+            )
+            ax[0].set_title("input grid")
+            ax[1].set_title("output grid")
     """
 
     # 1D conservative interpolation along the wavelength axis.
