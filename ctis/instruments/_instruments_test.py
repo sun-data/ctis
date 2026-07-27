@@ -3,6 +3,7 @@ import abc
 import dataclasses
 import numpy as np
 import astropy.units as u
+import astropy.constants
 import named_arrays as na
 import optika
 import ctis
@@ -57,6 +58,36 @@ class AbstractTestAbstractInstrument(
         assert np.all(result.inputs == a.coordinates_scene)
         assert np.all(np.isfinite(na.as_named_array(result.outputs).value))
         assert result.outputs.sum() > 0
+
+    def test_backproject_unit(
+        self,
+        a: ctis.instruments.AbstractInstrument,
+    ):
+        scene = _scene(a)
+        image = a.image(scene.outputs, noise=False)
+
+        # the backprojection can be expressed in the (energy) units of the
+        # input scene, or in photon units, to match the forward model.
+        unit_energy = na.unit_normalized(scene.outputs)
+        unit_photon = u.photon / u.s / u.cm**2 / u.arcsec**2 / u.nm
+
+        result_energy = a.backproject(image, unit=unit_energy)
+        result_photon = a.backproject(image, unit=unit_photon)
+
+        assert na.unit_normalized(result_energy.outputs).is_equivalent(unit_energy)
+        assert na.unit_normalized(result_photon.outputs).is_equivalent(unit_photon)
+
+        # the two expressions differ only by the energy per photon
+        wavelength = a.coordinates_scene.wavelength.cell_centers(a.axis_wavelength)
+        energy_per_photon = (
+            astropy.constants.h * astropy.constants.c / wavelength / u.photon
+        )
+        expected_energy = (result_photon.outputs * energy_per_photon).to(unit_energy)
+        assert np.allclose(result_energy.outputs, expected_energy)
+
+        # a unit compatible with neither photon nor energy radiance is rejected
+        with pytest.raises(u.UnitConversionError):
+            a.backproject(image, unit=u.s)
 
     def test_backproject_conserves_flux(
         self,

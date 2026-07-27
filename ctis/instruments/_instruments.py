@@ -78,6 +78,7 @@ class AbstractInstrument(
         self,
         image: na.AbstractScalar | na.AbstractFunctionArray,
         integrate: bool = True,
+        unit: None | u.UnitBase = None,
     ) -> na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar]:
         """
         The backward model of this CTIS instrument, which maps photons measured
@@ -96,6 +97,14 @@ class AbstractInstrument(
             in units of photons.
         integrate
             Complement of the `integrate` keyword of :meth:`image`.
+        unit
+            The unit of the backprojected spectral radiance.
+            The forward model, :meth:`image`, accepts a scene in either photon
+            or energy units, so the backprojection is expressed in whichever the
+            caller requests, converting between photon and energy units using
+            the energy per photon.
+            If :obj:`None` (the default), the radiance is left in the natural
+            units of the backprojection and is not converted.
         """
 
     @property
@@ -620,10 +629,32 @@ class IdealInstrument(
             outputs=electrons,
         )
 
+    def _to_unit(
+        self,
+        radiance: na.AbstractScalar,
+        unit: None | u.UnitBase,
+    ) -> na.AbstractScalar:
+        """
+        Express the (energy) backprojected radiance in `unit`, dividing by the
+        energy per photon (:attr:`_energy_per_photon`) when `unit` is a photon
+        rather than an energy unit. A `unit` compatible with neither raises a
+        :class:`~astropy.units.UnitConversionError`.
+        """
+        if unit is None:
+            return radiance
+
+        if unit.is_equivalent(na.unit_normalized(radiance)):
+            return radiance.to(unit)
+
+        # the natural (energy) radiance is divided by the energy per photon to
+        # express it in photon units.
+        return (radiance / self._energy_per_photon).to(unit)
+
     def backproject(
         self,
         image: na.AbstractScalar | na.AbstractFunctionArray,
         integrate: bool = True,
+        unit: None | u.UnitBase = None,
     ) -> na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar]:
 
         # convert the measured electrons back into photons
@@ -639,7 +670,9 @@ class IdealInstrument(
 
         result = result / (self.area_effective * self.timedelta_exposure)
 
-        return result
+        # the super() backprojection is in energy units; express it in the
+        # requested unit, converting to photons if necessary.
+        return result.replace(outputs=self._to_unit(result.outputs, unit))
 
 
 @dataclasses.dataclass
@@ -757,6 +790,7 @@ class OptikaInstrument(
         self,
         image: na.AbstractScalar | na.AbstractFunctionArray,
         integrate: bool = True,
+        unit: None | u.UnitBase = None,
     ) -> na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar]:
 
         if isinstance(image, na.AbstractFunctionArray):
@@ -776,6 +810,7 @@ class OptikaInstrument(
             outputs=values,
         )
 
+        # the energy/photon conversion is handled by optika's backproject.
         return self.system.backproject_from_weights(
             self.weights_transpose,
             image,
@@ -783,4 +818,5 @@ class OptikaInstrument(
             axis_wavelength=self.axis_wavelength,
             axis_field=self.axis_scene_xy,
             integrate=integrate,
+            unit=unit,
         )
