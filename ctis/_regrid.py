@@ -28,12 +28,13 @@ def regrid(
     depend on spatial position (and vice versa), which is the usual case for a
     CTIS scene.
 
-    Both steps use :func:`named_arrays.regridding.regrid` with
-    ``method="conservative"``, so the total (the sum of ``values_input`` over
-    the resampled axes) is preserved. ``values_input`` is therefore treated as
-    an extensive quantity: a per-voxel total rather than a density. Multiply a
-    spectral radiance by its voxel volume before calling this function if the
-    integral of the radiance is what should be conserved.
+    Each input voxel is weighted by its volume (the wavelength bin width times
+    the solid angle subtended by each field pixel) before the conservative
+    regridding and divided by the output voxel volume afterward, so the
+    *integral* of the field is preserved and ``values_input`` is treated as a
+    density (such as a spectral radiance) rather than a per-voxel total. Both
+    steps use :func:`named_arrays.regridding.regrid` with
+    ``method="conservative"``.
 
     Parameters
     ----------
@@ -104,9 +105,8 @@ def regrid(
         )
 
         # Plot the input and output grids side by side, with wavelength
-        # represented by color. Coarsening conservatively sums voxels, so the
-        # output voxels are brighter; a shared normalization lets one colorbar
-        # describe both panels.
+        # represented by color. The resampling preserves the field density, so
+        # a shared normalization lets one colorbar describe both panels.
         vmax = values_output.max()
         wavelength_min = coordinates_input.wavelength.min()
         wavelength_max = coordinates_input.wavelength.max()
@@ -149,11 +149,17 @@ def regrid(
             ax[1].set_title("output grid")
     """
 
+    axis = (axis_wavelength, *axis_position)
+
+    # weight each input voxel by its volume so the conservative regridding
+    # preserves the integral of the field rather than the per-voxel sum.
+    values = values_input * coordinates_input.volume_cell(axis)
+
     # 1D conservative interpolation along the wavelength axis.
     values = na.regridding.regrid(
         coordinates_input=coordinates_input.wavelength,
         coordinates_output=coordinates_output.wavelength,
-        values_input=values_input,
+        values_input=values,
         axis_input=(axis_wavelength,),
         axis_output=(axis_wavelength,),
         method="conservative",
@@ -168,5 +174,9 @@ def regrid(
         axis_output=axis_position,
         method="conservative",
     )
+
+    # recover the field density on the output grid by dividing out the output
+    # voxel volume.
+    values = values / coordinates_output.volume_cell(axis)
 
     return values
