@@ -224,15 +224,14 @@ class AbstractLinearInstrument(
         """
         coords = self.coordinates_scene
 
-        dw = coords.wavelength.volume_cell(self.axis_wavelength)
+        # coerce to a spectral-positional vector so a Doppler scene (as used by
+        # `IdealInstrument`) also gets `volume_cell`.
+        coords = na.SpectralPositionalVectorArray(
+            wavelength=coords.wavelength,
+            position=coords.position,
+        )
 
-        dA = coords.position.volume_cell(self.axis_scene_xy)
-        dA = na.as_named_array(dA)
-        dA = dA.cell_centers(self.axis_wavelength)
-
-        dV = dw * dA
-
-        return dV
+        return coords.volume_cell((self.axis_wavelength, *self.axis_scene_xy))
 
     @property
     def _energy_per_photon(self) -> u.Quantity | na.AbstractScalar:
