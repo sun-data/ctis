@@ -114,3 +114,19 @@ class TestMartInverter(
         assert isinstance(fig, plt.Figure)
         for ax in axs:
             assert isinstance(ax, plt.Axes)
+
+
+def test__call__verbose_convergence():
+    """
+    Verbose output must not disable the convergence check.
+    """
+    a = ctis.inverters.MartInverter(
+        instrument=instrument,
+        num_iteration=50,
+        threshold_convergence=1e-2,
+    )
+
+    result = a(images, verbose=True)
+
+    assert result.success
+    assert result.num_iteration < a.num_iteration
