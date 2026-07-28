@@ -61,11 +61,11 @@ def test_regrid(
         axis_position[1]: num_output[axis_position[1]] - 1,
     }
 
-    # the input and output grids span the same volume, so the conservative
-    # resampling preserves the total to within the tolerance of the
-    # perturbation applied by the 2D conservative step.
-    assert np.isclose(
-        result.sum().ndarray,
-        values_input.sum().ndarray,
-        rtol=0.05,
-    )
+    # the input and output grids span the same volume, so the volume-weighted
+    # conservative resampling preserves the integral of the field (to within
+    # the tolerance of the perturbation applied by the 2D conservative step).
+    axis = (axis_wavelength, *axis_position)
+    integral_input = (values_input * coordinates_input.volume_cell(axis)).sum()
+    integral_output = (result * coordinates_output.volume_cell(axis)).sum()
+    ratio = float((integral_output / integral_input).ndarray)
+    assert np.isclose(ratio, 1, rtol=0.05)
