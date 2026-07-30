@@ -131,7 +131,7 @@ class MartInverter(
             if verbose:  # pragma: nocover
                 print(f"merit: {merit}")
 
-            elif (merit_old - merit) < self.threshold_convergence:
+            if (merit_old - merit) < self.threshold_convergence:
                 message = f"Achieved merit less than {self.threshold_convergence}."
                 success = True
                 num_iteration = i + 1
