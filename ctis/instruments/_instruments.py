@@ -269,8 +269,8 @@ class AbstractLinearInstrument(
         coordinates = coordinates.replace(
             wavelength=na.stack(
                 arrays=[
-                    coordinates.wavelength[{axis: +0}],
-                    coordinates.wavelength[{axis: ~0}],
+                    coordinates.wavelength.min(axis),
+                    coordinates.wavelength.max(axis),
                 ],
                 axis=axis,
             )
