@@ -222,14 +222,9 @@ class AbstractLinearInstrument(
         """
         The volume of each voxel in :attr:`coordinates_scene`.
         """
-        coords = self.coordinates_scene
-
-        # coerce to a spectral-positional vector so a Doppler scene (as used by
-        # `IdealInstrument`) also gets `volume_cell`.
-        coords = na.SpectralPositionalVectorArray(
-            wavelength=coords.wavelength,
-            position=coords.position,
-        )
+        # `.spectral_positional` accepts a Doppler scene (as used by
+        # `IdealInstrument`), which does not implement `volume_cell` directly.
+        coords = self.coordinates_scene.spectral_positional
 
         return coords.volume_cell((self.axis_wavelength, *self.axis_scene_xy))
 
