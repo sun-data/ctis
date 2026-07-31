@@ -602,7 +602,16 @@ class IdealInstrument(
         coordinates = result.inputs
 
         if uncertainty:
-            width = self._shot_noise(electrons)
+            # the shot-noise width uses the *expected* electrons; recompute the
+            # noiseless image when `noise` replaced them with a realization.
+            if noise:
+                expected = (
+                    super().image(scene=scene, integrate=False, noise=False).outputs
+                    * self.quantum_yield
+                )
+            else:
+                expected = electrons
+            width = self._shot_noise(expected)
             electrons = na.NormalUncertainScalarArray(nominal=electrons, width=width)
 
         if integrate:

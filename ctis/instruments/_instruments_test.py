@@ -132,6 +132,19 @@ class AbstractTestAbstractInstrument(
         assert result.outputs.width.unit.is_equivalent(u.electron)
         assert np.all(result.outputs.width >= 0 * u.electron)
 
+        # the width is deterministic: it is computed from the expected signal,
+        # so drawing a noise realization must not change it.
+        result_noisy = a.image(
+            scene.outputs,
+            integrate=integrate,
+            noise=True,
+            uncertainty=True,
+        )
+        assert np.allclose(
+            result_noisy.outputs.width.to_value(u.electron),
+            result.outputs.width.to_value(u.electron),
+        )
+
     @abc.abstractmethod
     def _with_read_noise(
         self,
