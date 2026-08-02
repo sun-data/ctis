@@ -155,18 +155,25 @@ class ParametricInverter(
         )
         result = inverter(images)
 
-        # Plot the fitted Doppler velocity
+        # Plot the fitted Doppler velocity.
+        # The unit is stripped from the color values since a colorbar norm
+        # cannot hold an `astropy` quantity.
+        velocity_fit = result.parameters["velocity"]
         with astropy.visualization.quantity_support():
             fig, ax = plt.subplots(constrained_layout=True)
             img = na.plt.pcolormesh(
                 coordinates_scene.position.x,
                 coordinates_scene.position.y,
-                C=result.parameters["velocity"],
+                C=velocity_fit.value,
                 ax=ax,
                 cmap="RdBu_r",
             )
             ax.set_aspect("equal")
-            plt.colorbar(img.ndarray.item(), ax=ax, label="velocity (km / s)")
+            plt.colorbar(
+                img.ndarray.item(),
+                ax=ax,
+                label=f"Doppler velocity ({velocity_fit.unit:latex_inline})",
+            )
     """
 
     instrument: ctis.instruments.AbstractLinearInstrument = dataclasses.MISSING
@@ -387,7 +394,11 @@ class ParametricInverter(
                 # MART divides by zero in voxels which received no signal.
                 warnings.simplefilter("ignore", UserWarning)
                 with np.errstate(invalid="ignore", divide="ignore"):
-                    guess = inverter(images).solution
+                    # MART operates on the measured values, so any uncertainty
+                    # attached to the images is dropped before the guess.
+                    guess = inverter(
+                        images.replace(outputs=na.nominal(images.outputs)),
+                    ).solution
 
         if isinstance(guess, na.AbstractFunctionArray):
             guess = guess.outputs

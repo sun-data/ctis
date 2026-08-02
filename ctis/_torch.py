@@ -121,9 +121,14 @@ class Regridder:
             axis_output=instrument.axis_sensor_xy,
         )
 
-        # Project a uniform scene onto the sensors
+        # Project a uniform scene onto the sensors.
+        # The operator is placed on a CUDA device if one is available, so the
+        # values must be created on `regridder.device` to match.
         import torch
-        scene = torch.ones(regridder.shape_values_input)
+        scene = torch.ones(
+            regridder.shape_values_input,
+            device=regridder.device,
+        )
         image = regridder(scene)
 
         image.shape

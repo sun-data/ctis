@@ -193,3 +193,36 @@ def test_gradcheck():
     ).requires_grad_(True)
 
     assert torch.autograd.gradcheck(a, (x,), eps=1e-6, atol=1e-6)
+
+
+def test_from_weights_unit():
+    """Weights which carry a unit are stripped, and the unit is recorded."""
+    array, shape_input, shape_output = instrument.weights
+
+    flat = array.ndarray.reshape(-1)
+    modified = np.empty(flat.shape, dtype=object)
+    for d in range(flat.size):
+        indices_input, indices_output, values = flat[d]
+        modified[d] = (indices_input, indices_output, values * u.cm**2)
+
+    weights = (
+        na.ScalarArray(
+            ndarray=modified.reshape(array.ndarray.shape),
+            axes=array.axes,
+        ),
+        shape_input,
+        shape_output,
+    )
+
+    a = ctis.Regridder.from_weights(
+        weights=weights,
+        axis_input=instrument.axis_scene_xy,
+        axis_output=instrument.axis_sensor_xy,
+        device="cpu",
+    )
+
+    assert a.unit == u.cm**2
+
+    expected = _regridder("cpu")
+    values = torch.as_tensor(_values(a).ndarray, dtype=a.dtype)
+    assert torch.allclose(a(values), expected(values))

@@ -372,3 +372,41 @@ def test_forward_matches_instrument(
         rtol=1e-5,
         atol=1e-5 * expected.max(),
     )
+
+
+def test__call__uncertainty_explicit():
+    """An uncertainty may be supplied directly instead of being estimated."""
+    uncertainty = np.sqrt(np.abs(images.outputs.value)) * u.electron
+    uncertainty = uncertainty + 1 * u.electron
+
+    inverter = ctis.inverters.ParametricInverter(
+        instrument=instrument,
+        model=model,
+        num_iteration=20,
+        num_iteration_guess=5,
+        uncertainty=uncertainty,
+    )
+
+    with pytest.warns(UserWarning):
+        result = inverter(images)
+
+    assert np.all(np.isfinite(result.mean_chi_squared.ndarray))
+
+
+def test__call__uncertainty_from_images():
+    """The uncertainty attached to the images by the instrument is used."""
+    images_uncertain = instrument.image(scene, noise=False, uncertainty=True)
+
+    assert isinstance(images_uncertain.outputs, na.AbstractUncertainScalarArray)
+
+    inverter = ctis.inverters.ParametricInverter(
+        instrument=instrument,
+        model=model,
+        num_iteration=20,
+        num_iteration_guess=5,
+    )
+
+    with pytest.warns(UserWarning):
+        result = inverter(images_uncertain)
+
+    assert np.all(np.isfinite(result.mean_chi_squared.ndarray))
