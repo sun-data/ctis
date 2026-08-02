@@ -151,6 +151,11 @@ def regrid(
 
     axis = (axis_wavelength, *axis_position)
 
+    # normalize to plain spectral-positional vectors so grids defined on a
+    # Doppler vector (as produced by the `IdealInstrument`) are accepted.
+    coordinates_input = coordinates_input.spectral_positional
+    coordinates_output = coordinates_output.spectral_positional
+
     # weight each input voxel by its volume so the conservative regridding
     # preserves the integral of the field rather than the per-voxel sum.
     values = values_input * coordinates_input.volume_cell(axis)
