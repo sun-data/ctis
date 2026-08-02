@@ -203,6 +203,31 @@ class AbstractLinearInstrument(
         """
 
     @property
+    @abc.abstractmethod
+    def response(self) -> tuple[na.AbstractScalar, na.AbstractScalar]:
+        r"""
+        The diagonal factors of the noiseless forward model.
+
+        The forward model of a linear instrument can always be written as
+
+        .. math::
+
+            \text{image} = \sum_\lambda R_\text{out} \odot
+                \text{regrid}(W, R_\text{in} \odot \text{scene}),
+
+        where :math:`W` are the :attr:`weights` and :math:`R_\text{in}` and
+        :math:`R_\text{out}` are the two factors returned by this property.
+        :math:`R_\text{in}` converts the spectral radiance of the scene into
+        the quantity consumed by :attr:`weights`, and :math:`R_\text{out}`
+        converts the resampled quantity into the electrons measured by the
+        sensor.
+
+        Both factors are diagonal, which lets an external differentiable
+        implementation of the forward model, such as :class:`ctis.Regridder`,
+        reproduce :meth:`image` exactly without reimplementing it.
+        """
+
+    @property
     def num_channel(self) -> int:
 
         shape = self.weights[0].shape
@@ -467,6 +492,16 @@ class IdealInstrument(
     The standard deviation of the Gaussian read noise added to each pixel
     once per readout (after integrating over wavelength), in electrons.
     """
+
+    @property
+    def response(self) -> tuple[na.AbstractScalar, na.AbstractScalar]:
+        scale_input = (
+            self.area_effective
+            * self.timedelta_exposure
+            * self._volume_scene
+            / self._energy_per_photon
+        )
+        return scale_input, self.quantum_yield
 
     def _shot_noise(self, image: na.ScalarArray) -> na.ScalarArray:
         # photon shot noise, converted back into electrons to match the
@@ -742,6 +777,48 @@ class OptikaInstrument(
             axis_wavelength=self.axis_wavelength,
             axis_field=self.axis_scene_xy,
         )
+
+    @property
+    def response(self) -> tuple[na.AbstractScalar, na.AbstractScalar]:
+
+        system = self.system
+        axis_wavelength = self.axis_wavelength
+        coordinates = self.coordinates_scene
+
+        # `optika` folds the effective area, vignetting, and field stop into
+        # the weights, so the only factor applied to the scene beforehand is
+        # the volume of each voxel.
+        scale_input = coordinates.spectral_positional.volume_cell(
+            (axis_wavelength, *self.axis_scene_xy)
+        )
+
+        # Probe the sensor with a unit energy rate to recover its gain.
+        # With `noise=False` the sensor response is linear and diagonal
+        # (`optika` skips charge diffusion for the per-pixel expectation),
+        # so this is exact.
+        # The sensor accepts either an energy or a photon rate; probing with
+        # an energy rate folds the (wavelength-dependent) energy per photon
+        # into the gain, so that this instrument reports an energy radiance
+        # like `IdealInstrument` does.
+        rate = 1 * u.erg / u.s
+        probe = na.FunctionArray(
+            inputs=na.SpectralPositionalVectorArray(
+                wavelength=coordinates.wavelength,
+                position=system.coordinates_sensor,
+            ),
+            outputs=na.ScalarArray(rate),
+        )
+        gain = system.sensor.expose(
+            image=probe,
+            direction=system.direction,
+            axis_wavelength=axis_wavelength,
+            noise=False,
+            integrate=False,
+        )
+
+        scale_output = system.weights_unit * gain.outputs / rate
+
+        return scale_input, scale_output
 
     @functools.cached_property
     def weights_transpose(
