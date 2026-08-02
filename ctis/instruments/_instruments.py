@@ -281,9 +281,11 @@ class AbstractLinearInstrument(
     def image(
         self,
         scene: na.AbstractScalar | na.AbstractFunctionArray,
-        integrate: bool = True,
         noise: bool = True,
     ) -> na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar]:
+        # this low-level forward model always returns the per-wavelength photons;
+        # integration over wavelength (and any conversion to electrons) is done
+        # by the concrete subclass's `image`.
 
         if isinstance(scene, na.AbstractFunctionArray):
             if not np.all(scene.inputs == self.coordinates_scene):
@@ -309,12 +311,6 @@ class AbstractLinearInstrument(
             values_output = na.random.poisson(values_output)
 
         coordinates = self.coordinates_sensor
-
-        if integrate:
-            values_output, coordinates = self._integrate_wavelength(
-                values_output,
-                coordinates,
-            )
 
         return na.FunctionArray(
             inputs=coordinates,
@@ -593,7 +589,6 @@ class IdealInstrument(
         # wavelength before integrating.
         result = super().image(
             scene=scene,
-            integrate=False,
             noise=noise,
         )
 
@@ -606,8 +601,7 @@ class IdealInstrument(
             # noiseless image when `noise` replaced them with a realization.
             if noise:
                 expected = (
-                    super().image(scene=scene, integrate=False, noise=False).outputs
-                    * self.quantum_yield
+                    super().image(scene=scene, noise=False).outputs * self.quantum_yield
                 )
             else:
                 expected = electrons

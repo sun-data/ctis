@@ -59,6 +59,19 @@ class AbstractTestAbstractInstrument(
         assert np.all(np.isfinite(na.as_named_array(result.outputs).value))
         assert result.outputs.sum() > 0
 
+    def test_backproject_scalar(
+        self,
+        a: ctis.instruments.AbstractInstrument,
+    ):
+        # backproject also accepts the bare image outputs, not just a
+        # `FunctionArray`
+        scene = _scene(a)
+        image = a.image(scene.outputs, noise=False)
+        result = a.backproject(image.outputs)
+
+        assert isinstance(result, na.FunctionArray)
+        assert np.all(np.isfinite(na.as_named_array(result.outputs).value))
+
     def test_backproject_unit(
         self,
         a: ctis.instruments.AbstractInstrument,
@@ -112,6 +125,16 @@ class AbstractTestAbstractInstrument(
         result = a.num_channel
 
         assert isinstance(result, int)
+
+    def test_axis_sensor_xy(
+        self,
+        a: ctis.instruments.AbstractInstrument,
+    ):
+        result = a.axis_sensor_xy
+
+        assert isinstance(result, tuple)
+        assert len(result) == 2
+        assert all(isinstance(ax, str) for ax in result)
 
     @pytest.mark.parametrize("integrate", [False, True])
     def test_image_uncertainty(
