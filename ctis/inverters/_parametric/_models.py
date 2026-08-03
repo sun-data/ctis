@@ -49,6 +49,19 @@ class AbstractSpectralModel(
         return len(self.parameters)
 
     @abc.abstractmethod
+    def unit(self, intensity: u.UnitBase) -> dict[str, u.UnitBase]:
+        """
+        The unit of each quantity returned by :meth:`physical`.
+
+        Parameters
+        ----------
+        intensity
+            The unit of the line radiance integrated over the spectral line.
+            This is determined by the instrument rather than by the model, so
+            it is supplied by the caller.
+        """
+
+    @abc.abstractmethod
     def physical(
         self,
         parameters: "torch.Tensor",
@@ -193,6 +206,15 @@ class GaussianModel(
         width_thermal = self.width_thermal.to_value(u.km / u.s)
         width_instrument = self.width_instrument.to_value(u.km / u.s)
         return width_thermal**2 + width_instrument**2
+
+    def unit(self, intensity: u.UnitBase) -> dict[str, u.UnitBase]:
+        velocity = u.km / u.s
+        return dict(
+            intensity=intensity,
+            velocity=velocity,
+            width_nonthermal=velocity,
+            width=velocity,
+        )
 
     def physical(
         self,

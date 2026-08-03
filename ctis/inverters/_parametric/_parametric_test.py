@@ -451,3 +451,61 @@ def test__call__optika():
     assert np.all(np.isfinite(result.mean_chi_squared.ndarray))
     for name in b.parameters:
         assert np.all(np.isfinite(result.parameters[name].ndarray))
+
+
+def test__call__guess_parameters():
+    """The physical parameters may be supplied directly."""
+    inverter = ctis.inverters.ParametricInverter(
+        instrument=instrument,
+        model=model,
+        num_iteration=50,
+    )
+
+    guess = {
+        "intensity": na.ScalarArray(
+            ndarray=truth["intensity"] << inverter.unit_intensity,
+            axes=("scene_x", "scene_y"),
+        ),
+        # a scalar is broadcast over the spatial axes of the scene
+        "velocity": 0 * u.km / u.s,
+        "width_nonthermal": 25 * u.km / u.s,
+    }
+
+    with pytest.warns(UserWarning):
+        result = inverter(images, guess=guess)
+
+    assert np.all(np.isfinite(result.mean_chi_squared.ndarray))
+    for name in model.parameters:
+        assert np.all(np.isfinite(result.parameters[name].ndarray))
+
+
+def test__call__guess_roundtrip():
+    """The result of one fit can warm-start another."""
+    inverter = ctis.inverters.ParametricInverter(
+        instrument=instrument,
+        model=model,
+        num_iteration=300,
+    )
+
+    with pytest.warns(UserWarning):
+        first = inverter(images)
+
+    second = inverter(images, guess=first.parameters)
+
+    # the restarted fit resumes where the previous one left off
+    assert second.mean_chi_squared.ndarray[0] < first.mean_chi_squared.ndarray[0]
+
+    # and so converges, where the first one ran out of iterations
+    assert not first.success
+    assert second.success
+    assert second.mean_chi_squared.ndarray.min() <= first.mean_chi_squared.ndarray.min()
+
+
+def test__call__guess_missing_parameter():
+    inverter = ctis.inverters.ParametricInverter(
+        instrument=instrument,
+        model=model,
+        num_iteration=2,
+    )
+    with pytest.raises(ValueError):
+        inverter(images, guess={"intensity": 1 * inverter.unit_intensity})

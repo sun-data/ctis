@@ -368,21 +368,54 @@ class ParametricInverter(
 
         return scale_input, scale_output
 
+    @property
+    def unit_parameters(self) -> dict[str, u.UnitBase]:
+        """
+        The unit of each physical parameter of :attr:`model`.
+
+        The unit of the line radiance is determined by the instrument, see
+        :attr:`unit_intensity`, while the remaining units are determined by
+        the model.
+        """
+        return self.model.unit(self.unit_intensity)
+
     def _guess(
         self,
         images: na.FunctionArray[na.SpectralPositionalVectorArray, na.ScalarArray],
-        guess: None | na.AbstractScalar | na.AbstractFunctionArray,
-    ) -> np.ndarray:
+        guess: (
+            None
+            | dict[str, na.AbstractScalar]
+            | na.AbstractScalar
+            | na.AbstractFunctionArray
+        ),
+    ) -> dict[str, np.ndarray]:
         """
-        Compute the moments of an initial reconstruction of the scene.
-
-        Returns the integrated radiance, the mean velocity, and the nonthermal
-        width of every spatial pixel.
+        Compute the starting point of the fit, as the physical value of every
+        parameter in every spatial pixel.
         """
         instrument = self.instrument
 
         axis_wavelength = instrument.axis_wavelength
         axis_scene_xy = tuple(instrument.axis_scene_xy)
+
+        # the physical parameters may be supplied directly, which allows a fit
+        # to be warm-started from the result of a previous one.
+        if isinstance(guess, dict):
+            unit = self.unit_parameters
+            shape = {
+                ax: instrument.coordinates_scene.shape[ax] - 1 for ax in axis_scene_xy
+            }
+            result = dict()
+            for name in self.model.parameters:
+                if name not in guess:
+                    raise ValueError(
+                        f"`guess` is missing the parameter {name!r}, "
+                        f"expected {self.model.parameters}."
+                    )
+                value = na.broadcast_to(na.as_named_array(guess[name]), shape)
+                value = u.Quantity(value.ndarray_aligned(axis_scene_xy))
+                result[name] = value.to_value(unit[name])
+            return result
 
         if guess is None:
             inverter = ctis.inverters.MartInverter(
@@ -439,12 +472,21 @@ class ParametricInverter(
 
         intensity = np.maximum(intensity, intensity.max() / 1e6)
 
-        return np.stack([intensity, mean, width])
+        return dict(
+            intensity=intensity,
+            velocity=mean,
+            width_nonthermal=width,
+        )
 
     def __call__(
         self,
         images: na.FunctionArray[na.SpectralPositionalVectorArray, na.ScalarArray],
-        guess: None | na.AbstractScalar | na.AbstractFunctionArray = None,
+        guess: (
+            None
+            | dict[str, na.AbstractScalar]
+            | na.AbstractScalar
+            | na.AbstractFunctionArray
+        ) = None,
         verbose: bool = False,
     ) -> "ParametricInversionResult":
         """
@@ -458,10 +500,24 @@ class ParametricInverter(
             :attr:`~ctis.instruments.AbstractInstrument.coordinates_sensor`
             attribute of :attr:`instrument`.
         guess
-            An initial guess at the reconstructed scene, whose moments are used
-            as the starting point of the fit.
-            If :obj:`None`, the guess is computed using
-            :class:`~ctis.inverters.MartInverter`.
+            The starting point of the fit, given in any of three forms.
+
+            A :class:`dict` of physical parameters, named according to
+            :attr:`~ctis.inverters.AbstractSpectralModel.parameters` of
+            :attr:`model`, is used directly. Each value may be a full map over
+            the spatial axes of the scene, or a scalar which is broadcast over
+            them. Since
+            :attr:`~ctis.inverters.ParametricInversionResult.parameters` is a
+            dictionary of exactly this form, the result of one fit may be used
+            to warm-start another.
+
+            A reconstructed scene, as either an
+            :class:`~named_arrays.AbstractScalar` or an
+            :class:`~named_arrays.AbstractFunctionArray`, is reduced to its
+            moments in every spatial pixel.
+
+            If :obj:`None` (the default), a scene is first reconstructed using
+            :class:`~ctis.inverters.MartInverter`, and its moments are used.
         verbose
             Whether to print the merit function at every iteration.
         """
@@ -548,13 +604,8 @@ class ParametricInverter(
             result = regridder(cube) * scale_output
             return result.sum(index_wavelength)
 
-        intensity, mean, width = self._guess(images, guess)
-
-        parameters = model.guess(
-            intensity=_tensor(intensity),
-            velocity=_tensor(mean),
-            width_nonthermal=_tensor(width),
-        )
+        parameters = self._guess(images, guess)
+        parameters = model.guess(**{k: _tensor(v) for k, v in parameters.items()})
         parameters = parameters.detach().clone().requires_grad_(True)
 
         optimizer = torch.optim.Adam([parameters], lr=self.learning_rate)
@@ -620,12 +671,7 @@ class ParametricInverter(
             physical = model.physical(parameters)
             profile = model(parameters, velocity)
 
-        unit = dict(
-            intensity=self.unit_intensity,
-            velocity=u.km / u.s,
-            width_nonthermal=u.km / u.s,
-            width=u.km / u.s,
-        )
+        unit = self.unit_parameters
         parameters_result = {
             k: na.ScalarArray(
                 ndarray=physical[k].detach().cpu().numpy() << unit[k],
