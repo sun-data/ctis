@@ -1,6 +1,7 @@
 import warnings
 import dataclasses
 import numpy as np
+import astropy.units as u
 import named_arrays as na
 import ctis
 from .. import AbstractIterativeInverter, IterativeInversionResult
@@ -41,9 +42,23 @@ class MartInverter(
     threshold_convergence: float = 1e-3
     r"""
     The convergence threshold, :math:`T`, which halts the iteration.
-    
+
     If :math:`\langle \chi_{i-1}^2 \rangle - \langle \chi_{i}^2 \rangle < T`,
     then the algorithm is considered to be converged.
+    """
+
+    unit: None | u.UnitBase = None
+    """
+    The unit of the reconstructed scene.
+
+    This is forwarded to
+    :meth:`~ctis.instruments.AbstractInstrument.backproject`, which expresses
+    the result in either photon or energy units as requested.
+    If :obj:`None` (the default), the natural units of the backprojection are
+    used, which differ between instruments.
+
+    The iteration itself is unaffected, since the multiplicative correction is
+    a ratio of two backprojections and is therefore dimensionless.
     """
 
     def __post_init__(self):
@@ -89,7 +104,7 @@ class MartInverter(
         images = images.outputs
 
         if guess is None:
-            scene = instrument.backproject(images).outputs
+            scene = instrument.backproject(images, unit=self.unit).outputs
             scene = scene.mean(axis_channel)
             scene.ndarray[:] = scene.ndarray.mean()
         else:
@@ -99,7 +114,7 @@ class MartInverter(
 
         gamma = self.gamma
 
-        backprojected = instrument.backproject(images).outputs
+        backprojected = instrument.backproject(images, unit=self.unit).outputs
 
         backprojected = np.maximum(backprojected, 0)
 
@@ -138,7 +153,10 @@ class MartInverter(
                 num_iteration = i + 1
                 break
 
-            backprojected_new = instrument.backproject(images_new).outputs
+            backprojected_new = instrument.backproject(
+                images_new,
+                unit=self.unit,
+            ).outputs
 
             backprojected_new = np.maximum(backprojected_new, 0)
 

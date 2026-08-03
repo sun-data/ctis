@@ -410,3 +410,44 @@ def test__call__uncertainty_from_images():
         result = inverter(images_uncertain)
 
     assert np.all(np.isfinite(result.mean_chi_squared.ndarray))
+
+
+def test__call__optika():
+    """
+    The whole inversion must run against an `OptikaInstrument`, whose
+    backprojection is naturally expressed in photon rather than energy units.
+    """
+    a = _instrument_optika()
+    b = ctis.inverters.GaussianModel(
+        width_thermal=200 * u.km / u.s,
+        width_instrument=100 * u.km / u.s,
+        velocity_max=4000 * u.km / u.s,
+    )
+
+    inverter = ctis.inverters.ParametricInverter(
+        instrument=a,
+        model=b,
+        num_iteration=50,
+        num_iteration_guess=5,
+    )
+
+    axis_scene_xy = tuple(a.axis_scene_xy)
+    num = tuple(a.coordinates_scene.shape[ax] - 1 for ax in axis_scene_xy)
+    num_wavelength = a.coordinates_scene.shape[a.axis_wavelength] - 1
+
+    rng = np.random.default_rng(0)
+    scene_optika = na.FunctionArray(
+        inputs=a.coordinates_scene,
+        outputs=na.ScalarArray(
+            ndarray=(1 + rng.random((num_wavelength,) + num))
+            << (inverter.unit_intensity / u.AA),
+            axes=(a.axis_wavelength,) + axis_scene_xy,
+        ),
+    )
+
+    with pytest.warns(UserWarning):
+        result = inverter(a.image(scene_optika, noise=False))
+
+    assert np.all(np.isfinite(result.mean_chi_squared.ndarray))
+    for name in b.parameters:
+        assert np.all(np.isfinite(result.parameters[name].ndarray))

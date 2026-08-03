@@ -388,6 +388,11 @@ class ParametricInverter(
             inverter = ctis.inverters.MartInverter(
                 instrument=instrument,
                 num_iteration=self.num_iteration_guess,
+                # the natural units of the backprojection differ between
+                # instruments, and a photon radiance cannot be converted into
+                # an energy radiance without the energy per photon, so ask for
+                # the unit this fit works in.
+                unit=self.unit_intensity / u.AA,
             )
             with warnings.catch_warnings():
                 # the guess is deliberately stopped before convergence, and
