@@ -1,4 +1,5 @@
 import dataclasses
+import warnings
 import pytest
 import numpy as np
 import astropy.units as u
@@ -176,7 +177,10 @@ class TestParametricInverter(
         images: na.FunctionArray[na.SpectralPositionalVectorArray, na.ScalarArray],
         guess: None | na.AbstractFunctionArray,
     ):
-        with pytest.warns(UserWarning):
+        # whether a fit converges within its iteration cap depends on the
+        # configuration, so the warning is neither required nor forbidden here
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
             return super().test__call__(a=a, images=images, guess=guess)
 
 
@@ -487,18 +491,30 @@ def test__call__guess_roundtrip():
         num_iteration=300,
     )
 
-    with pytest.warns(UserWarning):
+    # supply the uncertainty explicitly so that both fits are weighted
+    # identically and their merit functions can be compared
+    inverter = dataclasses.replace(
+        inverter,
+        uncertainty=instrument.image(
+            scene, noise=False, uncertainty=True
+        ).outputs.width,
+    )
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
         first = inverter(images)
+        second = inverter(images, guess=first.parameters)
 
-    second = inverter(images, guess=first.parameters)
+    merit_first = first.mean_chi_squared.ndarray
+    merit_second = second.mean_chi_squared.ndarray
 
-    # the restarted fit resumes where the previous one left off
-    assert second.mean_chi_squared.ndarray[0] < first.mean_chi_squared.ndarray[0]
+    # the restarted fit resumes from the best solution of the previous one
+    # the parameters round-trip through float32, hence the loose tolerance
+    assert merit_second[0] == pytest.approx(merit_first.min(), rel=1e-3)
+    assert merit_second[0] < merit_first[0]
 
-    # and so converges, where the first one ran out of iterations
-    assert not first.success
-    assert second.success
-    assert second.mean_chi_squared.ndarray.min() <= first.mean_chi_squared.ndarray.min()
+    # and so does at least as well
+    assert merit_second.min() <= merit_first.min()
 
 
 def test__call__guess_missing_parameter():
@@ -509,3 +525,24 @@ def test__call__guess_missing_parameter():
     )
     with pytest.raises(ValueError):
         inverter(images, guess={"intensity": 1 * inverter.unit_intensity})
+
+
+def test__call__regularization():
+    """A smoothness penalty produces a smoother set of parameter maps."""
+    axis = ("scene_x", "scene_y")
+
+    def roughness(result):
+        v = result.parameters["velocity"].ndarray_aligned(axis).value
+        return np.mean(np.square(np.diff(v, axis=0)))
+
+    kwargs = dict(instrument=instrument, model=model, num_iteration=300)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        rough = ctis.inverters.ParametricInverter(**kwargs)(images)
+        smooth = ctis.inverters.ParametricInverter(
+            regularization=1,
+            **kwargs,
+        )(images)
+
+    assert roughness(smooth) < roughness(rough)

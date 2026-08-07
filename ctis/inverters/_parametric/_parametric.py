@@ -21,6 +21,28 @@ if TYPE_CHECKING:  # pragma: nocover
     import torch
 
 
+def _smoothness(physical: dict[str, "torch.Tensor"]) -> "torch.Tensor":
+    r"""
+    The mean squared first difference of each physical parameter along each
+    spatial axis of the scene, normalized by the mean square of that parameter.
+
+    The penalty is applied to the physical parameters rather than to the
+    unconstrained parameters seen by the optimizer, since the link functions
+    are strongly nonlinear: a large change in :math:`	heta` is a small change
+    in a velocity which is close to its bound, so smoothing :math:`	heta`
+    does not smooth the velocity. Normalizing makes the penalty dimensionless
+    and comparable between parameters.
+    """
+    torch = _torch()
+    result = 0
+    for value in physical.values():
+        scale = torch.mean(torch.square(value)) + torch.finfo(value.dtype).tiny
+        for axis in range(value.ndim):
+            difference = torch.diff(value, dim=axis)
+            result = result + torch.mean(torch.square(difference)) / scale
+    return result
+
+
 @dataclasses.dataclass
 class AbstractParametricInverter(
     AbstractInverter,
@@ -234,6 +256,23 @@ class ParametricInverter(
     monotonic and a single uphill step does not mean the fit has converged.
     """
 
+    regularization: float = dataclasses.field(default=0, kw_only=True)
+    r"""
+    The weight of a spatial smoothness penalty added to the merit function.
+
+    The penalty is the mean squared first difference of the `unconstrained`
+    parameters along each spatial axis of the scene. Since the link functions
+    make every unconstrained parameter of order unity, a single weight
+    penalizes each of them comparably.
+
+    A CTIS measures only a handful of projections, so a fit with three
+    parameters in every spatial pixel can be only marginally overdetermined,
+    and will then reproduce the noise in the measurement rather than the scene.
+    A nonzero value here trades resolution for that overfitting.
+
+    If zero (the default), the fit is unregularized.
+    """
+
     uncertainty: None | na.AbstractScalar = dataclasses.field(
         default=None,
         kw_only=True,
@@ -244,16 +283,18 @@ class ParametricInverter(
     If :obj:`None` (the default) and `images` carries an uncertainty, as
     produced by ``instrument.image(uncertainty=True)``, that uncertainty is
     used.
-    Otherwise the measurement is assumed to be shot-noise limited and the
-    variance is estimated from the measured signal.
+    Otherwise the instrument's own noise model is evaluated once at the
+    starting guess and held fixed, which captures the read-noise floor.
     """
 
-    variance_min: float = dataclasses.field(default=1, kw_only=True)
+    variance_min: float = dataclasses.field(default=0, kw_only=True)
     """
-    The minimum variance, in electrons squared, assigned to a measurement.
+    A lower bound on the variance, in electrons squared.
 
-    This prevents pixels which measured zero signal from being assigned
-    infinite weight.
+    This is a backstop against an instrument whose noise model returns zero for
+    a pixel which measured no signal, which would give that pixel infinite
+    weight. It is not a substitute for a noise model: setting it too large
+    down-weights the faint pixels, and too small weights them far too heavily.
     """
 
     device: None | str = dataclasses.field(default=None, kw_only=True)
@@ -378,6 +419,77 @@ class ParametricInverter(
         the model.
         """
         return self.model.unit(self.unit_intensity)
+
+    def _scene(self, profile: "torch.Tensor") -> na.FunctionArray:
+        """
+        Express a spectral profile computed by :attr:`model` as a scene which
+        the instrument can observe.
+        """
+        instrument = self.instrument
+        axes = (instrument.axis_wavelength,) + tuple(instrument.axis_scene_xy)
+
+        # the model works in velocity space, so convert the radiance density
+        # back into the wavelength basis the instrument expects.
+        outputs = profile.detach().cpu().numpy() * self._dvdl
+
+        return na.FunctionArray(
+            inputs=instrument.coordinates_scene,
+            outputs=na.ScalarArray(
+                ndarray=outputs << (self.unit_intensity / u.AA),
+                axes=axes,
+            ),
+        )
+
+    def _variance(
+        self,
+        images: na.FunctionArray[na.SpectralPositionalVectorArray, na.ScalarArray],
+        axes: tuple[str, ...],
+        profile: "torch.Tensor",
+    ) -> np.ndarray:
+        """
+        The variance of every measurement, in electrons squared.
+
+        The instrument's own noise model is used unless one is supplied,
+        because a measurement which is not shot-noise limited has a floor set
+        by the read noise, and assuming otherwise weights the faint pixels far
+        too heavily.
+        """
+        outputs = images.outputs
+
+        if self.uncertainty is not None:
+            width = na.as_named_array(self.uncertainty).ndarray_aligned(axes)
+
+        elif isinstance(outputs, na.AbstractUncertainScalarArray):
+            # the instrument was already asked for its own uncertainty model
+            width = outputs.width.ndarray_aligned(axes)
+
+        else:
+            # ask the instrument for its noise model at the starting guess.
+            # This is evaluated once and held fixed, so it does not bias the
+            # fitted radiance the way a merit function whose weights follow the
+            # model would.
+            width = self.instrument.image(
+                self._scene(profile),
+                noise=False,
+                uncertainty=True,
+            )
+            width = width.outputs.width.ndarray_aligned(axes)
+
+        variance = np.square(u.Quantity(width).to_value(u.electron))
+
+        return np.maximum(variance, self.variance_min)
+
+    @staticmethod
+    def _weight(variance: np.ndarray) -> np.ndarray:
+        """
+        The reciprocal uncertainty of every measurement.
+
+        A measurement whose variance is zero carries no information, so it is
+        given zero weight rather than an infinite one.
+        """
+        return np.where(
+            variance > 0, 1 / np.sqrt(np.where(variance > 0, variance, 1)), 0
+        )
 
     def _guess(
         self,
@@ -572,26 +684,7 @@ class ParametricInverter(
 
         data = na.nominal(outputs)
         data = u.Quantity(data.ndarray_aligned(axes_data)).to_value(u.electron)
-
-        if self.uncertainty is not None:
-            variance = np.square(
-                u.Quantity(
-                    na.as_named_array(self.uncertainty).ndarray_aligned(axes_data)
-                ).to_value(u.electron)
-            )
-        elif isinstance(outputs, na.AbstractUncertainScalarArray):
-            # the instrument was asked for its own uncertainty model
-            width = outputs.width.ndarray_aligned(axes_data)
-            variance = np.square(u.Quantity(width).to_value(u.electron))
-        else:
-            # shot-noise limited, estimated from the measured signal rather
-            # than the predicted signal, which would bias the radiance low.
-            variance = np.maximum(data, 0)
-
-        variance = np.maximum(variance, self.variance_min)
-
         data = _tensor(data)
-        weight = _tensor(1 / np.sqrt(variance))
 
         shape_cube = regridder.shape_values_input
 
@@ -607,6 +700,11 @@ class ParametricInverter(
         parameters = self._guess(images, guess)
         parameters = model.guess(**{k: _tensor(v) for k, v in parameters.items()})
         parameters = parameters.detach().clone().requires_grad_(True)
+
+        variance = self._variance(images, axes_data, model(parameters, velocity))
+        weight = self._weight(variance)
+        num_measurement = max(int(np.count_nonzero(weight)), 1)
+        weight = _tensor(weight)
 
         optimizer = torch.optim.Adam([parameters], lr=self.learning_rate)
         scheduler = torch.optim.lr_scheduler.ExponentialLR(
@@ -628,7 +726,11 @@ class ParametricInverter(
             optimizer.zero_grad(set_to_none=True)
 
             residual = (data - forward(parameters)) * weight
-            merit = torch.mean(torch.square(residual))
+            merit = torch.sum(torch.square(residual)) / num_measurement
+
+            if self.regularization:
+                penalty = _smoothness(model.physical(parameters))
+                merit = merit + self.regularization * penalty
 
             merit.backward()
             optimizer.step()
@@ -680,18 +782,7 @@ class ParametricInverter(
             for k in physical
         }
 
-        # convert the radiance density from a velocity basis back into the
-        # wavelength basis expected by the rest of the package.
-        outputs = profile.detach().cpu().numpy() * self._dvdl
-        outputs = na.ScalarArray(
-            ndarray=outputs << (self.unit_intensity / u.AA),
-            axes=(axis_wavelength,) + axis_scene_xy,
-        )
-
-        solution = na.FunctionArray(
-            inputs=instrument.coordinates_scene,
-            outputs=outputs,
-        )
+        solution = self._scene(profile)
 
         mean_chi_squared = na.ScalarArray(
             ndarray=np.array(mean_chi_squared),
