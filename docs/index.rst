@@ -28,6 +28,7 @@ Examples on how to use this package.
 
     tutorials/ideal-instrument
     tutorials/simple-mart
+    tutorials/parametric-fit
 
 API Reference
 =============

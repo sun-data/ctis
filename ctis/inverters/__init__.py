@@ -8,6 +8,13 @@ from ._iterative import (
     MartInverter,
     IterativeInversionResult,
 )
+from ._parametric import (
+    AbstractSpectralModel,
+    GaussianModel,
+    AbstractParametricInverter,
+    ParametricInverter,
+    ParametricInversionResult,
+)
 
 __all__ = [
     "merit",
@@ -17,4 +24,9 @@ __all__ = [
     "AbstractInversionResult",
     "InversionResult",
     "IterativeInversionResult",
+    "AbstractSpectralModel",
+    "GaussianModel",
+    "AbstractParametricInverter",
+    "ParametricInverter",
+    "ParametricInversionResult",
 ]
