@@ -12,6 +12,8 @@ authors = [
 description = "A Python library for inverting images captured by CT imaging spectgrographs."
 readme = "README.md"
 requires-python = ">=3.10"
+license = "BSD-3-Clause"
+license-files = ["LICENSE"]
 classifiers = [
     "Programming Language :: Python :: 3",
 ]
