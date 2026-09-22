@@ -1,5 +1,6 @@
 import matplotlib.pyplot as plt
 import pytest
+import numpy as np
 import astropy.units as u
 import named_arrays as na
 import ctis
@@ -84,6 +85,11 @@ inverter = ctis.inverters.MartInverter(
             intermediate=True,
             threshold_convergence=1e-2,
         ),
+        ctis.inverters.MartInverter(
+            instrument=instrument,
+            regularization=1 / 4,
+            threshold_convergence=1e-2,
+        ),
     ],
 )
 class TestMartInverter(
@@ -130,3 +136,83 @@ def test__call__verbose_convergence():
 
     assert result.success
     assert result.num_iteration < a.num_iteration
+
+
+@pytest.mark.parametrize(
+    argnames="axis_regularization,regularization",
+    argvalues=[
+        (None, 1 / 4),
+        (("wavelength", "scene_x", "scene_y"), 1 / 4),
+        (("scene_x", "wavelength"), 1 / 2),
+    ],
+)
+def test_regularize(
+    axis_regularization: None | tuple[str, ...],
+    regularization: float,
+):
+    """
+    One regularization step is a convolution with the kernel of Parker 2022
+    along each regularized axis, conserves the sum along each regularized axis,
+    and preserves positivity.
+    """
+    axis = ("wavelength", "scene_x", "scene_y")
+
+    a = ctis.inverters.MartInverter(
+        instrument=instrument,
+        regularization=regularization,
+        axis_regularization=axis_regularization,
+    )
+
+    x = na.random.uniform(0, 1, shape_random=scene.outputs.shape, seed=0)
+    x = x * scene.outputs.unit
+
+    result = a.regularize(x)
+
+    axis_regularized = a.axis_regularization_
+    assert np.allclose(result.sum(axis_regularized), x.sum(axis_regularized))
+    assert np.all(result >= 0)
+
+    kernel = [regularization, 1 - 2 * regularization, regularization]
+
+    def convolve(column: np.ndarray) -> np.ndarray:
+        return np.convolve(np.pad(column, 1, mode="edge"), kernel, mode="valid")
+
+    expected = x.ndarray_aligned(axis).value
+    for ax in axis_regularized:
+        expected = np.apply_along_axis(convolve, axis.index(ax), expected)
+
+    assert np.allclose(result.ndarray_aligned(axis).value, expected)
+
+
+@pytest.mark.parametrize(
+    argnames="kwargs",
+    argvalues=[
+        dict(regularization=0.6),
+        dict(regularization=-0.1),
+        dict(axis_regularization="channel"),
+        dict(axis_regularization=("wavelength", "sensor_x")),
+    ],
+)
+def test_regularization_invalid(kwargs: dict):
+    """
+    Weights which would produce a kernel with negative weights, and axes which
+    are not axes of the scene, are rejected.
+    """
+    with pytest.raises(ValueError):
+        ctis.inverters.MartInverter(instrument=instrument, **kwargs)
+
+
+def test__call__regularization():
+    """A smoothness penalty produces smoother spectral line profiles."""
+    axis = ("wavelength", "scene_x", "scene_y")
+
+    def roughness(result: ctis.inverters.IterativeInversionResult) -> float:
+        v = result.solution.outputs.ndarray_aligned(axis).value
+        return np.mean(np.square(np.diff(v, axis=0))) / np.mean(np.square(v))
+
+    kwargs = dict(instrument=instrument, threshold_convergence=1e-2)
+
+    rough = ctis.inverters.MartInverter(**kwargs)(images)
+    smooth = ctis.inverters.MartInverter(regularization=1 / 4, **kwargs)(images)
+
+    assert roughness(smooth) < roughness(rough)

@@ -61,10 +61,118 @@ class MartInverter(
     a ratio of two backprojections and is therefore dimensionless.
     """
 
+    regularization: float = 0
+    r"""
+    The weight, :math:`\beta`, of a smoothness penalty applied to the
+    reconstructed scene along :attr:`axis_regularization`.
+
+    After every multiplicative correction, the current guess takes one
+    gradient-descent step on the penalty
+
+    .. math::
+
+        R(\hat{u}) = \frac{1}{2} \sum_k \left( \hat{u}_{k+1} - \hat{u}_k \right)^2,
+
+    where :math:`k` indexes the cells along a regularized axis,
+
+    .. math::
+
+        \hat{u} \leftarrow \hat{u} - \beta \nabla R(\hat{u}),
+
+    which is the same as convolving :math:`\hat{u}` with the kernel
+    :math:`[\beta, 1 - 2 \beta, \beta]` along that axis.
+    If there is more than one regularized axis, the step is taken along each
+    axis in turn, which is a convolution with the separable kernel.
+    This is the smoothed-EM strategy of :cite:t:`Silverman1990` applied to
+    MART, and :math:`\beta = 1/4` reproduces the smoothing kernel of
+    :cite:t:`Parker2022` exactly when all three axes of the scene are
+    regularized.
+
+    The step conserves the sum of :math:`\hat{u}` along each regularized axis,
+    so the radiance integrated over wavelength is unchanged in every spatial
+    pixel, and it preserves positivity as long as
+    :math:`0 \leq \beta \leq 1 / 2`.
+    Values outside this range raise a :class:`ValueError`.
+
+    If zero (the default), the reconstruction is unregularized.
+    """
+
+    axis_regularization: None | str | tuple[str, ...] = None
+    """
+    The logical axes of the scene along which :attr:`regularization`
+    is applied.
+
+    If :obj:`None` (the default), only the wavelength axis of the instrument,
+    :attr:`~ctis.instruments.AbstractInstrument.axis_wavelength`,
+    is regularized, since a CTIS with only a few channels constrains the
+    spectral direction of the scene much more weakly than the spatial
+    directions.
+    Any of the wavelength axis and the two spatial axes of the scene,
+    :attr:`~ctis.instruments.AbstractInstrument.axis_scene_xy`,
+    may be given.
+    """
+
     def __post_init__(self):
 
         if self.gamma is None:
             self.gamma = 2 / self.instrument.num_channel
+
+        instrument = self.instrument
+        axis_regularization = self.axis_regularization_
+        axis_valid = (instrument.axis_wavelength, *instrument.axis_scene_xy)
+        for axis in axis_regularization:
+            if axis not in axis_valid:
+                raise ValueError(
+                    f"`axis_regularization` must be a subset of {axis_valid}, "
+                    f"got {axis_regularization!r}."
+                )
+
+        if not (0 <= self.regularization <= 1 / 2):
+            raise ValueError(
+                f"`regularization` must be between 0 and 1/2 to preserve "
+                f"positivity, got {self.regularization!r}."
+            )
+
+    @property
+    def axis_regularization_(self) -> tuple[str, ...]:
+        """
+        :attr:`axis_regularization` normalized to a tuple of axis names,
+        with :obj:`None` resolved to the wavelength axis of the instrument.
+        """
+        axis = self.axis_regularization
+        if axis is None:
+            axis = self.instrument.axis_wavelength
+        if isinstance(axis, str):
+            axis = (axis,)
+        return tuple(axis)
+
+    def regularize(self, scene: na.ScalarArray) -> na.ScalarArray:
+        r"""
+        Take one gradient-descent step of size :attr:`regularization`
+        on the smoothness penalty along :attr:`axis_regularization`.
+
+        Parameters
+        ----------
+        scene
+            The current guess at the reconstructed scene.
+        """
+        beta = self.regularization
+
+        if beta == 0:
+            return scene
+
+        result = scene.copy()
+
+        for axis in self.axis_regularization_:
+            # the flux moved across each cell interface, from the higher
+            # cell into the lower cell.
+            # Since every interface moves flux from one cell into another,
+            # the sum along `axis` is conserved exactly.
+            flux = beta * np.diff(result, axis=axis)
+            result[{axis: slice(None, ~0)}] += flux
+            result[{axis: slice(1, None)}] -= flux
+
+        return result
 
     def __call__(
         self,
@@ -178,6 +286,8 @@ class MartInverter(
                 scene = scene * correction
             else:
                 scene *= correction
+
+            scene = self.regularize(scene)
 
             merit_old = merit
 
