@@ -170,9 +170,9 @@ and the brightness represents its intensity.
     with astropy.visualization.quantity_support():
         fig, axs = plt.subplots(
             ncols=3,
-            gridspec_kw=dict(width_ratios=[0.45, 0.45, 0.1]),
+            gridspec_kw=dict(width_ratios=[0.42, 0.42, 0.16]),
             constrained_layout=True,
-            figsize=(8, 4),
+            figsize=(9, 4),
         )
         for ax, s, title in zip(axs, [scene, result.solution], ["original", "reconstructed"]):
             colorbar = na.plt.rgbmesh(
@@ -184,11 +184,14 @@ and the brightness represents its intensity.
             )
             ax.set_aspect("equal")
             ax.set_title(title)
+            ax.set_xlabel("$x$ (arcsec)")
+            ax.set_ylabel("$y$ (arcsec)")
         na.plt.pcolormesh(
             C=colorbar,
             axis_rgb="wavelength",
             ax=axs[2],
         )
+        axs[2].set_ylabel("wavelength (Å)")
         axs[2].yaxis.tick_right()
         axs[2].yaxis.set_label_position("right")
 
