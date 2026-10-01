@@ -1,0 +1,684 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Inverting a Synthetic Scene with MART</title>
+<meta name="description" content="A walkthrough of the ctis MART tutorial: reconstructing a spectral cube from four dispersed images.">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:ital,wght@0,400;0,600;1,400&display=swap">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@6.0.2/dist/reset.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@6.0.2/dist/reveal.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.11.1/styles/github.min.css">
+
+<style>
+  :root {
+    --paper: #f6f4ef;
+    --paper-deep: #ebe6db;
+    --rule: #d6d0c4;
+    --ink: #1f2430;
+    --muted: #5b6270;
+    --accent: #b4451a;
+    --blue: #2f6db5;
+    --night: #141a26;
+    --night-ink: #f1ede4;
+    --night-muted: #a9b0bd;
+  }
+
+  html, body, .reveal-viewport {
+    background: var(--paper);
+  }
+
+  .reveal {
+    font-family: "IBM Plex Sans", system-ui, sans-serif;
+    font-size: 36px;
+    line-height: 1.35;
+    color: var(--ink);
+  }
+
+  .reveal .slides {
+    text-align: left;
+  }
+
+  .reveal .slides > section {
+    height: 100%;
+    padding: 0;
+  }
+
+  .reveal .frame {
+    box-sizing: border-box;
+    height: 100%;
+    padding: 72px 110px 96px;
+    display: flex;
+    flex-direction: column;
+    gap: 32px;
+  }
+
+  .reveal h1, .reveal h2, .reveal h3 {
+    margin: 0;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    line-height: 1.1;
+  }
+
+  .reveal h1 { font-size: 96px; }
+  .reveal h2 { font-size: 64px; }
+  .reveal h3 { font-size: 36px; }
+
+  .reveal p, .reveal li { margin: 0; }
+
+  .reveal b { font-weight: 600; }
+
+  .reveal i { font-style: italic; }
+
+  .reveal a {
+    color: var(--blue);
+    text-decoration: none;
+    border-bottom: 2px solid currentColor;
+  }
+
+  /* Layout */
+
+  .reveal .row {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    gap: 72px;
+    align-items: center;
+  }
+
+  .reveal .col {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 32px;
+  }
+
+  .reveal .fig {
+    flex: 1;
+    min-height: 0;
+    margin: 0;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+  }
+
+  .reveal .fig img, .reveal .fig video {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+  }
+
+  .reveal .row > .fig {
+    height: 100%;
+  }
+
+  .reveal .caption {
+    font-size: 28px;
+    color: var(--muted);
+    max-width: 1500px;
+  }
+
+  /* Title slide */
+
+  .reveal .title-frame {
+    color: var(--night-ink);
+    flex-direction: row;
+    align-items: center;
+    gap: 96px;
+    padding: 96px 110px;
+  }
+
+  .reveal .title-frame .text {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 40px;
+  }
+
+  .reveal .kicker {
+    font-size: 28px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #e08a5c;
+  }
+
+  .reveal .lede {
+    font-size: 36px;
+    color: var(--night-muted);
+    max-width: 920px;
+  }
+
+  .reveal .byline {
+    font-size: 36px;
+    font-weight: 600;
+  }
+
+  .reveal .title-frame a {
+    color: var(--night-ink);
+  }
+
+  .reveal .hero {
+    width: 720px;
+    height: 720px;
+    border-radius: 16px;
+  }
+
+  /* Big numbers */
+
+  .reveal .stat {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .reveal .big {
+    font-size: 140px;
+    font-weight: 600;
+    line-height: 1;
+    letter-spacing: -0.02em;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .reveal .stat .label {
+    font-size: 28px;
+    color: var(--muted);
+  }
+
+  .reveal .callout {
+    font-size: 36px;
+    font-weight: 600;
+    color: var(--accent);
+    border-top: 2px solid var(--rule);
+    padding-top: 24px;
+  }
+
+  /* Lists */
+
+  .reveal ul.facts, .reveal ol.steps {
+    list-style: none;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+  }
+
+  .reveal ul.facts li {
+    padding-left: 32px;
+    border-left: 4px solid var(--rule);
+  }
+
+  .reveal ol.steps {
+    counter-reset: step;
+    gap: 28px;
+  }
+
+  .reveal ol.steps li {
+    counter-increment: step;
+    display: grid;
+    grid-template-columns: 64px 1fr;
+    align-items: baseline;
+  }
+
+  .reveal ol.steps li::before {
+    content: counter(step);
+    font-weight: 600;
+    color: var(--accent);
+  }
+
+  .reveal .step-math {
+    font-size: 32px;
+    color: var(--muted);
+  }
+
+  /* Cards */
+
+  .reveal .card {
+    background: var(--paper-deep);
+    border-radius: 16px;
+    padding: 40px;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+  }
+
+  .reveal .card p {
+    font-size: 28px;
+  }
+
+  .reveal .tag {
+    font-size: 24px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+
+  .reveal .cards {
+    flex: 1;
+    min-height: 0;
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 40px;
+    align-content: center;
+  }
+
+  /* Table */
+
+  .reveal table.spec {
+    border-collapse: collapse;
+    width: 100%;
+  }
+
+  .reveal table.spec th, .reveal table.spec td {
+    text-align: left;
+    padding: 20px 0;
+    border-bottom: 2px solid var(--rule);
+    vertical-align: baseline;
+  }
+
+  .reveal table.spec th {
+    width: 360px;
+    font-weight: 600;
+  }
+
+  /* Code */
+
+  .reveal pre {
+    box-sizing: border-box;
+    margin: 0;
+    width: 100%;
+    padding: 40px 48px;
+    border-radius: 16px;
+    background: var(--paper-deep);
+    box-shadow: none;
+  }
+
+  .reveal pre code {
+    display: block;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 30px;
+    line-height: 1.45;
+    padding: 0;
+    background: none;
+    max-height: none;
+    overflow: visible;
+  }
+
+  .reveal .hljs-comment {
+    color: #6a7380;
+    font-style: italic;
+  }
+
+  /* References */
+
+  .reveal ul.refs {
+    list-style: none;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 28px;
+  }
+
+  .reveal ul.refs .what {
+    display: block;
+    font-size: 28px;
+    color: var(--muted);
+  }
+
+  /* Chrome */
+
+  .reveal .slide-number {
+    background: none;
+    color: var(--muted);
+    font-family: "IBM Plex Sans", system-ui, sans-serif;
+    font-size: 20px;
+    left: 24px;
+    right: auto;
+    bottom: 16px;
+  }
+
+  .reveal .slide-number a {
+    color: inherit;
+    border: none;
+  }
+
+  .reveal .controls {
+    color: var(--muted);
+  }
+
+  .reveal .progress {
+    color: var(--accent);
+  }
+</style>
+</head>
+
+<body>
+<div class="reveal">
+<div class="slides">
+
+<section id="title" data-background-color="#141a26">
+  <div class="frame title-frame">
+    <div class="text">
+      <p class="kicker">ctis tutorial walkthrough</p>
+      <h1>Inverting a Synthetic Scene with MART</h1>
+      <p class="lede">Reconstructing a spectral cube from four dispersed images with the multiplicative algebraic reconstruction technique</p>
+      <p class="byline">Roy T. Smart</p>
+    </div>
+    <img class="hero" src="figures/hero.png" alt="False-color image of the synthetic test scene">
+  </div>
+  <aside class="notes">
+    This talk walks through the "Invert a Synthetic Scene with MART" tutorial
+    in the ctis documentation. Every figure is regenerated from the current
+    code each time the docs build.
+  </aside>
+</section>
+
+<section id="problem">
+  <div class="frame">
+    <h2>The inverse problem</h2>
+    <div class="row">
+      <div class="col">
+        <p>A computed tomography imaging spectrograph (CTIS) images the same field through several dispersion directions in a single exposure.</p>
+        <p>Each pixel mixes position and Doppler velocity, so recovering the cube is a <b>limited-angle tomography</b> problem.</p>
+      </div>
+      <div class="col">
+        <div class="stat">
+          <span class="big" data-number="num_unknown">81,920</span>
+          <span class="label">unknowns: a 64 × 64 × 20 cube in position and velocity</span>
+        </div>
+        <div class="stat">
+          <span class="big" data-number="num_measurement">32,768</span>
+          <span class="label">measurements: 4 channels × 128 × 64 pixels</span>
+        </div>
+        <p class="callout"><span data-number="ratio" data-digits="1">2.5</span>× more unknowns than measurements</p>
+      </div>
+    </div>
+  </div>
+  <aside class="notes">
+    The problem is underdetermined: there are more voxels in the cube than
+    pixels in all four images combined. Any reconstruction has to lean on
+    the algorithm's implicit prior, which for MART is positivity and a
+    multiplicative update from a flat start.
+  </aside>
+</section>
+
+<section id="lines-of-sight">
+  <div class="frame">
+    <h2>Each channel sums along a tilted line</h2>
+    <figure class="fig"><img src="figures/lines_of_sight.png" alt="The test scene in position and velocity, with the lines of sight of each channel drawn over it"></figure>
+    <p class="caption">The test scene summed over y (left) and over x (right). Each line is the set of scene points that land on one pixel: dispersion shifts the image by 0.4″ for every 10 km/s.</p>
+  </div>
+  <aside class="notes">
+    The 005 and 185 degree channels disperse along x, so their lines of sight
+    tilt in the x-velocity plane with opposite slopes. The 095 and 275 degree
+    channels do the same along y. Four projection angles is very few for
+    tomography, which is why the reconstruction is hard.
+  </aside>
+</section>
+
+<section id="scene">
+  <div class="frame">
+    <h2>The test scene</h2>
+    <div class="row">
+      <figure class="fig"><img src="figures/scene.png" alt="False-color image of the test scene, colored by Doppler velocity"></figure>
+      <div class="col">
+        <p class="caption">Color encodes Doppler velocity; brightness encodes radiance.</p>
+        <ul class="facts">
+          <li>Eight Gaussian blobs at random positions and Doppler shifts</li>
+          <li>20″ × 20″ field on a 64 × 64 grid</li>
+          <li>±500 km/s around 171 Å in 20 velocity bins</li>
+          <li>Uniform background of 1% of the peak</li>
+          <li>Designed by Amy R. Winebarger</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+  <aside class="notes">
+    The scene is ctis.scenes.gaussians, originally prepared by Amy
+    Winebarger. The tutorial adds a uniform background of 1% of the peak
+    so that no part of the field is empty.
+  </aside>
+</section>
+
+<section id="spectrum">
+  <div class="frame">
+    <h2>Its average spectrum</h2>
+    <figure class="fig"><img src="figures/spectrum.png" alt="The average spectrum of the test scene, with a blueshifted and a redshifted peak"></figure>
+    <p class="caption">A blueshifted and a redshifted component, each about 125 km/s from rest, on a flat background.</p>
+  </div>
+  <aside class="notes">
+    This is the spatial average of the cube. Keep it in mind: we will compare
+    the reconstruction's average spectrum against it at the end.
+  </aside>
+</section>
+
+<section id="instrument">
+  <div class="frame">
+    <h2>An ideal four-channel CTIS</h2>
+    <div class="row">
+      <table class="spec">
+        <tr><th>Channels</th><td>4, dispersed at 5.64° + 0°, 90°, 180° and 270°</td></tr>
+        <tr><th>Dispersion</th><td>10 km/s per pixel (<span data-number="dispersion" data-digits="2">5.70</span> mÅ per pixel)</td></tr>
+        <tr><th>Plate scale</th><td>0.4″ per pixel</td></tr>
+        <tr><th>Sensor</th><td>128 × 64 pixels per channel</td></tr>
+        <tr><th>Exposure</th><td>20 s with 1 cm² of effective area</td></tr>
+        <tr><th>Noise</th><td>Photon shot noise only</td></tr>
+      </table>
+    </div>
+    <p class="caption">ctis.instruments.IdealInstrument has no point-spread function, distortion or vignetting.</p>
+  </div>
+  <aside class="notes">
+    An ideal instrument isolates the inversion problem from the optics;
+    OptikaInstrument adds the real optics later.
+  </aside>
+</section>
+
+<section id="images">
+  <div class="frame">
+    <h2>What the instrument records</h2>
+    <figure class="fig"><img src="figures/images.png" alt="The four simulated channel images, each a noisy grayscale image of dispersed blobs"></figure>
+    <p class="caption">One 20 s exposure. Each channel sees the same blobs, shifted along its dispersion direction in proportion to their velocity.</p>
+  </div>
+  <aside class="notes">
+    Compare the blob arrangement between opposite channels: the shifts go in
+    opposite directions, which is what lets MART separate position from
+    velocity.
+  </aside>
+</section>
+
+<section id="mart">
+  <div class="frame">
+    <h2>The MART loop</h2>
+    <div class="row">
+      <ol class="steps col" style="flex: 1.4">
+        <li><span>Start from a flat guess, $\hat{u}_0$.</span></li>
+        <li><span>Predict the images: $d_i = P\,\hat{u}_i$</span></li>
+        <li><span>Score the fit: $\langle \chi_i^2 \rangle = \left\langle \left( \frac{d_i - d}{\sigma_i} \right)^2 \right\rangle$<br><span class="step-math">Stop when it improves by less than $T = 10^{-3}$.</span></span></li>
+        <li><span>Correct each channel: $C_i = \left( \frac{P^* d}{P^* d_i} \right)^{\gamma}$<br><span class="step-math">The learning rate is $\gamma = 2 / N$.</span></span></li>
+        <li><span>Update: $\hat{u}_{i+1} = \overline{C}_i \, \hat{u}_i$<br><span class="step-math">$\overline{C}_i$ is the geometric mean over the $N$ channels.</span></span></li>
+      </ol>
+      <div class="col card">
+        <h3>Compared with Parker et al. (2022)</h3>
+        <p>Corrections are computed in scene coordinates, so flux is conserved in both the forward and backward projections.</p>
+        <p>No contrast-enhancement filter yet.</p>
+        <p>Multiplicative updates keep every voxel positive.</p>
+      </div>
+    </div>
+  </div>
+  <aside class="notes">
+    P is the forward model and P-star the deprojection, which spreads each
+    pixel's signal evenly back along its line of sight. The learning rate
+    gamma tempers each channel's correction before the channels are combined.
+  </aside>
+</section>
+
+<section id="code">
+  <div class="frame">
+    <h2>Three calls in ctis</h2>
+    <pre><code class="language-python" data-trim data-noescape>
+instrument = ctis.instruments.IdealInstrument(
+    dispersion=dispersion,          # 10 km/s per pixel
+    angle=angle,                    # 4 dispersion directions
+    plate_scale=0.4 * u.arcsec / u.pix,
+    ...,
+)
+images = instrument.image(scene)    # forward model + shot noise
+
+mart = ctis.inverters.MartInverter(instrument=instrument)
+inversion = mart(images)            # reconstruct the cube
+
+inversion.plot_moments(scene, axis="wavelength")
+    </code></pre>
+    <p class="caption">The full, runnable tutorial: <a href="../../tutorials/simple-mart.html">Invert a Synthetic Scene with MART</a></p>
+  </div>
+  <aside class="notes">
+    All arrays are named-arrays, so axes are matched by name rather than
+    position. The inverter only needs an instrument model: swapping in an
+    OptikaInstrument requires no change to the inversion code.
+  </aside>
+</section>
+
+<section id="reconstruction">
+  <div class="frame">
+    <h2>Reconstruction, iteration by iteration</h2>
+    <figure class="fig">
+      <video data-autoplay loop muted playsinline controls poster="figures/reconstruction.png" src="figures/reconstruction.mp4"></video>
+    </figure>
+    <p class="caption">Each frame is one MART update. The label gives $\langle \chi^2 \rangle$ averaged over the four channels.</p>
+  </div>
+  <aside class="notes">
+    The blobs appear within a few iterations; later iterations sharpen them
+    and also build up the speckled background noise.
+  </aside>
+</section>
+
+<section id="convergence">
+  <div class="frame">
+    <h2>Convergence</h2>
+    <figure class="fig"><img src="figures/convergence.png" alt="Mean chi-squared and signal-correlated residual against iteration for each channel"></figure>
+    <p class="caption">$\langle \chi^2 \rangle$ ends at <span data-number="chi2_final" data-digits="2">0.33</span>, well below the noise level of 1 (dashed), so the later iterations are fitting noise. MART stopped after <span data-number="iteration_final">22</span> updates, when $\langle \chi^2 \rangle$ improved by less than $10^{-3}$.</p>
+  </div>
+  <aside class="notes">
+    With more unknowns than measurements, MART can always reduce chi-squared
+    further by fitting the noise. Where to stop is a real choice; the
+    current rule stops only when chi-squared stops improving. The
+    signal-correlated residual peaks early, while the blobs are still
+    forming, then falls as structure moves out of the residual.
+  </aside>
+</section>
+
+<section id="spectrum-recovered">
+  <div class="frame">
+    <h2>The average spectrum, recovered</h2>
+    <figure class="fig"><img src="figures/spectrum_comparison.png" alt="The original and reconstructed average spectra"></figure>
+    <p class="caption">The peaks come back <span data-number="peak_blue_low">17</span>% and <span data-number="peak_red_low">14</span>% low, and the dip between them <span data-number="gap_high">65</span>% high: MART spreads intensity into the line wings.</p>
+  </div>
+  <aside class="notes">
+    This wing inflation is consistent with the crossing-streak ("plaid")
+    artifact that Parker et al. 2022 suppress with smoothing. An optional
+    smoothness regularization is in review and will be judged on ESIS data.
+  </aside>
+</section>
+
+<section id="moments">
+  <div class="frame">
+    <h2>Line moments, pixel by pixel</h2>
+    <figure class="fig"><img src="figures/moments.png" alt="Two-dimensional histograms of true against reconstructed radiance, median velocity and interquartile range"></figure>
+    <p class="caption">True against reconstructed radiance, Doppler shift (median velocity) and line width (interquartile range) for every pixel. The dashed line is perfect recovery.</p>
+  </div>
+  <aside class="notes">
+    Radiance is recovered best. The Doppler shift is the hardest moment;
+    the vertical band at zero true velocity is the background, which has
+    no Doppler shift.
+  </aside>
+</section>
+
+<section id="next">
+  <div class="frame">
+    <h2>Next steps</h2>
+    <div class="cards">
+      <div class="card">
+        <p class="tag">In review · <a href="https://github.com/sun-data/ctis/pull/25">#25</a></p>
+        <h3>Smoothness regularization</h3>
+        <p>Optional smoothing along wavelength, after Parker et al. (2022). No gain on this synthetic scene, so it will be judged on ESIS flight data.</p>
+      </div>
+      <div class="card">
+        <p class="tag">In review · <a href="https://github.com/sun-data/ctis/pull/23">#23</a></p>
+        <h3>Line-profile fitting</h3>
+        <p>ParametricInverter fits a spectral line profile to every pixel instead of reconstructing the whole cube.</p>
+      </div>
+      <div class="card">
+        <p class="tag">Available</p>
+        <h3>Real optics</h3>
+        <p>OptikaInstrument takes distortion, effective area and vignetting from an optika model, the step toward inverting ESIS flight data.</p>
+      </div>
+    </div>
+  </div>
+  <aside class="notes">
+    The inverters only talk to the instrument interface, so each of these
+    plugs into the same workflow shown in this talk.
+  </aside>
+</section>
+
+<section id="references">
+  <div class="frame">
+    <h2>References and links</h2>
+    <ul class="refs">
+      <li>Gordon, Bender &amp; Herman (1970), <i>J. Theor. Biol.</i> 29, 471 <span class="what">Algebraic reconstruction techniques</span></li>
+      <li>Fox, Kankelborg &amp; Thomas (2010), <i>ApJ</i> 719, 1132 <span class="what">MART applied to MOSES observations</span></li>
+      <li>Parker et al. (2022), <i>ApJ</i> 938, 116 <span class="what">First flight of ESIS and its MART pipeline</span></li>
+      <li><a href="https://ctis.readthedocs.io">ctis.readthedocs.io</a> <span class="what">Documentation, tutorials and these slides</span></li>
+      <li><a href="https://github.com/sun-data/ctis">github.com/sun-data/ctis</a> <span class="what">Source code</span></li>
+    </ul>
+  </div>
+</section>
+
+</div>
+</div>
+
+<script src="figures/numbers.js"></script>
+<script>
+  // Fill in the numbers computed by make_figures.py, so the text always
+  // matches the figures. The values typed into the HTML are the fallback.
+  const numbers = window.numbers;
+  if (numbers) {
+    const derived = {
+      ratio: numbers.num_unknown / numbers.num_measurement,
+      peak_blue_low: 100 * (1 - numbers.peak_blue),
+      peak_red_low: 100 * (1 - numbers.peak_red),
+      gap_high: 100 * (numbers.gap - 1),
+    };
+    for (const element of document.querySelectorAll("[data-number]")) {
+      const key = element.dataset.number;
+      const value = key in numbers ? numbers[key] : derived[key];
+      const digits = Number(element.dataset.digits || 0);
+      element.textContent = value.toLocaleString("en-US", {
+        minimumFractionDigits: digits,
+        maximumFractionDigits: digits,
+      });
+    }
+  }
+</script>
+<script src="https://cdn.jsdelivr.net/npm/reveal.js@6.0.2/dist/reveal.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/reveal.js@6.0.2/dist/plugin/notes.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/reveal.js@6.0.2/dist/plugin/math.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/reveal.js@6.0.2/dist/plugin/highlight.js"></script>
+<script>
+  Reveal.initialize({
+    width: 1920,
+    height: 1080,
+    margin: 0,
+    center: false,
+    hash: true,
+    slideNumber: "c/t",
+    transition: "fade",
+    transitionSpeed: "fast",
+    controlsTutorial: false,
+    plugins: [RevealNotes, RevealMath.KaTeX, RevealHighlight],
+  });
+</script>
+</body>
+</html>
