@@ -15,6 +15,13 @@ from ._parametric import (
     ParametricInverter,
     ParametricInversionResult,
 )
+from ._regression import (
+    AbstractRegressionInverter,
+    ElasticNetInverter,
+    RidgeInverter,
+    LassoInverter,
+    RegressionInversionResult,
+)
 
 __all__ = [
     "merit",
@@ -29,4 +36,9 @@ __all__ = [
     "AbstractParametricInverter",
     "ParametricInverter",
     "ParametricInversionResult",
+    "AbstractRegressionInverter",
+    "ElasticNetInverter",
+    "RidgeInverter",
+    "LassoInverter",
+    "RegressionInversionResult",
 ]
