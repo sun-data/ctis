@@ -6,6 +6,7 @@
 [![Ruff](https://github.com/sun-data/ctis/actions/workflows/ruff.yml/badge.svg)](https://github.com/sun-data/ctis/actions/workflows/ruff.yml)
 [![Documentation Status](https://readthedocs.org/projects/ctis/badge/?version=latest)](https://ctis.readthedocs.io/en/latest/?badge=latest)
 [![PyPI version](https://badge.fury.io/py/ctis.svg)](https://badge.fury.io/py/ctis)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23086313.svg)](https://doi.org/10.5281/zenodo.23086313)
 
 `ctis` is a Python library for simulating and inverting observations from
 [computed tomography imaging spectrographs](https://en.wikipedia.org/wiki/Computed_tomography_imaging_spectrometer)
@@ -205,14 +206,23 @@ and discussions of the theory behind the inversions, is hosted at
 If you use ctis in your research, please cite it.
 The citation metadata is kept in [`CITATION.cff`](https://github.com/sun-data/ctis/blob/main/CITATION.cff),
 which the "Cite this repository" button on GitHub can export as BibTeX or APA.
+
+Every release of ctis is archived on Zenodo with its own DOI.
+The concept DOI, [10.5281/zenodo.23086313](https://doi.org/10.5281/zenodo.23086313),
+always resolves to the latest version,
+and the Zenodo page lists the DOI of every version.
 Please include the version of ctis that you used,
 which is given by `importlib.metadata.version("ctis")`.
+The BibTeX entry below uses the concept DOI.
+To cite a specific version instead,
+replace `doi` with the DOI of that version.
 
 ```bibtex
 @software{ctis,
   author = {Smart, Roy T. and Parker, Jacob D. and Kankelborg, Charles C.},
   title = {ctis},
   version = {X.Y.Z},
+  doi = {10.5281/zenodo.23086313},
   url = {https://github.com/sun-data/ctis},
 }
 ```
