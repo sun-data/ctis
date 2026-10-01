@@ -178,6 +178,48 @@ class TestRegridder:
 
         assert torch.allclose(lhs, rhs, rtol=1e-4)
 
+    def test_matrix_transpose(self, device: str):
+        a = _regridder(device)
+        result = a.matrix_transpose
+        assert result.layout == torch.sparse_csr
+        assert tuple(result.shape) == tuple(a.matrix.shape)[::-1]
+        assert torch.equal(result.to_dense(), a.matrix.to_dense().T)
+
+    def test_adjoint_explicit(self, device: str):
+        """
+        The explicit transpose must agree with the transpose found by
+        automatic differentiation, including for batched inputs.
+        """
+        a = _regridder(device)
+
+        rng = np.random.default_rng(0)
+
+        x = torch.as_tensor(
+            _values(a).ndarray,
+            dtype=a.dtype,
+            device=device,
+        ).requires_grad_(True)
+
+        u_ = torch.as_tensor(
+            rng.random((3,) + a.shape_values_output),
+            dtype=a.dtype,
+            device=device,
+        )
+
+        result = a.adjoint(u_)
+
+        assert result.shape == (3,) + a.shape_values_input
+
+        for i in range(3):
+            (expected,) = torch.autograd.grad(a(x), x, grad_outputs=u_[i])
+            assert torch.allclose(result[i], expected, rtol=1e-4)
+            assert torch.allclose(a.adjoint(u_[i]), expected, rtol=1e-4)
+
+    def test_adjoint_invalid(self, device: str):
+        a = _regridder(device)
+        with pytest.raises(ValueError):
+            a.adjoint(torch.zeros((3, 3), device=device))
+
     def test_unit(self, device: str):
         a = _regridder(device)
         assert a.unit is None or isinstance(a.unit, u.UnitBase)

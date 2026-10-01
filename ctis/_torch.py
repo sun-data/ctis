@@ -24,6 +24,7 @@ additional normalization to conserve flux.
 """
 
 from typing import TYPE_CHECKING
+import functools
 import dataclasses
 import numpy as np
 import astropy.units as u
@@ -252,6 +253,14 @@ class Regridder:
                 f"the operator shape {size} is too large for 32-bit indices."
             )
 
+        # the row pointers count the nonzero elements, so they overflow before
+        # the shape does.
+        if values.size > np.iinfo(np.int32).max:  # pragma: nocover
+            raise ValueError(
+                f"the operator has {values.size} nonzero elements, which is "
+                f"too many for 32-bit indices."
+            )
+
         # sort by row so the matrix can be stored in CSR format, which is both
         # faster and deterministic on CUDA devices.
         order = np.argsort(rows, kind="stable")
@@ -343,3 +352,77 @@ class Regridder:
             result = self.matrix @ result
 
         return result.reshape(*shape_batch, *shape_output)
+
+    @functools.cached_property
+    def matrix_transpose(self) -> "torch.Tensor":
+        """
+        The transpose of :attr:`matrix`, also stored in CSR format.
+
+        This is assembled the first time it is needed and doubles the memory
+        used by this operator.
+        It exists because multiplying by the transpose of a CSR matrix,
+        which is what automatic differentiation of :meth:`__call__` does,
+        is more than an order of magnitude slower than multiplying by a
+        CSR matrix on CUDA devices.
+        """
+        torch = _torch()
+
+        # the CSC representation of a matrix is the CSR representation of its
+        # transpose
+        matrix = self.matrix.to_sparse_csc()
+
+        num_output, num_input = self.matrix.shape
+
+        return torch.sparse_csr_tensor(
+            crow_indices=matrix.ccol_indices(),
+            col_indices=matrix.row_indices(),
+            values=matrix.values(),
+            size=(num_input, num_output),
+        )
+
+    def adjoint(self, values: "torch.Tensor") -> "torch.Tensor":
+        r"""
+        Apply the exact transpose of this operator, mapping an array of values
+        on the output grid onto the input grid.
+
+        If :math:`A` denotes :meth:`__call__`, this method is :math:`A^T`,
+        which satisfies
+        :math:`\langle u, A x \rangle = \langle A^T u, x \rangle`.
+        This is the operation needed to compute the gradient of a
+        least-squares merit function, and it is *not* the same as
+        :meth:`~ctis.instruments.AbstractInstrument.backproject`,
+        which is normalized to conserve flux.
+
+        Parameters
+        ----------
+        values
+            The values on the output grid.
+            The trailing axes must match :attr:`shape_values_output`, and any
+            leading axes are treated as batch axes.
+        """
+        shape_input = self.shape_values_input
+        shape_output = self.shape_values_output
+
+        ndim = len(shape_output)
+
+        if tuple(values.shape[values.ndim - ndim :]) != shape_output:
+            raise ValueError(
+                f"the trailing axes of {tuple(values.shape)=} should match "
+                f"{shape_output}."
+            )
+
+        shape_batch = tuple(values.shape[: values.ndim - ndim])
+
+        matrix = self.matrix_transpose
+
+        num_output = matrix.shape[1]
+
+        result = values.reshape(*shape_batch, num_output)
+
+        if shape_batch:
+            result = result.reshape(-1, num_output).transpose(0, 1)
+            result = (matrix @ result).transpose(0, 1)
+        else:
+            result = matrix @ result
+
+        return result.reshape(*shape_batch, *shape_input)
