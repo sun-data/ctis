@@ -1,3 +1,4 @@
+import warnings
 import matplotlib.pyplot as plt
 import pytest
 import astropy.units as u
@@ -130,3 +131,20 @@ def test__call__verbose_convergence():
 
     assert result.success
     assert result.num_iteration < a.num_iteration
+
+
+def test__call__no_runtime_warnings():
+    """
+    The pixels and voxels outside the field of view of each channel are
+    expected to divide by zero, so an inversion must not warn about them.
+    """
+    a = ctis.inverters.MartInverter(
+        instrument=instrument,
+        threshold_convergence=1e-2,
+    )
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        result = a(images)
+
+    assert result.success

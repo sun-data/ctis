@@ -31,7 +31,10 @@ def mean_chi_squared(
     axis
         The logical axis or axes over which to average the result.
     """
-    chisq = np.square((observed - expected) / uncertainty)
+    # pixels with no uncertainty, such as those outside the field of view,
+    # are excluded from the mean below.
+    with np.errstate(divide="ignore", invalid="ignore"):
+        chisq = np.square((observed - expected) / uncertainty)
 
     where = uncertainty != 0
 
