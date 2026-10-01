@@ -10,7 +10,9 @@
 # add these directories to sys.path here. If the directory is relative to the
 # documentation root, use os.path.abspath to make it absolute, like shown here.
 #
+import glob
 import os
+import subprocess
 import sys
 
 package_path = os.path.abspath('../')
@@ -70,6 +72,21 @@ html_theme = 'pydata_sphinx_theme'
 # relative to this directory. They are copied after the builtin static files,
 # so a file named "default.css" will overwrite the builtin "default.css".
 html_static_path = ['_static']
+
+# Copy the slide decks in `_extra/talks/` into the build unchanged.
+html_extra_path = ['_extra']
+
+# Regenerate the figures for each talk so that they always match the current
+# version of this package.
+# The figures are made in a subprocess because the agg backend they need
+# would break the jupyter-sphinx figures if it were set in this process.
+talks = os.path.join(os.path.dirname(__file__), '_extra', 'talks')
+for script in sorted(glob.glob(os.path.join(talks, '*', 'make_figures.py'))):
+    subprocess.run(
+        [sys.executable, script],
+        check=True,
+        env=dict(os.environ, MPLBACKEND='agg'),
+    )
 
 html_theme_options = {
     "icon_links": [
