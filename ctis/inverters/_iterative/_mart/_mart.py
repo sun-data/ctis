@@ -142,7 +142,10 @@ class MartInverter(
 
             backprojected_new = np.maximum(backprojected_new, 0)
 
-            correction = backprojected / backprojected_new
+            # voxels outside the field of view of a channel receive no signal,
+            # and their undefined corrections are replaced with unity below.
+            with np.errstate(divide="ignore", invalid="ignore"):
+                correction = backprojected / backprojected_new
 
             correction = np.nan_to_num(
                 x=correction,
