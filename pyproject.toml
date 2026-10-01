@@ -9,7 +9,7 @@ authors = [
     {name = "Jacob D. Parker"},
     {name = "Charles C. Kankelborg"},
 ]
-description = "A Python library for inverting images captured by CT imaging spectgrographs."
+description = "A Python library for simulating and inverting observations from computed tomography imaging spectrographs."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "BSD-3-Clause"
