@@ -148,3 +148,22 @@ def test__call__no_runtime_warnings():
         result = a(images)
 
     assert result.success
+
+
+def test_plot_moments_no_runtime_warnings():
+    """
+    The columns of each histogram which contain no pixels are expected to
+    divide by zero, so plotting the moments must not warn about them.
+    """
+    a = ctis.inverters.MartInverter(
+        instrument=instrument,
+        threshold_convergence=1e-2,
+    )
+
+    result = a(images)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        fig, axs = result.plot_moments(scene, axis="wavelength")
+
+    plt.close(fig)

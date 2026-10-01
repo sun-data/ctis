@@ -199,9 +199,12 @@ class AbstractInversionResult(
             weights=where,
         )
 
-        hist_radiance = hist_radiance / hist_radiance.sum("reconstructed")
-        hist_median = hist_median / hist_median.sum("reconstructed")
-        hist_iqr = hist_iqr / hist_iqr.sum("reconstructed")
+        # columns which contain no pixels are normalized to NaN,
+        # and then replaced with zero below.
+        with np.errstate(divide="ignore", invalid="ignore"):
+            hist_radiance = hist_radiance / hist_radiance.sum("reconstructed")
+            hist_median = hist_median / hist_median.sum("reconstructed")
+            hist_iqr = hist_iqr / hist_iqr.sum("reconstructed")
 
         hist_radiance.outputs = np.nan_to_num(
             x=hist_radiance.outputs,
