@@ -145,8 +145,7 @@ def main():
         instrument=instrument,
         intermediate=True,
     )
-    with np.errstate(divide="ignore", invalid="ignore"):
-        inversion = mart(images)
+    inversion = mart(images)
 
     def wavelength_to_velocity(wavelength):
         wavelength = wavelength * u.AA
