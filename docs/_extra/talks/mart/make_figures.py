@@ -403,6 +403,75 @@ def main():
         fig.savefig(directory / "moments.png")
         plt.close(fig)
 
+        # The example from `regridding.transpose_weights_conservative`:
+        # one bright cell, regridded onto a rotated grid and back again
+        axis_input = ("x", "y")
+        axis_output = ("x_rotated", "y_rotated")
+        grid_input = na.Cartesian2dVectorArray(
+            x=na.linspace(-4, 4, axis=axis_input[0], num=11),
+            y=na.linspace(-4, 4, axis=axis_input[1], num=11),
+        )
+        grid = na.Cartesian2dVectorArray(
+            x=na.linspace(-4, 4, axis=axis_output[0], num=11),
+            y=na.linspace(-4, 4, axis=axis_output[1], num=11),
+        )
+        rotation = 0.2
+        grid_output = na.Cartesian2dVectorArray(
+            x=grid.x * np.cos(rotation) - grid.y * np.sin(rotation),
+            y=grid.x * np.sin(rotation) + grid.y * np.cos(rotation),
+        )
+        values_input = na.ScalarArray.zeros(dict(x=10, y=10))
+        values_input[dict(x=4, y=4)] = 1
+        weights = na.regridding.weights(
+            coordinates_input=grid_input,
+            coordinates_output=grid_output,
+            axis_input=axis_input,
+            axis_output=axis_output,
+            method="conservative",
+        )
+        weights_transposed = na.regridding.transpose_weights_conservative(
+            weights=weights,
+            coordinates_input=grid_input,
+            coordinates_output=grid_output,
+            axis_input=axis_input,
+            axis_output=axis_output,
+        )
+        values_output = na.regridding.regrid_from_weights(
+            *weights,
+            values_input=values_input,
+        )
+        values_transposed = na.regridding.regrid_from_weights(
+            *weights_transposed,
+            values_input=values_output,
+        )
+        fig, axs = plt.subplots(
+            ncols=3,
+            figsize=(17, 5.6),
+            sharex=True,
+            sharey=True,
+            layout="compressed",
+        )
+        panels = [
+            ("original", grid_input, values_input),
+            ("rotated", grid_output, values_output),
+            ("rotated and transposed", grid_input, values_transposed),
+        ]
+        for ax, (title, coordinates, values) in zip(axs, panels):
+            img = na.plt.pcolormesh(
+                coordinates.x,
+                coordinates.y,
+                C=values,
+                ax=ax,
+                vmin=0,
+                vmax=1,
+            )
+            total = values.sum().ndarray
+            ax.set_title(f"{title}\nsum = {total:.2f}")
+            ax.set_aspect("equal")
+        fig.colorbar(img.ndarray.item(), ax=axs, label="value")
+        fig.savefig(directory / "transpose.png")
+        plt.close(fig)
+
     def peak(spectrum, sign):
         """The peak of the blue- or red-shifted component of `spectrum`."""
         where = sign * velocity.cell_centers("wavelength") > 0

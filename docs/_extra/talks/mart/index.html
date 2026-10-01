@@ -834,12 +834,41 @@ mart = ctis.inverters.MartInverter(
   </aside>
 </section>
 
+<section id="backproject">
+  <div class="frame">
+    <p class="kicker">Under the hood</p>
+    <h2>Backprojection is the conservative transpose</h2>
+    <figure class="fig"><img src="figures/transpose.png" alt="A single bright cell, the same cell regridded onto a rotated grid, and the result regridded back with the transposed weights"></figure>
+    <div class="points-row">
+      <p>A single bright cell, $\mathbf{u}$.</p>
+      <p>Forward: $\mathbf{d} = W \mathbf{u}$, where $W_{ij}$ is the fraction of input cell $j$ that falls in output cell $i$.</p>
+      <p>Backward: $\mathbf{u}' = W^{*} \mathbf{d}$, where $W^{*}_{ji}$ is the fraction of output cell $i$ that falls in input cell $j$. The total is conserved, but the cell is not recovered.</p>
+    </div>
+    <p class="caption">In ctis, <code>weights_transpose</code> is <code>na.regridding.transpose_weights_conservative(weights, ...)</code>. <code>backproject()</code> also spreads each pixel evenly over the wavelength bins and converts photons back to radiance. It is the $P^{*}$ in MART's correction, $P^{*} d \,/\, P^{*} d_i$.</p>
+  </div>
+  <aside class="notes">
+    This is the example from the regridding documentation for
+    transpose_weights_conservative: a 10 x 10 grid with one bright cell,
+    regridded onto a copy of the grid rotated by 0.2 rad, then back with the
+    transposed weights. The cell spreads over 4 cells going forward and 10
+    coming back, and the sum stays 1 throughout. W-star is the transpose of W
+    rescaled by the ratio of cell areas, so it conserves counts in the
+    backward direction too. In ctis the forward operator is this regridding
+    for every wavelength and channel, which is why MART corrects with a ratio
+    of backprojections instead of an inverse.
+  </aside>
+</section>
+
 <section id="mart-internals">
   <div class="frame">
     <p class="kicker">Under the hood</p>
     <h2>Inside <code>MartInverter.__call__</code></h2>
     <div class="body">
     <pre><code class="language-python" data-trim data-noescape>
+backprojected = np.maximum(instrument.backproject(images).outputs, 0)
+scene = instrument.backproject(images).outputs.mean(axis_channel)
+scene.ndarray[:] = scene.ndarray.mean()              # flat start, unless mart(images, guess=...)
+
 for i in range(self.num_iteration):
     predicted = instrument.image(scene, noise=False, uncertainty=True).outputs
     chi2 = self.mean_chi_squared(images, predicted.nominal, predicted.width)
@@ -862,9 +891,6 @@ for i in range(self.num_iteration):
   <aside class="notes">
     Abridged from ctis/inverters/_iterative/_mart/_mart.py; the real code also
     records the signal-correlated residual and the intermediate solutions.
-    Before the loop, backprojected is the backprojection of the observed
-    images clipped at zero, and the scene starts flat at the mean of the
-    channel-averaged backprojection unless mart(images, guess=...) is given.
     Zero-over-zero corrections become 1, so voxels no channel sees are left
     unchanged.
   </aside>
