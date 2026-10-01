@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Inverting a Synthetic Scene with MART</title>
-<meta name="description" content="A walkthrough of the ctis MART tutorial: reconstructing a spectral cube from four dispersed images.">
+<title>Inverting CTIS Data with ctis</title>
+<meta name="description" content="A step-by-step walkthrough of the ctis MART tutorial for teams evaluating the package.">
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -33,7 +33,7 @@
 
   .reveal {
     font-family: "IBM Plex Sans", system-ui, sans-serif;
-    font-size: 36px;
+    font-size: 32px;
     line-height: 1.35;
     color: var(--ink);
   }
@@ -50,10 +50,10 @@
   .reveal .frame {
     box-sizing: border-box;
     height: 100%;
-    padding: 72px 110px 96px;
+    padding: 64px 110px 88px;
     display: flex;
     flex-direction: column;
-    gap: 32px;
+    gap: 28px;
   }
 
   .reveal h1, .reveal h2, .reveal h3 {
@@ -63,14 +63,12 @@
     line-height: 1.1;
   }
 
-  .reveal h1 { font-size: 96px; }
-  .reveal h2 { font-size: 64px; }
-  .reveal h3 { font-size: 36px; }
+  .reveal h1 { font-size: 88px; }
+  .reveal h2 { font-size: 56px; }
+  .reveal h3 { font-size: 32px; }
 
   .reveal p, .reveal li { margin: 0; }
-
   .reveal b { font-weight: 600; }
-
   .reveal i { font-style: italic; }
 
   .reveal a {
@@ -79,26 +77,38 @@
     border-bottom: 2px solid currentColor;
   }
 
+  .reveal .kicker {
+    font-size: 24px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: -16px;
+  }
+
   /* Layout */
 
   .reveal .row {
     flex: 1;
     min-height: 0;
     display: flex;
-    gap: 72px;
-    align-items: center;
+    gap: 56px;
   }
+
+  .reveal .row.center { align-items: center; }
 
   .reveal .col {
     flex: 1;
+    min-width: 0;
     display: flex;
     flex-direction: column;
-    gap: 32px;
+    gap: 24px;
   }
 
   .reveal .fig {
     flex: 1;
     min-height: 0;
+    min-width: 0;
     margin: 0;
     display: flex;
     justify-content: center;
@@ -111,14 +121,174 @@
     object-fit: contain;
   }
 
-  .reveal .row > .fig {
-    height: 100%;
+  .reveal .caption {
+    font-size: 26px;
+    color: var(--muted);
   }
 
-  .reveal .caption {
-    font-size: 28px;
+  .reveal .body {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 28px;
+    padding-bottom: 64px;
+  }
+
+  .reveal .body > .row,
+  .reveal .body > .grid-2,
+  .reveal .body > .grid-3 {
+    flex: none;
+  }
+
+  /* Code */
+
+  .reveal code {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.88em;
+  }
+
+  .reveal :not(pre) > code {
+    background: var(--paper-deep);
+    border-radius: 6px;
+    padding: 0 6px;
+  }
+
+  .reveal pre {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 28px 36px;
+    border-radius: 14px;
+    background: var(--paper-deep);
+    box-shadow: none;
+    font-size: 24px;
+    line-height: 1.45;
+    white-space: pre;
+  }
+
+  .reveal pre.dense { font-size: 22px; }
+  .reveal pre.big { font-size: 28px; }
+
+  .reveal pre code {
+    display: block;
+    font-size: inherit;
+    padding: 0;
+    background: none;
+    max-height: none;
+    overflow: visible;
+  }
+
+  .reveal .hljs-comment {
+    color: #6a7380;
+    font-style: italic;
+  }
+
+  .reveal pre.out {
+    background: none;
+    border-left: 4px solid var(--accent);
+    border-radius: 0;
+    padding: 4px 0 4px 28px;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
     color: var(--muted);
-    max-width: 1500px;
+  }
+
+  .reveal pre.out .in {
+    color: var(--ink);
+  }
+
+  /* Bullet points beside code */
+
+  .reveal ul.points {
+    list-style: none;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 22px;
+    font-size: 28px;
+  }
+
+  .reveal ul.points li {
+    padding-left: 28px;
+    border-left: 4px solid var(--rule);
+  }
+
+  .reveal .points-row {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 40px;
+    font-size: 28px;
+  }
+
+  .reveal .points-row p {
+    padding-left: 28px;
+    border-left: 4px solid var(--rule);
+  }
+
+  /* Cards */
+
+  .reveal .card {
+    background: var(--paper-deep);
+    border-radius: 14px;
+    padding: 32px 36px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .reveal .card p, .reveal .card li {
+    font-size: 26px;
+  }
+
+  .reveal .card pre {
+    background: var(--paper);
+    padding: 20px 24px;
+  }
+
+  .reveal .grid-2, .reveal .grid-3 {
+    flex: 1;
+    min-height: 0;
+    display: grid;
+    gap: 32px;
+    align-content: start;
+  }
+
+  .reveal .grid-2 { grid-template-columns: repeat(2, 1fr); }
+  .reveal .grid-3 { grid-template-columns: repeat(3, 1fr); }
+
+  .reveal .tag {
+    font-size: 22px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+
+  /* Tables */
+
+  .reveal table.spec {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 28px;
+  }
+
+  .reveal table.spec th, .reveal table.spec td {
+    text-align: left;
+    padding: 14px 24px 14px 0;
+    border-bottom: 2px solid var(--rule);
+    vertical-align: baseline;
+  }
+
+  .reveal table.spec th {
+    font-weight: 600;
+    white-space: nowrap;
+  }
+
+  .reveal table.spec td.num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    padding-right: 0;
   }
 
   /* Title slide */
@@ -138,178 +308,31 @@
     gap: 40px;
   }
 
-  .reveal .kicker {
-    font-size: 28px;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
+  .reveal .title-frame .kicker {
     color: #e08a5c;
+    margin: 0;
   }
 
   .reveal .lede {
-    font-size: 36px;
+    font-size: 34px;
     color: var(--night-muted);
     max-width: 920px;
   }
 
   .reveal .byline {
-    font-size: 36px;
+    font-size: 34px;
     font-weight: 600;
   }
 
-  .reveal .title-frame a {
+  .reveal .title-frame code {
+    background: rgba(255, 255, 255, 0.08);
     color: var(--night-ink);
   }
 
   .reveal .hero {
-    width: 720px;
-    height: 720px;
+    width: 680px;
+    height: 680px;
     border-radius: 16px;
-  }
-
-  /* Big numbers */
-
-  .reveal .stat {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-  }
-
-  .reveal .big {
-    font-size: 140px;
-    font-weight: 600;
-    line-height: 1;
-    letter-spacing: -0.02em;
-    font-variant-numeric: tabular-nums;
-  }
-
-  .reveal .stat .label {
-    font-size: 28px;
-    color: var(--muted);
-  }
-
-  .reveal .callout {
-    font-size: 36px;
-    font-weight: 600;
-    color: var(--accent);
-    border-top: 2px solid var(--rule);
-    padding-top: 24px;
-  }
-
-  /* Lists */
-
-  .reveal ul.facts, .reveal ol.steps {
-    list-style: none;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 24px;
-  }
-
-  .reveal ul.facts li {
-    padding-left: 32px;
-    border-left: 4px solid var(--rule);
-  }
-
-  .reveal ol.steps {
-    counter-reset: step;
-    gap: 28px;
-  }
-
-  .reveal ol.steps li {
-    counter-increment: step;
-    display: grid;
-    grid-template-columns: 64px 1fr;
-    align-items: baseline;
-  }
-
-  .reveal ol.steps li::before {
-    content: counter(step);
-    font-weight: 600;
-    color: var(--accent);
-  }
-
-  .reveal .step-math {
-    font-size: 32px;
-    color: var(--muted);
-  }
-
-  /* Cards */
-
-  .reveal .card {
-    background: var(--paper-deep);
-    border-radius: 16px;
-    padding: 40px;
-    display: flex;
-    flex-direction: column;
-    gap: 20px;
-  }
-
-  .reveal .card p {
-    font-size: 28px;
-  }
-
-  .reveal .tag {
-    font-size: 24px;
-    font-weight: 600;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--accent);
-  }
-
-  .reveal .cards {
-    flex: 1;
-    min-height: 0;
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 40px;
-    align-content: center;
-  }
-
-  /* Table */
-
-  .reveal table.spec {
-    border-collapse: collapse;
-    width: 100%;
-  }
-
-  .reveal table.spec th, .reveal table.spec td {
-    text-align: left;
-    padding: 20px 0;
-    border-bottom: 2px solid var(--rule);
-    vertical-align: baseline;
-  }
-
-  .reveal table.spec th {
-    width: 360px;
-    font-weight: 600;
-  }
-
-  /* Code */
-
-  .reveal pre {
-    box-sizing: border-box;
-    margin: 0;
-    width: 100%;
-    padding: 40px 48px;
-    border-radius: 16px;
-    background: var(--paper-deep);
-    box-shadow: none;
-  }
-
-  .reveal pre code {
-    display: block;
-    font-family: "IBM Plex Mono", ui-monospace, monospace;
-    font-size: 30px;
-    line-height: 1.45;
-    padding: 0;
-    background: none;
-    max-height: none;
-    overflow: visible;
-  }
-
-  .reveal .hljs-comment {
-    color: #6a7380;
-    font-style: italic;
   }
 
   /* References */
@@ -319,12 +342,13 @@
     padding: 0;
     display: flex;
     flex-direction: column;
-    gap: 28px;
+    gap: 32px;
+    font-size: 34px;
   }
 
   .reveal ul.refs .what {
     display: block;
-    font-size: 28px;
+    font-size: 26px;
     color: var(--muted);
   }
 
@@ -345,13 +369,8 @@
     border: none;
   }
 
-  .reveal .controls {
-    color: var(--muted);
-  }
-
-  .reveal .progress {
-    color: var(--accent);
-  }
+  .reveal .controls { color: var(--muted); }
+  .reveal .progress { color: var(--accent); }
 </style>
 </head>
 
@@ -362,277 +381,745 @@
 <section id="title" data-background-color="#141a26">
   <div class="frame title-frame">
     <div class="text">
-      <p class="kicker">ctis tutorial walkthrough</p>
-      <h1>Inverting a Synthetic Scene with MART</h1>
-      <p class="lede">Reconstructing a spectral cube from four dispersed images with the multiplicative algebraic reconstruction technique</p>
+      <p class="kicker">Collaborator walkthrough</p>
+      <h1>Inverting CTIS Data with ctis</h1>
+      <p class="lede">The MART tutorial step by step: grids, scene, instrument model, inversion and diagnostics, and what it takes to run it on your own data.</p>
       <p class="byline">Roy T. Smart</p>
+      <p class="lede"><code>pip install ctis</code></p>
     </div>
     <img class="hero" src="figures/hero.png" alt="False-color image of the synthetic test scene">
   </div>
   <aside class="notes">
-    This talk walks through the "Invert a Synthetic Scene with MART" tutorial
-    in the ctis documentation. Every figure is regenerated from the current
-    code each time the docs build.
+    This follows the "Invert a Synthetic Scene with MART" tutorial in the ctis
+    docs cell by cell. Every figure and every printed shape on these slides is
+    regenerated from the current code whenever the docs build, with a fixed
+    noise seed.
   </aside>
 </section>
 
-<section id="problem">
+<section id="package">
   <div class="frame">
-    <h2>The inverse problem</h2>
-    <div class="row">
-      <div class="col">
-        <p>A computed tomography imaging spectrograph (CTIS) images the same field through several dispersion directions in a single exposure.</p>
-        <p>Each pixel mixes position and Doppler velocity, so recovering the cube is a <b>limited-angle tomography</b> problem.</p>
+    <h2>The package at a glance</h2>
+    <div class="grid-3">
+      <div class="card">
+        <h3><code>ctis.instruments</code></h3>
+        <p>Forward models. <code>AbstractInstrument</code> → <code>AbstractLinearInstrument</code> → <code>IdealInstrument</code>, <code>OptikaInstrument</code>.</p>
+        <p><code>image()</code> maps spectral radiance to electrons; <code>backproject()</code> is its transpose.</p>
       </div>
-      <div class="col">
-        <div class="stat">
-          <span class="big" data-number="num_unknown">81,920</span>
-          <span class="label">unknowns: a 64 × 64 × 20 cube in position and velocity</span>
-        </div>
-        <div class="stat">
-          <span class="big" data-number="num_measurement">32,768</span>
-          <span class="label">measurements: 4 channels × 128 × 64 pixels</span>
-        </div>
-        <p class="callout"><span data-number="ratio" data-digits="1">2.5</span>× more unknowns than measurements</p>
+      <div class="card">
+        <h3><code>ctis.inverters</code></h3>
+        <p>Reconstruction. <code>AbstractInverter</code> → <code>AbstractIterativeInverter</code> → <code>MartInverter</code>.</p>
+        <p>Result objects with diagnostics, and <code>merit</code> functions: <code>mean_chi_squared</code>, <code>correlation_residual</code>.</p>
+      </div>
+      <div class="card">
+        <h3><code>ctis.scenes</code></h3>
+        <p>Test patterns for validating inversions: <code>gaussians</code>.</p>
+      </div>
+    </div>
+    <table class="spec">
+      <tr><th>Release</th><td>v0.3.0 on PyPI (2026-08-02)</td></tr>
+      <tr><th>Requirements</th><td>Python ≥ 3.10; astropy, named-arrays, optika</td></tr>
+      <tr><th>Testing</th><td>CI on Linux and macOS, Python 3.11 and 3.12</td></tr>
+      <tr><th>License</th><td>BSD-3-Clause</td></tr>
+    </table>
+  </div>
+  <aside class="notes">
+    Three subpackages. Instruments and inverters are both abstract interfaces
+    with concrete implementations, so a new forward model works with every
+    inverter and vice versa. optika is our raytracing and optical-modeling
+    package; it is a dependency because of OptikaInstrument.
+  </aside>
+</section>
+
+<section id="conventions">
+  <div class="frame">
+    <h2>Conventions used throughout</h2>
+    <div class="grid-2">
+      <div class="card">
+        <h3>Named axes</h3>
+        <p>Every axis has a name, such as <code>"wavelength"</code>, <code>"scene_x"</code> or <code>"channel"</code>. Arrays broadcast and reduce by name; there is no positional indexing.</p>
+        <pre><code class="language-python" data-trim>scene.outputs.mean(("scene_x", "scene_y"))</code></pre>
+      </div>
+      <div class="card">
+        <h3>Units everywhere</h3>
+        <p>Values are astropy quantities. The instrument converts radiance in erg cm⁻² sr⁻¹ Å⁻¹ s⁻¹ to electrons, and back.</p>
+      </div>
+      <div class="card">
+        <h3>Vertices, not centers</h3>
+        <p>Coordinate grids give cell edges and values live in the cells: 21 wavelength vertices hold 20 spectral bins.</p>
+      </div>
+      <div class="card">
+        <h3>Functions on grids</h3>
+        <p><code>na.FunctionArray(inputs=..., outputs=...)</code> pairs a grid with its values. Scenes, images and solutions are all function arrays, and ctis checks that their grids match the instrument's.</p>
       </div>
     </div>
   </div>
   <aside class="notes">
-    The problem is underdetermined: there are more voxels in the cube than
-    pixels in all four images combined. Any reconstruction has to lean on
-    the algorithm's implicit prior, which for MART is positivity and a
-    multiplicative update from a flat start.
+    These come from named-arrays, our array library underneath ctis. The
+    axis names are the main thing to get used to: the instrument is told
+    which named axes are wavelength, channel, scene x/y and sensor x/y, and
+    everything else follows from that.
   </aside>
 </section>
 
-<section id="lines-of-sight">
+<section id="step-spectral">
   <div class="frame">
-    <h2>Each channel sums along a tilted line</h2>
-    <figure class="fig"><img src="figures/lines_of_sight.png" alt="The test scene in position and velocity, with the lines of sight of each channel drawn over it"></figure>
-    <p class="caption">The test scene summed over y (left) and over x (right). Each line is the set of scene points that land on one pixel: dispersion shifts the image by 0.4″ for every 10 km/s.</p>
+    <p class="kicker">Step 1 of 14</p>
+    <h2>Define the spectral grid</h2>
+    <div class="body">
+    <pre class="big"><code class="language-python" data-trim data-noescape>
+velocity = na.linspace(-500, 500, axis="wavelength", num=21) * u.km / u.s
+
+wavelength_rest = 171 * u.AA
+    </code></pre>
+    <pre class="out"><span class="in">velocity.shape</span>
+<span data-number="shape_velocity">{'wavelength': 21}</span></pre>
+    <div class="points-row">
+      <p>21 vertices bound 20 spectral bins of 50 km/s.</p>
+      <p>The axis is named <code>"wavelength"</code> because it becomes the wavelength axis of the coordinates in step 3.</p>
+      <p>The rest wavelength converts velocity to wavelength in step 3.</p>
+    </div>
+    </div>
   </div>
   <aside class="notes">
-    The 005 and 185 degree channels disperse along x, so their lines of sight
-    tilt in the x-velocity plane with opposite slopes. The 095 and 275 degree
-    channels do the same along y. Four projection angles is very few for
-    tomography, which is why the reconstruction is hard.
+    We reconstruct on a Doppler-velocity grid from -500 to +500 km/s. The grid
+    is given as bin edges, which is why there are 21 points for 20 bins.
   </aside>
 </section>
 
-<section id="scene">
+<section id="step-spatial">
   <div class="frame">
-    <h2>The test scene</h2>
+    <p class="kicker">Step 2 of 14</p>
+    <h2>Define the scene and sensor grids</h2>
     <div class="row">
+      <div class="col" style="flex: 1.45">
+        <pre><code class="language-python" data-trim data-noescape>
+position_scene = na.Cartesian2dVectorLinearSpace(
+    start=-10 * u.arcsec,
+    stop=10 * u.arcsec,
+    axis=na.Cartesian2dVectorArray("scene_x", "scene_y"),
+    num=na.Cartesian2dVectorArray(64 + 1, 64 + 1),
+)
+
+position_sensor = na.Cartesian2dVectorArray(
+    x=na.arange(0, 128 + 1, axis="sensor_x") * u.pix,
+    y=na.arange(0, 64 + 1, axis="sensor_y") * u.pix,
+)
+        </code></pre>
+        <pre class="out"><span class="in">position_scene.shape</span>
+<span data-number="shape_position_scene">{'scene_x': 65, 'scene_y': 65}</span>
+<span class="in">position_sensor.shape</span>
+<span data-number="shape_position_sensor">{'sensor_x': 129, 'sensor_y': 65}</span></pre>
+      </div>
+      <ul class="points col">
+        <li>Scene: 64 × 64 cells across 20″ × 20″, a 0.3125″ pitch. The plate scale in step 7 is 0.4″ per pixel.</li>
+        <li>Sensor: the pixel vertices of a 128 × 64 detector, in pixel units.</li>
+        <li>Scene and sensor have different axis names, so they never broadcast against each other by accident.</li>
+      </ul>
+    </div>
+  </div>
+  <aside class="notes">
+    The scene grid is the grid we reconstruct on; it does not have to match
+    the plate scale. The sensor grid is just the pixel edges of one detector,
+    shared by all four channels.
+  </aside>
+</section>
+
+<section id="step-coordinates">
+  <div class="frame">
+    <p class="kicker">Step 3 of 14</p>
+    <h2>Combine them into spectral–spatial coordinates</h2>
+    <div class="row">
+      <div class="col" style="flex: 1.5">
+        <pre class="dense"><code class="language-python" data-trim data-noescape>
+coordinates_scene = na.DopplerPositionalVectorArray.from_velocity(
+    velocity=velocity,
+    wavelength_rest=wavelength_rest,
+    position=position_scene,
+)
+
+coordinates_sensor = na.DopplerPositionalVectorArray.from_velocity(
+    velocity=velocity,
+    wavelength_rest=wavelength_rest,
+    position=position_sensor,
+)
+        </code></pre>
+        <pre class="out"><span class="in">coordinates_scene.shape</span>
+<span data-number="shape_coordinates_scene">{'wavelength': 21, 'scene_x': 65, 'scene_y': 65}</span>
+<span class="in">coordinates_sensor.shape</span>
+<span data-number="shape_coordinates_sensor">{'wavelength': 21, 'sensor_x': 129, 'sensor_y': 65}</span></pre>
+      </div>
+      <ul class="points col">
+        <li>A vector with <code>wavelength</code>, <code>wavelength_rest</code> and <code>position</code> components; <code>.velocity</code> is derived.</li>
+        <li>$\lambda = (1 + v/c)\,\lambda_0$, the same convention as astropy's <code>doppler_optical</code>.</li>
+        <li>The sensor grid carries the wavelength axis too: the forward model works one wavelength bin at a time before summing.</li>
+      </ul>
+    </div>
+  </div>
+  <aside class="notes">
+    Both grids become 3D. The broadcasting is automatic: velocity has only
+    the wavelength axis, position has only the spatial axes, and the result
+    has all three.
+  </aside>
+</section>
+
+<section id="step-scene">
+  <div class="frame">
+    <p class="kicker">Step 4 of 14</p>
+    <h2>Create a synthetic scene</h2>
+    <div class="row">
+      <div class="col" style="flex: 1.1">
+        <pre><code class="language-python" data-trim data-noescape>
+scene = ctis.scenes.gaussians(coordinates_scene)
+
+scene = scene + scene.max() / 100
+        </code></pre>
+        <pre class="out"><span class="in">scene.outputs.shape</span>
+<span data-number="shape_scene">{'wavelength': 20, 'scene_x': 64, 'scene_y': 64}</span>
+<span class="in">scene.outputs.unit</span>
+<span data-number="unit_scene">erg / (Angstrom s sr cm2)</span></pre>
+        <ul class="points">
+          <li>Eight randomly placed Gaussians with σ = 30 km/s and 1″, prepared by Amy R. Winebarger, plus a background of 1% of the peak.</li>
+          <li><code>scene.inputs</code> is <code>coordinates_scene</code>; the values live on the 20 × 64 × 64 cells.</li>
+        </ul>
+        <pre class="dense"><code class="language-python" data-trim data-noescape>
+na.plt.rgbmesh(C=scene, axis_wavelength="wavelength",
+               ax=ax, vmin=0, vmax=scene.outputs.max())
+        </code></pre>
+      </div>
       <figure class="fig"><img src="figures/scene.png" alt="False-color image of the test scene, colored by Doppler velocity"></figure>
-      <div class="col">
-        <p class="caption">Color encodes Doppler velocity; brightness encodes radiance.</p>
-        <ul class="facts">
-          <li>Eight Gaussian blobs at random positions and Doppler shifts</li>
-          <li>20″ × 20″ field on a 64 × 64 grid</li>
-          <li>±500 km/s around 171 Å in 20 velocity bins</li>
-          <li>Uniform background of 1% of the peak</li>
-          <li>Designed by Amy R. Winebarger</li>
+    </div>
+  </div>
+  <aside class="notes">
+    rgbmesh renders the cube as a false-color image: hue encodes Doppler
+    velocity and brightness encodes radiance. It also returns a 2D colorbar,
+    which the tutorial plots with na.plt.pcolormesh.
+  </aside>
+</section>
+
+<section id="step-spectrum">
+  <div class="frame">
+    <p class="kicker">Step 5 of 14</p>
+    <h2>Inspect the average spectrum</h2>
+    <div class="row">
+      <div class="col" style="flex: 1.05">
+        <pre class="dense"><code class="language-python" data-trim data-noescape>
+spectrum = scene.outputs.mean(("scene_x", "scene_y"))
+
+ax2 = ax.twiny()
+na.plt.stairs(velocity, spectrum, ax=ax)
+na.plt.stairs(scene.inputs.wavelength, spectrum, ax=ax2)
+        </code></pre>
+        <ul class="points">
+          <li>Reduce over the spatial axes by name.</li>
+          <li><code>stairs</code> takes the 21 vertices and the 20 bin values directly.</li>
+          <li>Two components, about ±125 km/s from rest, on the 1% background.</li>
         </ul>
       </div>
+      <figure class="fig"><img src="figures/spectrum.png" alt="The average spectrum of the test scene"></figure>
     </div>
   </div>
   <aside class="notes">
-    The scene is ctis.scenes.gaussians, originally prepared by Amy
-    Winebarger. The tutorial adds a uniform background of 1% of the peak
-    so that no part of the field is empty.
+    We will compare the reconstruction's average spectrum against this one
+    in step 12.
   </aside>
 </section>
 
-<section id="spectrum">
+<section id="step-dispersion">
   <div class="frame">
-    <h2>Its average spectrum</h2>
-    <figure class="fig"><img src="figures/spectrum.png" alt="The average spectrum of the test scene, with a blueshifted and a redshifted peak"></figure>
-    <p class="caption">A blueshifted and a redshifted component, each about 125 km/s from rest, on a flat background.</p>
+    <p class="kicker">Step 6 of 14</p>
+    <h2>Choose the dispersion</h2>
+    <div class="body">
+    <pre class="big"><code class="language-python" data-trim data-noescape>
+angle = na.linspace(0, 360, num=4, axis="channel", endpoint=False) * u.deg + 5.64 * u.deg
+
+dispersion = 10 * u.km / u.s
+dispersion = dispersion.to(u.AA, equivalencies=u.doppler_optical(wavelength_rest))
+dispersion = (dispersion - wavelength_rest) / u.pix
+dispersion.to(u.mAA / u.pix)
+    </code></pre>
+    <pre class="out"><span data-number="repr_dispersion">&lt;Quantity 5.70394603 mAngstrom / pix&gt;</span></pre>
+    <div class="points-row">
+      <p>A new named axis, <code>"channel"</code>, is all it takes to model four channels: everything downstream broadcasts over it.</p>
+      <p>Channels at 5.64° + 0°, 90°, 180° and 270°.</p>
+      <p>10 km/s per pixel becomes <span data-number="dispersion" data-digits="2">5.70</span> mÅ per pixel at 171 Å.</p>
+    </div>
+    </div>
   </div>
   <aside class="notes">
-    This is the spatial average of the cube. Keep it in mind: we will compare
-    the reconstruction's average spectrum against it at the end.
+    Dispersion is specified in wavelength per pixel; here we derive it from a
+    velocity per pixel so the numbers are easy to reason about.
   </aside>
 </section>
 
-<section id="instrument">
+<section id="step-instrument">
   <div class="frame">
-    <h2>An ideal four-channel CTIS</h2>
+    <p class="kicker">Step 7 of 14</p>
+    <h2>Build the instrument model</h2>
     <div class="row">
-      <table class="spec">
-        <tr><th>Channels</th><td>4, dispersed at 5.64° + 0°, 90°, 180° and 270°</td></tr>
-        <tr><th>Dispersion</th><td>10 km/s per pixel (<span data-number="dispersion" data-digits="2">5.70</span> mÅ per pixel)</td></tr>
-        <tr><th>Plate scale</th><td>0.4″ per pixel</td></tr>
-        <tr><th>Sensor</th><td>128 × 64 pixels per channel</td></tr>
-        <tr><th>Exposure</th><td>20 s with 1 cm² of effective area</td></tr>
-        <tr><th>Noise</th><td>Photon shot noise only</td></tr>
+      <div class="col" style="flex: 1.45">
+        <pre class="dense"><code class="language-python" data-trim data-noescape>
+instrument = ctis.instruments.IdealInstrument(
+    area_effective=1 * u.cm ** 2,
+    timedelta_exposure=20 * u.s,
+    plate_scale=.4 * u.arcsec / u.pix,
+    dispersion=dispersion,
+    angle=angle,
+    wavelength_ref=wavelength_rest,
+    position_ref=na.Cartesian2dVectorArray(64, 32) * u.pix,
+    coordinates_scene=coordinates_scene,
+    coordinates_sensor=coordinates_sensor,
+    channel="dispersion angle = " + angle.to_string_array("%03d"),
+    axis_channel="channel",
+    axis_wavelength="wavelength",
+    axis_scene_xy=("scene_x", "scene_y"),
+    axis_sensor_xy=("sensor_x", "sensor_y"),
+)
+        </code></pre>
+      </div>
+      <ul class="points col">
+        <li><code>wavelength_ref</code>, <code>position_ref</code>: the center of the field lands on pixel (64, 32) at 171 Å.</li>
+        <li><code>channel</code>: labels for plots and legends.</li>
+        <li><code>axis_*</code>: which named axes are channel, wavelength, scene and sensor.</li>
+        <li>Defaults not shown: <code>quantum_yield</code> = 1 e⁻ per photon, <code>read_noise</code> = 0 e⁻.</li>
+      </ul>
+    </div>
+  </div>
+  <aside class="notes">
+    IdealInstrument is a dataclass. It has no point-spread function,
+    distortion beyond the linear dispersion, or vignetting; those come in
+    with OptikaInstrument. Every parameter can be an array over the channel
+    axis, which is how angle varies per channel here.
+  </aside>
+</section>
+
+<section id="forward-model">
+  <div class="frame">
+    <p class="kicker">Under the hood</p>
+    <h2>What <code>IdealInstrument</code> computes</h2>
+    <div class="row">
+      <div class="col">
+        <div class="card">
+          <h3>Geometry: <code>distortion()</code></h3>
+          <p>$\mathbf{s} = \mathbf{s}_\text{ref} + \frac{1}{p}\,R(\theta)\,\mathbf{x} + \begin{pmatrix} (\lambda - \lambda_\text{ref}) / D \\ 0 \end{pmatrix}$</p>
+          <p>Rotate the scene by the channel angle, scale by the plate scale $p$, and disperse along sensor $x$. Every channel disperses along its own detector's $x$ axis.</p>
+        </div>
+        <div class="card">
+          <h3>Weights</h3>
+          <p>Conservative regridding of each scene cell onto the pixel grid, for every (wavelength, channel) pair: <code>na.regridding.weights(..., method="conservative")</code>. Computed once and cached; <code>backproject()</code> uses the conservative transpose.</p>
+        </div>
+      </div>
+      <div class="col card">
+        <h3><code>image(scene)</code></h3>
+        <ol class="points" style="list-style: decimal; padding-left: 36px; gap: 14px">
+          <li style="border: none; padding-left: 8px">Radiance × $A_\text{eff}$ × $t$ × voxel volume ÷ $hc/\lambda$ → photons per voxel</li>
+          <li style="border: none; padding-left: 8px">Apply the weights → photons per pixel, per wavelength</li>
+          <li style="border: none; padding-left: 8px">Poisson noise per wavelength (<code>noise=True</code>)</li>
+          <li style="border: none; padding-left: 8px">× quantum yield → electrons</li>
+          <li style="border: none; padding-left: 8px">Sum over wavelength (<code>integrate=True</code>), then add read noise</li>
+        </ol>
+        <p><code>uncertainty=True</code> attaches σ as a <code>NormalUncertainScalarArray</code>: shot noise per wavelength summed in quadrature, plus read noise.</p>
+        <p><code>backproject(images)</code> divides by the quantum yield, spreads each pixel evenly over the wavelength bins and applies the transposed weights, returning radiance on the scene grid.</p>
+      </div>
+    </div>
+  </div>
+  <aside class="notes">
+    This is the whole IdealInstrument forward model. Because it is conservative
+    regridding of cell polygons rather than point sampling, flux is conserved
+    exactly in both directions. The weights are a sparse set per wavelength
+    and channel; at this grid size they take about 0.2 s to compute.
+  </aside>
+</section>
+
+<section id="step-image">
+  <div class="frame">
+    <p class="kicker">Step 8 of 14</p>
+    <h2>Simulate the observation</h2>
+    <div class="body">
+    <div class="row">
+      <div class="col" style="flex: 1.3">
+        <pre class="big"><code class="language-python" data-trim data-noescape>
+images = instrument.image(scene)
+        </code></pre>
+        <pre class="out"><span class="in">images.outputs.shape</span>
+<span data-number="shape_images">{'channel': 4, 'sensor_x': 128, 'sensor_y': 64}</span>
+<span class="in">images.outputs.unit</span>
+<span data-number="unit_images">electron</span></pre>
+        <p class="caption"><span data-number="num_unknown">81,920</span> unknowns from <span data-number="num_measurement">32,768</span> measurements: <span data-number="ratio" data-digits="1">2.5</span>× underdetermined.</p>
+      </div>
+      <table class="spec col" style="align-self: start">
+        <tr><th><code>noise=True</code></th><td>Default: Poisson per wavelength, plus read noise</td></tr>
+        <tr><th><code>noise=False</code></th><td>The expected image</td></tr>
+        <tr><th><code>uncertainty=True</code></th><td>Attach σ to the result</td></tr>
+        <tr><th><code>integrate=False</code></th><td>Keep the wavelength axis: one image per spectral bin</td></tr>
       </table>
     </div>
-    <p class="caption">ctis.instruments.IdealInstrument has no point-spread function, distortion or vignetting.</p>
+    </div>
   </div>
   <aside class="notes">
-    An ideal instrument isolates the inversion problem from the optics;
-    OptikaInstrument adds the real optics later.
+    The images are a function array on the sensor grid, in electrons, with one
+    image per channel. The figures in this deck use a fixed noise seed so they
+    are reproducible; the tutorial draws fresh noise each run.
   </aside>
 </section>
 
 <section id="images">
   <div class="frame">
-    <h2>What the instrument records</h2>
-    <figure class="fig"><img src="figures/images.png" alt="The four simulated channel images, each a noisy grayscale image of dispersed blobs"></figure>
-    <p class="caption">One 20 s exposure. Each channel sees the same blobs, shifted along its dispersion direction in proportion to their velocity.</p>
+    <p class="kicker">Step 8 of 14 · result</p>
+    <h2>The four channel images</h2>
+    <figure class="fig"><img src="figures/images.png" alt="The four simulated channel images"></figure>
+    <p class="caption">Each channel sees the scene rotated by its angle and dispersed along sensor $x$. The tutorial animates them with <code>na.plt.pcolormovie(..., axis_time="channel")</code>; they are tiled here.</p>
   </div>
   <aside class="notes">
-    Compare the blob arrangement between opposite channels: the shifts go in
-    opposite directions, which is what lets MART separate position from
-    velocity.
+    Compare opposite channels, 005 and 185 degrees: the same blobs, dispersed
+    in opposite directions relative to the sky.
   </aside>
 </section>
 
-<section id="mart">
+<section id="step-mart">
   <div class="frame">
-    <h2>The MART loop</h2>
+    <p class="kicker">Step 9 of 14</p>
+    <h2>Configure MART</h2>
+    <div class="body">
     <div class="row">
-      <ol class="steps col" style="flex: 1.4">
-        <li><span>Start from a flat guess, $\hat{u}_0$.</span></li>
-        <li><span>Predict the images: $d_i = P\,\hat{u}_i$</span></li>
-        <li><span>Score the fit: $\langle \chi_i^2 \rangle = \left\langle \left( \frac{d_i - d}{\sigma_i} \right)^2 \right\rangle$<br><span class="step-math">Stop when it improves by less than $T = 10^{-3}$.</span></span></li>
-        <li><span>Correct each channel: $C_i = \left( \frac{P^* d}{P^* d_i} \right)^{\gamma}$<br><span class="step-math">The learning rate is $\gamma = 2 / N$.</span></span></li>
-        <li><span>Update: $\hat{u}_{i+1} = \overline{C}_i \, \hat{u}_i$<br><span class="step-math">$\overline{C}_i$ is the geometric mean over the $N$ channels.</span></span></li>
-      </ol>
-      <div class="col card">
-        <h3>Compared with Parker et al. (2022)</h3>
-        <p>Corrections are computed in scene coordinates, so flux is conserved in both the forward and backward projections.</p>
-        <p>No contrast-enhancement filter yet.</p>
-        <p>Multiplicative updates keep every voxel positive.</p>
+      <div class="col" style="flex: 0.8">
+        <pre class="big"><code class="language-python" data-trim data-noescape>
+mart = ctis.inverters.MartInverter(
+    instrument=instrument,
+    intermediate=True,
+)
+        </code></pre>
       </div>
+      <table class="spec col" style="align-self: start; flex: 1.2">
+        <tr><th><code>instrument</code></th><td>Any <code>AbstractInstrument</code></td></tr>
+        <tr><th><code>gamma</code></th><td>Learning rate $\gamma$. <code>None</code> means $2/N$, here <span data-number="gamma" data-digits="1">0.5</span>.</td></tr>
+        <tr><th><code>threshold_convergence</code></th><td>Stop when ⟨χ²⟩ improves by less than this. Default 10⁻³.</td></tr>
+        <tr><th><code>num_iteration</code></th><td>Maximum number of iterations. Default 100.</td></tr>
+        <tr><th><code>intermediate</code></th><td>Keep every iterate in <code>solutions</code>. Default <code>False</code>; on here for the movie.</td></tr>
+      </table>
+    </div>
     </div>
   </div>
   <aside class="notes">
-    P is the forward model and P-star the deprojection, which spreads each
-    pixel's signal evenly back along its line of sight. The learning rate
-    gamma tempers each channel's correction before the channels are combined.
+    The inverter holds a reference to the instrument and nothing else that is
+    specific to it. If the maximum number of iterations is reached without
+    converging, it warns and sets success to False.
   </aside>
 </section>
 
-<section id="code">
+<section id="mart-internals">
   <div class="frame">
-    <h2>Three calls in ctis</h2>
-    <pre><code class="language-python" data-trim data-noescape>
-instrument = ctis.instruments.IdealInstrument(
-    dispersion=dispersion,          # 10 km/s per pixel
-    angle=angle,                    # 4 dispersion directions
-    plate_scale=0.4 * u.arcsec / u.pix,
-    ...,
-)
-images = instrument.image(scene)    # forward model + shot noise
+    <p class="kicker">Under the hood</p>
+    <h2>Inside <code>MartInverter.__call__</code></h2>
+    <pre class="dense"><code class="language-python" data-trim data-noescape>
+backprojected = np.maximum(instrument.backproject(images).outputs, 0)
+scene = instrument.backproject(images).outputs.mean(axis_channel)
+scene.ndarray[:] = scene.ndarray.mean()              # flat start, unless mart(images, guess=...)
 
-mart = ctis.inverters.MartInverter(instrument=instrument)
-inversion = mart(images)            # reconstruct the cube
-
-inversion.plot_moments(scene, axis="wavelength")
+for i in range(self.num_iteration):
+    predicted = instrument.image(scene, noise=False, uncertainty=True).outputs
+    chi2 = self.mean_chi_squared(images, predicted.nominal, predicted.width)
+    merit = chi2.mean(axis_channel)
+    if (merit_old - merit) &lt; self.threshold_convergence:
+        break
+    backprojected_new = np.maximum(instrument.backproject(predicted.nominal).outputs, 0)
+    correction = np.nan_to_num(backprojected / backprojected_new, nan=1, posinf=1, neginf=1)
+    correction = np.prod(correction ** gamma, axis=axis_channel) ** (1 / num_channel)
+    scene = scene * correction
+    merit_old = merit
     </code></pre>
-    <p class="caption">The full, runnable tutorial: <a href="../../tutorials/simple-mart.html">Invert a Synthetic Scene with MART</a></p>
+    <div class="points-row">
+      <p>The correction is a ratio of back-projections, computed in scene space, so both passes conserve flux.</p>
+      <p>Channels combine by geometric mean, each tempered by $\gamma$.</p>
+      <p>No contrast enhancement yet (Parker et al. 2022).</p>
+    </div>
   </div>
   <aside class="notes">
-    All arrays are named-arrays, so axes are matched by name rather than
-    position. The inverter only needs an instrument model: swapping in an
-    OptikaInstrument requires no change to the inversion code.
+    Abridged from ctis/inverters/_iterative/_mart/_mart.py; the real code also
+    records the signal-correlated residual and the intermediate solutions.
+    Zero-over-zero corrections become 1, so voxels no channel sees are left
+    unchanged.
   </aside>
 </section>
 
-<section id="reconstruction">
+<section id="step-run">
   <div class="frame">
-    <h2>Reconstruction, iteration by iteration</h2>
+    <p class="kicker">Step 10 of 14</p>
+    <h2>Run the inversion</h2>
+    <pre><code class="language-python" data-trim data-noescape>
+inversion = mart(images)
+    </code></pre>
+    <pre class="out"><span class="in">inversion.num_iteration            </span><span data-number="num_iteration">23</span>
+<span class="in">inversion.success                  </span><span data-number="success">True</span>
+<span class="in">inversion.message                  </span><span data-number="message">Achieved merit less than 0.001.</span>
+<span class="in">inversion.solutions.outputs.shape  </span><span data-number="shape_solutions">{'iteration': 23, 'wavelength': 20, 'scene_x': 64, 'scene_y': 64}</span>
+<span class="in">inversion.mean_chi_squared.shape   </span><span data-number="shape_chi2">{'iteration': 23, 'channel': 4}</span>
+<span class="in">inversion.solution.outputs.unit    </span><span data-number="unit_solution">erg / (Angstrom s arcsec2 cm2)</span></pre>
+    <div class="points-row">
+      <p>About 1.0 s for 23 iterations (45 ms each) on a 24-core Threadripper 3960X.</p>
+      <p><code>inversion.solution</code> is the last iterate. Its unit is per arcsec²: use <code>.to(scene.outputs.unit)</code> before comparing numbers.</p>
+      <p><code>mart(images, guess=...)</code> starts from your own initial guess; <code>verbose=True</code> prints the merit each iteration.</p>
+    </div>
+  </div>
+  <aside class="notes">
+    The result object keeps the images, the inverter, every iterate (because
+    intermediate=True), and the per-channel diagnostics for each iteration.
+    The arcsec-squared unit is equivalent to the input's per-steradian unit;
+    astropy just doesn't simplify it automatically.
+  </aside>
+</section>
+
+<section id="step-movie">
+  <div class="frame">
+    <p class="kicker">Step 11 of 14</p>
+    <h2>Watch the iterations</h2>
     <figure class="fig">
       <video data-autoplay loop muted playsinline controls poster="figures/reconstruction.png" src="figures/reconstruction.mp4"></video>
     </figure>
-    <p class="caption">Each frame is one MART update. The label gives $\langle \chi^2 \rangle$ averaged over the four channels.</p>
+    <p class="caption"><code>na.plt.rgbmovie(label, wavelength, x, y, C=inversion.solutions.outputs, axis_time="iteration", axis_wavelength="wavelength", ...)</code></p>
   </div>
   <aside class="notes">
-    The blobs appear within a few iterations; later iterations sharpen them
-    and also build up the speckled background noise.
+    Each frame is one MART update, labeled with the channel-averaged mean
+    chi-squared. The blobs appear within a few iterations; the later ones
+    sharpen them and build up speckle in the background.
   </aside>
 </section>
 
-<section id="convergence">
+<section id="step-spectrum-recovered">
   <div class="frame">
-    <h2>Convergence</h2>
-    <figure class="fig"><img src="figures/convergence.png" alt="Mean chi-squared and signal-correlated residual against iteration for each channel"></figure>
-    <p class="caption">$\langle \chi^2 \rangle$ ends at <span data-number="chi2_final" data-digits="2">0.33</span>, well below the noise level of 1 (dashed), so the later iterations are fitting noise. MART stopped after <span data-number="iteration_final">22</span> updates, when $\langle \chi^2 \rangle$ improved by less than $10^{-3}$.</p>
-  </div>
-  <aside class="notes">
-    With more unknowns than measurements, MART can always reduce chi-squared
-    further by fitting the noise. Where to stop is a real choice; the
-    current rule stops only when chi-squared stops improving. The
-    signal-correlated residual peaks early, while the blobs are still
-    forming, then falls as structure moves out of the residual.
-  </aside>
-</section>
+    <p class="kicker">Step 12 of 14</p>
+    <h2>Compare the average spectra</h2>
+    <div class="row">
+      <div class="col" style="flex: 1.05">
+        <pre class="dense"><code class="language-python" data-trim data-noescape>
+solution = inversion.solution
+spectrum_inverted = solution.outputs.mean(
+    ("scene_x", "scene_y")
+)
 
-<section id="spectrum-recovered">
-  <div class="frame">
-    <h2>The average spectrum, recovered</h2>
-    <figure class="fig"><img src="figures/spectrum_comparison.png" alt="The original and reconstructed average spectra"></figure>
-    <p class="caption">The peaks come back <span data-number="peak_blue_low">17</span>% and <span data-number="peak_red_low">14</span>% low, and the dip between them <span data-number="gap_high">65</span>% high: MART spreads intensity into the line wings.</p>
-  </div>
-  <aside class="notes">
-    This wing inflation is consistent with the crossing-streak ("plaid")
-    artifact that Parker et al. 2022 suppress with smoothing. An optional
-    smoothness regularization is in review and will be judged on ESIS data.
-  </aside>
-</section>
-
-<section id="moments">
-  <div class="frame">
-    <h2>Line moments, pixel by pixel</h2>
-    <figure class="fig"><img src="figures/moments.png" alt="Two-dimensional histograms of true against reconstructed radiance, median velocity and interquartile range"></figure>
-    <p class="caption">True against reconstructed radiance, Doppler shift (median velocity) and line width (interquartile range) for every pixel. The dashed line is perfect recovery.</p>
-  </div>
-  <aside class="notes">
-    Radiance is recovered best. The Doppler shift is the hardest moment;
-    the vertical band at zero true velocity is the background, which has
-    no Doppler shift.
-  </aside>
-</section>
-
-<section id="next">
-  <div class="frame">
-    <h2>Next steps</h2>
-    <div class="cards">
-      <div class="card">
-        <p class="tag">In review · <a href="https://github.com/sun-data/ctis/pull/25">#25</a></p>
-        <h3>Smoothness regularization</h3>
-        <p>Optional smoothing along wavelength, after Parker et al. (2022). No gain on this synthetic scene, so it will be judged on ESIS flight data.</p>
+na.plt.stairs(scene.inputs.wavelength, spectrum,
+              ax=ax, label="original")
+na.plt.stairs(scene.inputs.wavelength,
+              spectrum_inverted,
+              ax=ax, label="reconstructed")
+        </code></pre>
+        <ul class="points">
+          <li>The peaks come back <span data-number="peak_blue_low">17</span>% and <span data-number="peak_red_low">14</span>% low.</li>
+          <li>The dip between the components comes back <span data-number="gap_high">65</span>% high.</li>
+          <li>The missing flux goes into the line wings.</li>
+        </ul>
       </div>
-      <div class="card">
-        <p class="tag">In review · <a href="https://github.com/sun-data/ctis/pull/23">#23</a></p>
-        <h3>Line-profile fitting</h3>
-        <p>ParametricInverter fits a spectral line profile to every pixel instead of reconstructing the whole cube.</p>
-      </div>
-      <div class="card">
-        <p class="tag">Available</p>
-        <h3>Real optics</h3>
-        <p>OptikaInstrument takes distortion, effective area and vignetting from an optika model, the step toward inverting ESIS flight data.</p>
-      </div>
+      <figure class="fig"><img src="figures/spectrum_comparison.png" alt="Original and reconstructed average spectra"></figure>
     </div>
   </div>
   <aside class="notes">
-    The inverters only talk to the instrument interface, so each of these
-    plugs into the same workflow shown in this talk.
+    This is the wing inflation that Parker et al. 2022 suppress with
+    smoothing between iterations. The optional smoothness regularization in
+    review (#25) implements that step.
   </aside>
 </section>
 
-<section id="references">
+<section id="step-moments">
   <div class="frame">
-    <h2>References and links</h2>
-    <ul class="refs">
-      <li>Gordon, Bender &amp; Herman (1970), <i>J. Theor. Biol.</i> 29, 471 <span class="what">Algebraic reconstruction techniques</span></li>
-      <li>Fox, Kankelborg &amp; Thomas (2010), <i>ApJ</i> 719, 1132 <span class="what">MART applied to MOSES observations</span></li>
-      <li>Parker et al. (2022), <i>ApJ</i> 938, 116 <span class="what">First flight of ESIS and its MART pipeline</span></li>
-      <li><a href="https://ctis.readthedocs.io">ctis.readthedocs.io</a> <span class="what">Documentation, tutorials and these slides</span></li>
-      <li><a href="https://github.com/sun-data/ctis">github.com/sun-data/ctis</a> <span class="what">Source code</span></li>
-    </ul>
+    <p class="kicker">Step 13 of 14</p>
+    <h2>Compare line moments, pixel by pixel</h2>
+    <pre><code class="language-python" data-trim data-noescape>
+inversion.plot_moments(scene, axis="wavelength")
+    </code></pre>
+    <figure class="fig"><img src="figures/moments.png" alt="Histograms of true against reconstructed radiance, median velocity and interquartile range"></figure>
+    <p class="caption">Column-normalized 2D histograms of radiance, median velocity and interquartile range, with Pearson's $r$. Options: <code>num_bins</code>, <code>range_*</code>, and <code>percentile_radiance</code> to exclude faint pixels.</p>
+  </div>
+  <aside class="notes">
+    The median and interquartile range are computed from the spectral profile
+    in each pixel with named-arrays' pdf functions. The vertical band at zero
+    true velocity in the middle panel is the background, which has no Doppler
+    shift.
+  </aside>
+</section>
+
+<section id="step-convergence">
+  <div class="frame">
+    <p class="kicker">Step 14 of 14</p>
+    <h2>Check convergence</h2>
+    <div class="row">
+      <div class="col" style="flex: 1.05">
+        <pre class="dense"><code class="language-python" data-trim data-noescape>
+na.plt.plot(inversion.iteration,
+            inversion.mean_chi_squared,
+            ax=ax[0],
+            axis=inversion.inverter.axis_iteration,
+            label=instrument.channel)
+na.plt.plot(inversion.iteration,
+            inversion.correlation_residual,
+            ax=ax[1],
+            axis=inversion.inverter.axis_iteration,
+            label=instrument.channel)
+        </code></pre>
+        <ul class="points">
+          <li>⟨χ²⟩ per channel uses σ of the predicted image; the stopping rule uses its mean over channels.</li>
+          <li>The residual's correlation with the predicted image tracks structure left in the residual.</li>
+          <li>⟨χ²⟩ ends at <span data-number="chi2_final" data-digits="2">0.33</span>: below 1, so the later iterations fit noise.</li>
+        </ul>
+      </div>
+      <figure class="fig"><img src="figures/convergence.png" alt="Mean chi-squared and signal-correlated residual against iteration"></figure>
+    </div>
+  </div>
+  <aside class="notes">
+    Both diagnostics are in ctis.inverters.merit and are recorded for every
+    iteration whether or not intermediate solutions are kept. With 2.5 times
+    more unknowns than measurements, MART can always lower chi-squared by
+    fitting noise; the current rule only stops when chi-squared stops
+    improving.
+  </aside>
+</section>
+
+<section id="own-images">
+  <div class="frame">
+    <p class="kicker">Adopting ctis</p>
+    <h2>Inverting your own images</h2>
+    <div class="body">
+    <div class="row">
+      <div class="col" style="flex: 1.5">
+        <pre class="dense"><code class="language-python" data-trim data-noescape>
+images = na.FunctionArray(
+    inputs=instrument.coordinates_sensor,
+    outputs=na.ScalarArray(
+        ndarray=data * u.electron,      # numpy array, (4, 128, 64)
+        axes=("channel", "sensor_x", "sensor_y"),
+    ),
+)
+
+inversion = mart(images)
+        </code></pre>
+      </div>
+      <ul class="points col">
+        <li>Wrap a plain NumPy array by naming its axes and giving it units; this runs unchanged.</li>
+        <li>Images are in electrons, one per channel, on the instrument's sensor grid.</li>
+        <li><code>mart()</code> raises <code>ValueError</code> if the image positions differ from <code>instrument.coordinates_sensor</code>.</li>
+      </ul>
+    </div>
+    </div>
+  </div>
+  <aside class="notes">
+    This is the whole interface for data: a function array on the
+    instrument's sensor grid. Calibration to electrons happens upstream of
+    ctis.
+  </aside>
+</section>
+
+<section id="own-instrument">
+  <div class="frame">
+    <p class="kicker">Adopting ctis</p>
+    <h2>Using your own instrument model</h2>
+    <div class="body">
+    <div class="grid-2">
+      <div class="card">
+        <p class="tag">Option A · real optics</p>
+        <pre class="dense"><code class="language-python" data-trim data-noescape>
+instrument = ctis.instruments.OptikaInstrument(
+    system=system,   # optika linear system
+    coordinates_scene=coordinates_scene,
+    channel=channel,
+    axis_channel="channel",
+    axis_wavelength="wavelength",
+    axis_scene_xy=("scene_x", "scene_y"),
+)
+        </code></pre>
+        <p>optika supplies distortion, effective area, vignetting and the sensor response. The sensor grid and its axes come from <code>system</code>.</p>
+      </div>
+      <div class="card">
+        <p class="tag">Option B · your forward model</p>
+        <p>Subclass <code>AbstractInstrument</code> and implement:</p>
+        <ul class="points" style="font-size: 26px; gap: 12px">
+          <li><code>image(scene, integrate, noise, uncertainty)</code></li>
+          <li><code>backproject(image, integrate, unit)</code></li>
+          <li><code>coordinates_scene</code>, <code>coordinates_sensor</code>, <code>channel</code></li>
+          <li><code>axis_channel</code>, <code>axis_wavelength</code>, <code>axis_scene_xy</code>, <code>axis_sensor_xy</code>, <code>num_channel</code></li>
+        </ul>
+        <p>Every inverter works with every instrument.</p>
+      </div>
+    </div>
+    </div>
+  </div>
+  <aside class="notes">
+    Option B is how you would plug an existing forward model from your own
+    code into our inverters. MART only calls image with noise off and
+    uncertainty on, backproject, and the grid and axis properties.
+  </aside>
+</section>
+
+<section id="performance">
+  <div class="frame">
+    <p class="kicker">Adopting ctis</p>
+    <h2>Performance at tutorial scale</h2>
+    <table class="spec">
+      <tr><th><code>import ctis</code></th><td>Including named-arrays, optika and astropy</td><td class="num">2.6 s</td></tr>
+      <tr><th><code>instrument.weights</code></th><td>Forward weights, first access, then cached</td><td class="num">0.21 s</td></tr>
+      <tr><th><code>instrument.weights_transpose</code></th><td>Transposed weights, first access, then cached</td><td class="num">0.04 s</td></tr>
+      <tr><th><code>instrument.image(scene)</code></th><td>With shot noise</td><td class="num">89 ms</td></tr>
+      <tr><th><code>instrument.image(scene, noise=False, uncertainty=True)</code></th><td>As called by MART</td><td class="num">25 ms</td></tr>
+      <tr><th><code>instrument.backproject(images)</code></th><td></td><td class="num">12 ms</td></tr>
+      <tr><th><code>mart(images)</code></th><td>23 iterations, 45 ms each</td><td class="num">1.0 s</td></tr>
+    </table>
+    <p class="caption">A 64 × 64 × 20 scene and 4 × 128 × 64 images. AMD Threadripper 3960X (24 cores), Windows, Python 3.13, measured on 2026-09-30 with the numba cache warm.</p>
+  </div>
+  <aside class="notes">
+    These are single measurements at the tutorial's grid size, not a scaling
+    study. Each iteration is one forward model and one backprojection.
+  </aside>
+</section>
+
+<section id="roadmap">
+  <div class="frame">
+    <h2>Status and roadmap</h2>
+    <div class="body">
+    <div class="grid-3">
+      <div class="card">
+        <p class="tag">Released · v0.3.0</p>
+        <p>Electron-based instrument interface with exact noise propagation (<code>uncertainty=True</code>).</p>
+        <p><code>OptikaInstrument</code> for forward models from optika.</p>
+      </div>
+      <div class="card">
+        <p class="tag">In review</p>
+        <p><code>ParametricInverter</code> fits a spectral line profile to every pixel (<a href="https://github.com/sun-data/ctis/pull/23">#23</a>).</p>
+        <p>Optional smoothness regularization for MART (<a href="https://github.com/sun-data/ctis/pull/25">#25</a>). No gain on this synthetic scene; to be judged on ESIS data.</p>
+      </div>
+      <div class="card">
+        <p class="tag">Not yet</p>
+        <p>Contrast enhancement from Parker et al. (2022).</p>
+      </div>
+    </div>
+    </div>
+  </div>
+  <aside class="notes">
+    Issues and pull requests are welcome on GitHub. If your team adopts the
+    package, the interfaces on the previous slides are where your code would
+    plug in.
+  </aside>
+</section>
+
+<section id="links">
+  <div class="frame">
+    <h2>Getting started</h2>
+    <div class="body">
+    <div class="row">
+      <div class="col">
+        <pre><code class="language-bash" data-trim>pip install ctis</code></pre>
+        <ul class="refs">
+          <li><a href="../../tutorials/simple-mart.html">Invert a Synthetic Scene with MART</a> <span class="what">The runnable tutorial these slides follow</span></li>
+          <li><a href="https://ctis.readthedocs.io">ctis.readthedocs.io</a> <span class="what">Documentation, API reference and these slides</span></li>
+          <li><a href="https://github.com/sun-data/ctis">github.com/sun-data/ctis</a> <span class="what">Source code, issues and pull requests</span></li>
+        </ul>
+      </div>
+      <div class="col">
+        <ul class="refs">
+          <li>Gordon, Bender &amp; Herman (1970), <i>J. Theor. Biol.</i> 29, 471 <span class="what">Algebraic reconstruction techniques</span></li>
+          <li>Fox, Kankelborg &amp; Thomas (2010), <i>ApJ</i> 719, 1132 <span class="what">MART applied to MOSES observations</span></li>
+          <li>Parker et al. (2022), <i>ApJ</i> 938, 116 <span class="what">First flight of ESIS and its MART pipeline</span></li>
+        </ul>
+      </div>
+    </div>
+    </div>
   </div>
 </section>
 
@@ -641,7 +1128,7 @@ inversion.plot_moments(scene, axis="wavelength")
 
 <script src="figures/numbers.js"></script>
 <script>
-  // Fill in the numbers computed by make_figures.py, so the text always
+  // Fill in the values computed by make_figures.py, so the text always
   // matches the figures. The values typed into the HTML are the fallback.
   const numbers = window.numbers;
   if (numbers) {
@@ -654,6 +1141,13 @@ inversion.plot_moments(scene, axis="wavelength")
     for (const element of document.querySelectorAll("[data-number]")) {
       const key = element.dataset.number;
       const value = key in numbers ? numbers[key] : derived[key];
+      if (value === undefined) {
+        continue;
+      }
+      if (typeof value === "string") {
+        element.textContent = value;
+        continue;
+      }
       const digits = Number(element.dataset.digits || 0);
       element.textContent = value.toLocaleString("en-US", {
         minimumFractionDigits: digits,

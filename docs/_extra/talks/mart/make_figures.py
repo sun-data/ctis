@@ -10,7 +10,6 @@ so the slides always match the current version of :mod:`ctis`.
 import json
 import pathlib
 import numpy as np
-import matplotlib.lines
 import matplotlib.ticker
 import matplotlib.pyplot as plt
 import astropy.units as u
@@ -122,7 +121,7 @@ def main():
         position_ref=na.Cartesian2dVectorArray(64, 32) * u.pix,
         coordinates_scene=coordinates_scene,
         coordinates_sensor=coordinates_sensor,
-        channel=angle.to_string_array("%03d"),
+        channel="dispersion angle = " + angle.to_string_array("%03d"),
         axis_channel="channel",
         axis_wavelength="wavelength",
         axis_scene_xy=("scene_x", "scene_y"),
@@ -255,63 +254,8 @@ def main():
         fig.savefig(directory / "scene.png")
         plt.close(fig)
 
-        # The lines of sight of each channel through the scene
-        fig, axs = plt.subplots(
-            ncols=2,
-            figsize=(17, 7.6),
-            sharey=True,
-            constrained_layout=True,
-        )
-        slope = plate_scale / dispersion_velocity
-        line = na.linspace(-40, 40, axis="line", num=17) * u.arcsec
-        velocity_line = na.linspace(-500, 500, axis="v", num=2) * u.km / u.s
-        for i, ax in enumerate(axs):
-            component = "xy"[i]
-            C = scene.outputs.sum(f"scene_{'yx'[i]}")
-            position = getattr(scene.inputs.position, component)
-            na.plt.pcolormesh(
-                position[{f"scene_{'yx'[i]}": 0}],
-                velocity,
-                C=C.value,
-                ax=ax,
-                cmap="gray",
-            )
-            handles = []
-            for j in (i, i + 2):
-                angle_j = angle[dict(channel=j)]
-                direction = np.cos(angle_j) if i == 0 else np.sin(angle_j)
-                position_line = line - slope * direction * velocity_line
-                na.plt.plot(
-                    position_line.to(u.arcsec),
-                    velocity_line,
-                    ax=ax,
-                    axis="v",
-                    color=colors_channel[j],
-                    linewidth=2,
-                )
-                handle = matplotlib.lines.Line2D(
-                    [],
-                    [],
-                    color=colors_channel[j],
-                    label=label_channel(j),
-                )
-                handles.append(handle)
-            ax.set_xlim(-10, 10)
-            ax.set_ylim(-500, 500)
-            ax.xaxis.set_major_locator(matplotlib.ticker.MultipleLocator(5))
-            ax.set_xlabel(f"scene ${component}$ (arcsec)")
-            ax.legend(
-                handles=handles,
-                title="channel",
-                loc="upper left",
-                bbox_to_anchor=(1, 1),
-            )
-        axs[0].set_ylabel("Doppler velocity (km/s)")
-        fig.savefig(directory / "lines_of_sight.png")
-        plt.close(fig)
-
         # The average spectrum of the scene
-        fig, ax = plt.subplots(figsize=(15, 7.4), constrained_layout=True)
+        fig, ax = plt.subplots(figsize=(10, 7.6), constrained_layout=True)
         stairs_velocity(ax, spectrum, color=blue)
         fig.savefig(directory / "spectrum.png")
         plt.close(fig)
@@ -405,7 +349,7 @@ def main():
         # The convergence of MART
         fig, axs = plt.subplots(
             nrows=2,
-            figsize=(15, 7.8),
+            figsize=(10, 7.6),
             sharex=True,
             constrained_layout=True,
         )
@@ -429,7 +373,7 @@ def main():
         axs[0].axhline(1, color=muted, linestyle="dashed", linewidth=2)
         axs[0].set_yscale("log")
         axs[0].set_ylabel(r"$\langle \chi^2 \rangle$")
-        axs[0].legend(title="channel", loc="upper left", bbox_to_anchor=(1, 1))
+        axs[0].legend(title="channel", loc="upper right", ncols=2)
         axs[1].set_ylabel("signal-correlated\nresidual")
         axs[1].set_xlabel("iteration")
         for ax in axs:
@@ -438,7 +382,7 @@ def main():
         plt.close(fig)
 
         # The average spectrum of the reconstruction
-        fig, ax = plt.subplots(figsize=(15, 7.4), constrained_layout=True)
+        fig, ax = plt.subplots(figsize=(10, 7.6), constrained_layout=True)
         stairs_velocity(ax, spectrum, color=blue, label="original")
         stairs_velocity(
             ax,
@@ -481,6 +425,23 @@ def main():
         peak_blue=float(peak(spectrum_inverted, -1) / peak(spectrum, -1)),
         peak_red=float(peak(spectrum_inverted, +1) / peak(spectrum, +1)),
         gap=float(gap(spectrum_inverted) / gap(spectrum)),
+        # what each step of the tutorial prints, quoted on the slides
+        shape_velocity=str(velocity.shape),
+        shape_position_scene=str(position_scene.shape),
+        shape_position_sensor=str(position_sensor.shape),
+        shape_coordinates_scene=str(coordinates_scene.shape),
+        shape_coordinates_sensor=str(coordinates_sensor.shape),
+        shape_scene=str(scene.outputs.shape),
+        unit_scene=str(scene.outputs.unit),
+        repr_dispersion=repr(dispersion.to(u.mAA / u.pix)),
+        shape_images=str(images.outputs.shape),
+        unit_images=str(images.outputs.unit),
+        success=str(inversion.success),
+        message=inversion.message,
+        shape_solutions=str(inversion.solutions.outputs.shape),
+        unit_solution=str(inversion.solution.outputs.unit),
+        shape_chi2=str(inversion.mean_chi_squared.shape),
+        gamma=float(mart.gamma),
     )
 
     path = directory / "numbers.js"
