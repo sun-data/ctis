@@ -36,6 +36,14 @@ This package is published on PyPI and can be installed using `pip`
 pip install ctis
 ```
 
+ctis requires Python 3.12 or newer.
+To upgrade an existing installation,
+along with the versions of named-arrays and numpy that it needs, use
+
+```shell
+pip install --upgrade ctis
+```
+
 ## Features
 
 - [`IdealInstrument`](https://ctis.readthedocs.io/en/latest/_autosummary/ctis.instruments.IdealInstrument.html),
