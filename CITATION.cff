@@ -1,0 +1,35 @@
+cff-version: 1.2.0
+message: "If you use ctis in your research, please cite it using these metadata."
+type: software
+title: ctis
+abstract: >-
+  ctis is a Python library for simulating and inverting observations from
+  computed tomography imaging spectrographs (CTISs), particularly instruments
+  that observe the Sun in the extreme ultraviolet. A CTIS records several
+  dispersed projections of a spectral scene at once, and ctis reconstructs the
+  scene from those images. Instrument models range from an idealized
+  instrument characterized by its effective area and dispersion to forward
+  models built from optika optical systems, and scenes are reconstructed
+  using the multiplicative algebraic reconstruction technique (MART). The
+  library also provides synthetic test scenes and merit functions for
+  evaluating the quality of an inversion, and it is built on named-arrays, so
+  scenes, instruments, and images carry named axes and physical units.
+authors:
+  - family-names: Smart
+    given-names: Roy T.
+    orcid: "https://orcid.org/0000-0002-9997-5515"
+  - family-names: Parker
+    given-names: Jacob D.
+    orcid: "https://orcid.org/0000-0001-8732-8284"
+  - family-names: Kankelborg
+    given-names: Charles C.
+    orcid: "https://orcid.org/0000-0002-1992-7469"
+repository-code: "https://github.com/sun-data/ctis"
+url: "https://ctis.readthedocs.io"
+license: BSD-3-Clause
+keywords:
+  - computed tomography
+  - imaging spectroscopy
+  - inversion
+  - extreme ultraviolet
+  - solar physics
