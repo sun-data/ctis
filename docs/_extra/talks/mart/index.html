@@ -838,11 +838,8 @@ mart = ctis.inverters.MartInverter(
   <div class="frame">
     <p class="kicker">Under the hood</p>
     <h2>Inside <code>MartInverter.__call__</code></h2>
-    <pre class="dense"><code class="language-python" data-trim data-noescape>
-backprojected = np.maximum(instrument.backproject(images).outputs, 0)
-scene = instrument.backproject(images).outputs.mean(axis_channel)
-scene.ndarray[:] = scene.ndarray.mean()              # flat start, unless mart(images, guess=...)
-
+    <div class="body">
+    <pre><code class="language-python" data-trim data-noescape>
 for i in range(self.num_iteration):
     predicted = instrument.image(scene, noise=False, uncertainty=True).outputs
     chi2 = self.mean_chi_squared(images, predicted.nominal, predicted.width)
@@ -860,10 +857,14 @@ for i in range(self.num_iteration):
       <p>Channels combine by geometric mean, each tempered by $\gamma$.</p>
       <p>No contrast enhancement yet (Parker et al. 2022).</p>
     </div>
+    </div>
   </div>
   <aside class="notes">
     Abridged from ctis/inverters/_iterative/_mart/_mart.py; the real code also
     records the signal-correlated residual and the intermediate solutions.
+    Before the loop, backprojected is the backprojection of the observed
+    images clipped at zero, and the scene starts flat at the mean of the
+    channel-averaged backprojection unless mart(images, guess=...) is given.
     Zero-over-zero corrections become 1, so voxels no channel sees are left
     unchanged.
   </aside>
