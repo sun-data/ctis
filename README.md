@@ -16,3 +16,20 @@ This package is published on PyPI and can be installed using `pip`
 ```shell
 pip install ctis
 ```
+
+## Citation
+
+If you use ctis in your research, please cite it.
+The citation metadata is kept in [`CITATION.cff`](https://github.com/sun-data/ctis/blob/main/CITATION.cff),
+which the "Cite this repository" button on GitHub can export as BibTeX or APA.
+Please include the version of ctis that you used,
+which is given by `importlib.metadata.version("ctis")`.
+
+```bibtex
+@software{ctis,
+  author = {Smart, Roy T. and Parker, Jacob D. and Kankelborg, Charles C.},
+  title = {ctis},
+  version = {X.Y.Z},
+  url = {https://github.com/sun-data/ctis},
+}
+```

@@ -29,6 +29,27 @@ Examples on how to use this package.
     tutorials/ideal-instrument
     tutorials/simple-mart
 
+Citation
+========
+
+If you use :mod:`ctis` in your research, please cite it.
+The citation metadata is kept in
+`CITATION.cff <https://github.com/sun-data/ctis/blob/main/CITATION.cff>`_,
+which the "Cite this repository" button on the
+`GitHub page <https://github.com/sun-data/ctis>`_
+can export as BibTeX or APA.
+Please include the version of :mod:`ctis` that you used,
+which is given by ``importlib.metadata.version("ctis")``.
+
+.. code-block:: bibtex
+
+    @software{ctis,
+      author = {Smart, Roy T. and Parker, Jacob D. and Kankelborg, Charles C.},
+      title = {ctis},
+      version = {X.Y.Z},
+      url = {https://github.com/sun-data/ctis},
+    }
+
 API Reference
 =============
 
