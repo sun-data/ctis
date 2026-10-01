@@ -29,6 +29,14 @@ This package is published on PyPI and can be installed using ``pip``
 
     pip install ctis
 
+:mod:`ctis` requires Python 3.12 or newer.
+To upgrade an existing installation,
+along with the versions of :mod:`named_arrays` and :mod:`numpy` that it needs, use
+
+.. code-block:: shell
+
+    pip install --upgrade ctis
+
 Features
 ========
 
