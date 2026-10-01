@@ -29,6 +29,14 @@ Examples on how to use this package.
     tutorials/ideal-instrument
     tutorials/simple-mart
 
+Talks
+=====
+
+Slide decks for presenting this package.
+
+* `Simulating and Inverting a CTIS Observation <talks/mart/index.html>`__:
+  a step-by-step walkthrough of :doc:`tutorials/simple-mart`.
+
 API Reference
 =============
 
