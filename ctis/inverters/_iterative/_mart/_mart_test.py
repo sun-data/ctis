@@ -155,15 +155,20 @@ def test_plot_moments_no_runtime_warnings():
     The columns of each histogram which contain no pixels are expected to
     divide by zero, so plotting the moments must not warn about them.
     """
+    # Add a background so that no pixel of the scene is empty,
+    # since the median of an empty pixel is undefined, and versions of
+    # named-arrays before sun-data/named-arrays#255 warn about it.
+    scene_background = scene + scene.max() / 100
+
     a = ctis.inverters.MartInverter(
         instrument=instrument,
         threshold_convergence=1e-2,
     )
 
-    result = a(images)
+    result = a(instrument.image(scene_background))
 
     with warnings.catch_warnings():
         warnings.simplefilter("error", RuntimeWarning)
-        fig, axs = result.plot_moments(scene, axis="wavelength")
+        fig, axs = result.plot_moments(scene_background, axis="wavelength")
 
     plt.close(fig)
