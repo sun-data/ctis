@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Inverting CTIS Data with ctis</title>
+<title>Simulating and Inverting a CTIS Observation</title>
 <meta name="description" content="A step-by-step walkthrough of the ctis MART tutorial for teams evaluating the package.">
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -245,6 +245,11 @@
     padding: 20px 24px;
   }
 
+  .reveal .card pre.out {
+    background: none;
+    padding: 4px 0 4px 28px;
+  }
+
   .reveal .grid-2, .reveal .grid-3 {
     flex: 1;
     min-height: 0;
@@ -381,8 +386,8 @@
 <section id="title" data-background-color="#141a26">
   <div class="frame title-frame">
     <div class="text">
-      <p class="kicker">Collaborator walkthrough</p>
-      <h1>Inverting CTIS Data with ctis</h1>
+      <p class="kicker">ctis code walkthrough</p>
+      <h1>Simulating and Inverting a CTIS Observation</h1>
       <p class="lede">The MART tutorial step by step: grids, scene, instrument model, inversion and diagnostics, and what it takes to run it on your own data.</p>
       <p class="byline">Roy T. Smart</p>
       <p class="lede"><code>pip install ctis</code></p>
@@ -397,60 +402,41 @@
   </aside>
 </section>
 
-<section id="package">
-  <div class="frame">
-    <h2>The package at a glance</h2>
-    <div class="grid-3">
-      <div class="card">
-        <h3><code>ctis.instruments</code></h3>
-        <p>Forward models. <code>AbstractInstrument</code> → <code>AbstractLinearInstrument</code> → <code>IdealInstrument</code>, <code>OptikaInstrument</code>.</p>
-        <p><code>image()</code> maps spectral radiance to electrons; <code>backproject()</code> is its transpose.</p>
-      </div>
-      <div class="card">
-        <h3><code>ctis.inverters</code></h3>
-        <p>Reconstruction. <code>AbstractInverter</code> → <code>AbstractIterativeInverter</code> → <code>MartInverter</code>.</p>
-        <p>Result objects with diagnostics, and <code>merit</code> functions: <code>mean_chi_squared</code>, <code>correlation_residual</code>.</p>
-      </div>
-      <div class="card">
-        <h3><code>ctis.scenes</code></h3>
-        <p>Test patterns for validating inversions: <code>gaussians</code>.</p>
-      </div>
-    </div>
-    <table class="spec">
-      <tr><th>Release</th><td>v0.3.0 on PyPI (2026-08-02)</td></tr>
-      <tr><th>Requirements</th><td>Python ≥ 3.10; astropy, named-arrays, optika</td></tr>
-      <tr><th>Testing</th><td>CI on Linux and macOS, Python 3.11 and 3.12</td></tr>
-      <tr><th>License</th><td>BSD-3-Clause</td></tr>
-    </table>
-  </div>
-  <aside class="notes">
-    Three subpackages. Instruments and inverters are both abstract interfaces
-    with concrete implementations, so a new forward model works with every
-    inverter and vice versa. optika is our raytracing and optical-modeling
-    package; it is a dependency because of OptikaInstrument.
-  </aside>
-</section>
-
 <section id="conventions">
   <div class="frame">
     <h2>Conventions used throughout</h2>
-    <div class="grid-2">
-      <div class="card">
+    <div class="row" style="align-items: flex-start">
+      <div class="card col" style="flex: 1.1">
         <h3>Named axes</h3>
-        <p>Every axis has a name, such as <code>"wavelength"</code>, <code>"scene_x"</code> or <code>"channel"</code>. Arrays broadcast and reduce by name; there is no positional indexing.</p>
-        <pre><code class="language-python" data-trim>scene.outputs.mean(("scene_x", "scene_y"))</code></pre>
+        <p>A <code>ScalarArray</code> is a NumPy array plus a name for each axis. Arrays broadcast and reduce by name; there is no positional indexing.</p>
+        <pre class="dense"><code class="language-python" data-trim data-noescape>
+a = na.ScalarArray(
+    ndarray=np.random.random((64, 32)),
+    axes=("scene_x", "scene_y"),
+)
+b = na.ScalarArray(
+    ndarray=np.linspace(0, 1, 20),
+    axes="wavelength",
+)
+        </code></pre>
+        <pre class="out"><span class="in">a.mean("scene_x").shape</span>
+<span data-number="shape_a_mean">{'scene_y': 32}</span>
+<span class="in">(a * b).shape</span>
+<span data-number="shape_ab">{'scene_x': 64, 'scene_y': 32, 'wavelength': 20}</span></pre>
       </div>
-      <div class="card">
-        <h3>Units everywhere</h3>
-        <p>Values are astropy quantities. The instrument converts radiance in erg cm⁻² sr⁻¹ Å⁻¹ s⁻¹ to electrons, and back.</p>
-      </div>
-      <div class="card">
-        <h3>Vertices, not centers</h3>
-        <p>Coordinate grids give cell edges and values live in the cells: 21 wavelength vertices hold 20 spectral bins.</p>
-      </div>
-      <div class="card">
-        <h3>Functions on grids</h3>
-        <p><code>na.FunctionArray(inputs=..., outputs=...)</code> pairs a grid with its values. Scenes, images and solutions are all function arrays, and ctis checks that their grids match the instrument's.</p>
+      <div class="col">
+        <div class="card">
+          <h3>Units everywhere</h3>
+          <p>Multiply any array by an astropy unit. The instrument converts radiance in $\mathrm{erg\,cm^{-2}\,sr^{-1}\,\mathring{A}^{-1}\,s^{-1}}$ to electrons, and back.</p>
+        </div>
+        <div class="card">
+          <h3>Vertices, not centers</h3>
+          <p>Coordinate grids give cell edges and values live in the cells: 21 wavelength vertices hold 20 spectral bins.</p>
+        </div>
+        <div class="card">
+          <h3>Functions on grids</h3>
+          <p><code>na.FunctionArray(inputs=..., outputs=...)</code> pairs a grid of coordinates with a <code>ScalarArray</code> of values. Scenes, images and solutions are all function arrays, and ctis checks that their grids match the instrument's.</p>
+        </div>
       </div>
     </div>
   </div>
@@ -464,7 +450,7 @@
 
 <section id="step-spectral">
   <div class="frame">
-    <p class="kicker">Step 1 of 14</p>
+    <p class="kicker">Step 1 of 15</p>
     <h2>Define the spectral grid</h2>
     <div class="body">
     <pre class="big"><code class="language-python" data-trim data-noescape>
@@ -489,11 +475,11 @@ wavelength_rest = 171 * u.AA
 
 <section id="step-spatial">
   <div class="frame">
-    <p class="kicker">Step 2 of 14</p>
+    <p class="kicker">Step 2 of 15</p>
     <h2>Define the scene and sensor grids</h2>
     <div class="row">
-      <div class="col" style="flex: 1.45">
-        <pre><code class="language-python" data-trim data-noescape>
+      <div class="col" style="flex: 1.3">
+        <pre class="dense"><code class="language-python" data-trim data-noescape>
 position_scene = na.Cartesian2dVectorLinearSpace(
     start=-10 * u.arcsec,
     stop=10 * u.arcsec,
@@ -506,28 +492,41 @@ position_sensor = na.Cartesian2dVectorArray(
     y=na.arange(0, 64 + 1, axis="sensor_y") * u.pix,
 )
         </code></pre>
-        <pre class="out"><span class="in">position_scene.shape</span>
+        <pre class="out"><span class="in">position_scene.x.shape</span>
+<span data-number="shape_position_scene_x">{'scene_x': 65}</span>
+<span class="in">position_scene.shape</span>
 <span data-number="shape_position_scene">{'scene_x': 65, 'scene_y': 65}</span>
 <span class="in">position_sensor.shape</span>
 <span data-number="shape_position_sensor">{'sensor_x': 129, 'sensor_y': 65}</span></pre>
+        <p class="caption">The scene has 64 × 64 cells across 20″, a 0.3125″ pitch; the plate scale in step 8 is 0.4″ per pixel.</p>
       </div>
-      <ul class="points col">
-        <li>Scene: 64 × 64 cells across 20″ × 20″, a 0.3125″ pitch. The plate scale in step 7 is 0.4″ per pixel.</li>
-        <li>Sensor: the pixel vertices of a 128 × 64 detector, in pixel units.</li>
-        <li>Scene and sensor have different axis names, so they never broadcast against each other by accident.</li>
-      </ul>
+      <div class="col">
+        <div class="card">
+          <h3><code>Cartesian2dVectorArray(x, y)</code></h3>
+          <p>A 2D vector whose components are arrays. The shape is the components' broadcast shape: <code>x</code> varies along <code>"sensor_x"</code> and <code>y</code> along <code>"sensor_y"</code>, so <code>position_sensor</code> is a 129 × 65 grid of vectors.</p>
+        </div>
+        <div class="card">
+          <h3><code>Cartesian2dVectorLinearSpace</code></h3>
+          <p>A vector <code>linspace</code>. Each argument is either a scalar shared by both components or a vector with one value per component. Here <code>x</code> runs from −10″ to 10″ along <code>"scene_x"</code> and <code>y</code> along <code>"scene_y"</code>.</p>
+          <p>It is evaluated lazily; <code>.explicit</code> returns the equivalent <code>Cartesian2dVectorArray</code>.</p>
+        </div>
+      </div>
     </div>
   </div>
   <aside class="notes">
-    The scene grid is the grid we reconstruct on; it does not have to match
-    the plate scale. The sensor grid is just the pixel edges of one detector,
-    shared by all four channels.
+    Vectors are how named-arrays groups related coordinates: position is a
+    Cartesian 2D vector here, and in the next step it becomes one component
+    of a spectral-positional vector. Each component keeps only the axes it
+    actually varies along, so nothing is stored at full grid size until it
+    has to be. The scene grid is the grid we reconstruct on; it does not have
+    to match the plate scale. The sensor grid is the pixel edges of one
+    detector, shared by all four channels.
   </aside>
 </section>
 
 <section id="step-coordinates">
   <div class="frame">
-    <p class="kicker">Step 3 of 14</p>
+    <p class="kicker">Step 3 of 15</p>
     <h2>Combine them into spectral–spatial coordinates</h2>
     <div class="row">
       <div class="col" style="flex: 1.5">
@@ -565,41 +564,69 @@ coordinates_sensor = na.DopplerPositionalVectorArray.from_velocity(
 
 <section id="step-scene">
   <div class="frame">
-    <p class="kicker">Step 4 of 14</p>
+    <p class="kicker">Step 4 of 15</p>
     <h2>Create a synthetic scene</h2>
-    <div class="row">
-      <div class="col" style="flex: 1.1">
-        <pre><code class="language-python" data-trim data-noescape>
+    <div class="body">
+    <pre class="big"><code class="language-python" data-trim data-noescape>
 scene = ctis.scenes.gaussians(coordinates_scene)
 
 scene = scene + scene.max() / 100
-        </code></pre>
-        <pre class="out"><span class="in">scene.outputs.shape</span>
+    </code></pre>
+    <pre class="out"><span class="in">scene.outputs.shape</span>
 <span data-number="shape_scene">{'wavelength': 20, 'scene_x': 64, 'scene_y': 64}</span>
 <span class="in">scene.outputs.unit</span>
 <span data-number="unit_scene">erg / (Angstrom s sr cm2)</span></pre>
-        <ul class="points">
-          <li>Eight randomly placed Gaussians with σ = 30 km/s and 1″, prepared by Amy R. Winebarger, plus a background of 1% of the peak.</li>
-          <li><code>scene.inputs</code> is <code>coordinates_scene</code>; the values live on the 20 × 64 × 64 cells.</li>
-        </ul>
+    <div class="points-row">
+      <p>Eight randomly placed Gaussians with σ = 30 km/s and 1″, prepared by Amy R. Winebarger.</p>
+      <p>A uniform background of 1% of the peak.</p>
+      <p><code>scene</code> is a <code>FunctionArray</code>: <code>scene.inputs</code> is <code>coordinates_scene</code> and <code>scene.outputs</code> is the radiance on the 20 × 64 × 64 cells.</p>
+    </div>
+    </div>
+  </div>
+  <aside class="notes">
+    The scene is evaluated on the coordinates_scene grid from step 3, so it
+    has the same vertex/cell relationship: 21 x 65 x 65 vertices, 20 x 64 x 64
+    values.
+  </aside>
+</section>
+
+<section id="step-rgbmesh">
+  <div class="frame">
+    <p class="kicker">Step 5 of 15</p>
+    <h2>Visualize the cube with <code>rgbmesh</code></h2>
+    <div class="row">
+      <div class="col" style="flex: 1.2">
         <pre class="dense"><code class="language-python" data-trim data-noescape>
-na.plt.rgbmesh(C=scene, axis_wavelength="wavelength",
-               ax=ax, vmin=0, vmax=scene.outputs.max())
+colorbar = na.plt.rgbmesh(
+    C=scene,
+    axis_wavelength="wavelength",
+    ax=ax,
+    vmin=0,
+    vmax=scene.outputs.max(),
+)
+na.plt.pcolormesh(C=colorbar, axis_rgb="wavelength", ax=cax)
         </code></pre>
+        <ul class="points">
+          <li>Collapses the <code>"wavelength"</code> axis into color with colorsynth: each pixel's spectrum is stretched onto the visible range and weighted by the CIE 1931 color-matching functions.</li>
+          <li>Hue shows the shape of the spectrum, here the Doppler shift; brightness shows the radiance between <code>vmin</code> and <code>vmax</code>.</li>
+          <li>Returns a 2D colorbar, color against radiance and wavelength, drawn with <code>na.plt.pcolormesh(..., axis_rgb=...)</code>.</li>
+        </ul>
       </div>
       <figure class="fig"><img src="figures/scene.png" alt="False-color image of the test scene, colored by Doppler velocity"></figure>
     </div>
   </div>
   <aside class="notes">
-    rgbmesh renders the cube as a false-color image: hue encodes Doppler
-    velocity and brightness encodes radiance. It also returns a 2D colorbar,
-    which the tutorial plots with na.plt.pcolormesh.
+    rgbmesh is a pcolormesh for 3D cubes: the third axis becomes color. The
+    same function works on any spectral cube, which is how we look at every
+    reconstruction in this talk. ax and cax are an ordinary matplotlib image
+    axes and a narrow colorbar axes, and the call sits inside astropy's
+    quantity_support so the axes pick up units.
   </aside>
 </section>
 
 <section id="step-spectrum">
   <div class="frame">
-    <p class="kicker">Step 5 of 14</p>
+    <p class="kicker">Step 6 of 15</p>
     <h2>Inspect the average spectrum</h2>
     <div class="row">
       <div class="col" style="flex: 1.05">
@@ -621,13 +648,13 @@ na.plt.stairs(scene.inputs.wavelength, spectrum, ax=ax2)
   </div>
   <aside class="notes">
     We will compare the reconstruction's average spectrum against this one
-    in step 12.
+    in step 13.
   </aside>
 </section>
 
 <section id="step-dispersion">
   <div class="frame">
-    <p class="kicker">Step 6 of 14</p>
+    <p class="kicker">Step 7 of 15</p>
     <h2>Choose the dispersion</h2>
     <div class="body">
     <pre class="big"><code class="language-python" data-trim data-noescape>
@@ -654,7 +681,7 @@ dispersion.to(u.mAA / u.pix)
 
 <section id="step-instrument">
   <div class="frame">
-    <p class="kicker">Step 7 of 14</p>
+    <p class="kicker">Step 8 of 15</p>
     <h2>Build the instrument model</h2>
     <div class="row">
       <div class="col" style="flex: 1.45">
@@ -681,7 +708,7 @@ instrument = ctis.instruments.IdealInstrument(
         <li><code>wavelength_ref</code>, <code>position_ref</code>: the center of the field lands on pixel (64, 32) at 171 Å.</li>
         <li><code>channel</code>: labels for plots and legends.</li>
         <li><code>axis_*</code>: which named axes are channel, wavelength, scene and sensor.</li>
-        <li>Defaults not shown: <code>quantum_yield</code> = 1 e⁻ per photon, <code>read_noise</code> = 0 e⁻.</li>
+        <li>Defaults not shown: <code>quantum_yield</code> = 1 electron per photon, <code>read_noise</code> = 0 electrons.</li>
       </ul>
     </div>
   </div>
@@ -733,7 +760,7 @@ instrument = ctis.instruments.IdealInstrument(
 
 <section id="step-image">
   <div class="frame">
-    <p class="kicker">Step 8 of 14</p>
+    <p class="kicker">Step 9 of 15</p>
     <h2>Simulate the observation</h2>
     <div class="body">
     <div class="row">
@@ -759,16 +786,16 @@ images = instrument.image(scene)
   <aside class="notes">
     The images are a function array on the sensor grid, in electrons, with one
     image per channel. The figures in this deck use a fixed noise seed so they
-    are reproducible; the tutorial draws fresh noise each run.
+    are reproducible.
   </aside>
 </section>
 
 <section id="images">
   <div class="frame">
-    <p class="kicker">Step 8 of 14 · result</p>
+    <p class="kicker">Step 9 of 15 · result</p>
     <h2>The four channel images</h2>
     <figure class="fig"><img src="figures/images.png" alt="The four simulated channel images"></figure>
-    <p class="caption">Each channel sees the scene rotated by its angle and dispersed along sensor $x$. The tutorial animates them with <code>na.plt.pcolormovie(..., axis_time="channel")</code>; they are tiled here.</p>
+    <p class="caption">Each channel sees the scene rotated by its angle and dispersed along sensor $x$.</p>
   </div>
   <aside class="notes">
     Compare opposite channels, 005 and 185 degrees: the same blobs, dispersed
@@ -778,7 +805,7 @@ images = instrument.image(scene)
 
 <section id="step-mart">
   <div class="frame">
-    <p class="kicker">Step 9 of 14</p>
+    <p class="kicker">Step 10 of 15</p>
     <h2>Configure MART</h2>
     <div class="body">
     <div class="row">
@@ -793,7 +820,7 @@ mart = ctis.inverters.MartInverter(
       <table class="spec col" style="align-self: start; flex: 1.2">
         <tr><th><code>instrument</code></th><td>Any <code>AbstractInstrument</code></td></tr>
         <tr><th><code>gamma</code></th><td>Learning rate $\gamma$. <code>None</code> means $2/N$, here <span data-number="gamma" data-digits="1">0.5</span>.</td></tr>
-        <tr><th><code>threshold_convergence</code></th><td>Stop when ⟨χ²⟩ improves by less than this. Default 10⁻³.</td></tr>
+        <tr><th><code>threshold_convergence</code></th><td>Stop when $\langle \chi^2 \rangle$ improves by less than this. Default $10^{-3}$.</td></tr>
         <tr><th><code>num_iteration</code></th><td>Maximum number of iterations. Default 100.</td></tr>
         <tr><th><code>intermediate</code></th><td>Keep every iterate in <code>solutions</code>. Default <code>False</code>; on here for the movie.</td></tr>
       </table>
@@ -844,7 +871,7 @@ for i in range(self.num_iteration):
 
 <section id="step-run">
   <div class="frame">
-    <p class="kicker">Step 10 of 14</p>
+    <p class="kicker">Step 11 of 15</p>
     <h2>Run the inversion</h2>
     <pre><code class="language-python" data-trim data-noescape>
 inversion = mart(images)
@@ -857,7 +884,7 @@ inversion = mart(images)
 <span class="in">inversion.solution.outputs.unit    </span><span data-number="unit_solution">erg / (Angstrom s arcsec2 cm2)</span></pre>
     <div class="points-row">
       <p>About 1.0 s for 23 iterations (45 ms each) on a 24-core Threadripper 3960X.</p>
-      <p><code>inversion.solution</code> is the last iterate. Its unit is per arcsec²: use <code>.to(scene.outputs.unit)</code> before comparing numbers.</p>
+      <p><code>inversion.solution</code> is the last iterate. Its unit is per square arcsecond, not per steradian: use <code>.to(scene.outputs.unit)</code> before comparing numbers.</p>
       <p><code>mart(images, guess=...)</code> starts from your own initial guess; <code>verbose=True</code> prints the merit each iteration.</p>
     </div>
   </div>
@@ -871,7 +898,7 @@ inversion = mart(images)
 
 <section id="step-movie">
   <div class="frame">
-    <p class="kicker">Step 11 of 14</p>
+    <p class="kicker">Step 12 of 15</p>
     <h2>Watch the iterations</h2>
     <figure class="fig">
       <video data-autoplay loop muted playsinline controls poster="figures/reconstruction.png" src="figures/reconstruction.mp4"></video>
@@ -887,7 +914,7 @@ inversion = mart(images)
 
 <section id="step-spectrum-recovered">
   <div class="frame">
-    <p class="kicker">Step 12 of 14</p>
+    <p class="kicker">Step 13 of 15</p>
     <h2>Compare the average spectra</h2>
     <div class="row">
       <div class="col" style="flex: 1.05">
@@ -921,7 +948,7 @@ na.plt.stairs(scene.inputs.wavelength,
 
 <section id="step-moments">
   <div class="frame">
-    <p class="kicker">Step 13 of 14</p>
+    <p class="kicker">Step 14 of 15</p>
     <h2>Compare line moments, pixel by pixel</h2>
     <pre><code class="language-python" data-trim data-noescape>
 inversion.plot_moments(scene, axis="wavelength")
@@ -939,7 +966,7 @@ inversion.plot_moments(scene, axis="wavelength")
 
 <section id="step-convergence">
   <div class="frame">
-    <p class="kicker">Step 14 of 14</p>
+    <p class="kicker">Step 15 of 15</p>
     <h2>Check convergence</h2>
     <div class="row">
       <div class="col" style="flex: 1.05">
@@ -956,9 +983,9 @@ na.plt.plot(inversion.iteration,
             label=instrument.channel)
         </code></pre>
         <ul class="points">
-          <li>⟨χ²⟩ per channel uses σ of the predicted image; the stopping rule uses its mean over channels.</li>
+          <li>$\langle \chi^2 \rangle$ per channel uses σ of the predicted image; the stopping rule uses its mean over channels.</li>
           <li>The residual's correlation with the predicted image tracks structure left in the residual.</li>
-          <li>⟨χ²⟩ ends at <span data-number="chi2_final" data-digits="2">0.33</span>: below 1, so the later iterations fit noise.</li>
+          <li>$\langle \chi^2 \rangle$ ends at <span data-number="chi2_final" data-digits="2">0.33</span>: below 1, so the later iterations fit noise.</li>
         </ul>
       </div>
       <figure class="fig"><img src="figures/convergence.png" alt="Mean chi-squared and signal-correlated residual against iteration"></figure>

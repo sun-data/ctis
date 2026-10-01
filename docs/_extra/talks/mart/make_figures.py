@@ -227,7 +227,6 @@ def main():
             functions=(velocity_to_wavelength, wavelength_to_velocity),
         )
         secondary.set_xlabel("wavelength (Å)", labelpad=12)
-        ax.spines[["right"]].set_visible(False)
 
     spectrum = scene.outputs.mean(("scene_x", "scene_y"))
     spectrum_inverted = inversion.solution.outputs.mean(("scene_x", "scene_y"))
@@ -414,7 +413,21 @@ def main():
         where = np.abs(velocity.cell_centers("wavelength")) < 50 * u.km / u.s
         return ((spectrum * where).sum() / where.sum()).ndarray
 
+    # the named-axes example on the conventions slide
+    a = na.ScalarArray(
+        ndarray=np.random.random((64, 32)),
+        axes=("scene_x", "scene_y"),
+    )
+    b = na.ScalarArray(
+        ndarray=np.linspace(0, 1, 20),
+        axes="wavelength",
+    )
+
     numbers = dict(
+        shape_a_mean=str(a.mean("scene_x").shape),
+        shape_ab=str((a * b).shape),
+        shape_position_scene_x=str(position_scene.x.shape),
+        shape_position_scene_y=str(position_scene.y.shape),
         num_unknown=int(scene.outputs.size),
         num_measurement=int(images.outputs.size),
         num_channel=int(instrument.num_channel),
