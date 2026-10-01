@@ -25,11 +25,16 @@ dependencies = [
 dynamic = ["version"]
 
 [project.optional-dependencies]
+torch = [
+    "torch",
+]
 test = [
     "pytest",
+    "torch",
 ]
 doc = [
     "pytest",
+    "torch",
     "matplotlib",
     "interface-region-imaging-spectrograph",
     "graphviz",

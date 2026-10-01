@@ -194,7 +194,25 @@ class AbstractTestAbstractInstrument(
 class AbstractTestAbstractLinearInstrument(
     AbstractTestAbstractInstrument,
 ):
-    pass
+
+    def test_response(self, a: ctis.instruments.AbstractLinearInstrument):
+        """
+        The two diagonal factors of the forward model, which allow an external
+        differentiable implementation to reproduce :meth:`image` exactly.
+        """
+        scale_input, scale_output = a.response
+
+        assert np.all(na.value(scale_input) > 0)
+        assert np.all(na.value(scale_output) > 0)
+
+        # the two factors, the weights, and a spectral radiance must combine
+        # into electrons
+        radiance = u.electron / (
+            na.unit_normalized(scale_input) * na.unit_normalized(scale_output)
+        )
+        assert radiance.is_equivalent(
+            u.erg / (u.cm**2 * u.sr * u.s * u.AA)
+        ) or radiance.is_equivalent(u.ph / (u.cm**2 * u.sr * u.s * u.AA))
 
 
 velocity = na.linspace(-500, 500, axis="wavelength", num=21) * u.km / u.s
