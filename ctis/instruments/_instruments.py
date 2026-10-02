@@ -203,6 +203,42 @@ class AbstractLinearInstrument(
         """
 
     @property
+    @abc.abstractmethod
+    def psf(self) -> None | na.AbstractScalar:
+        """
+        The point-spread function of the instrument on the sensor, or
+        :obj:`None` for none.
+        """
+
+    @property
+    @abc.abstractmethod
+    def axis_psf_xy(self) -> tuple[str, str]:
+        """
+        The logical axes of :attr:`psf` which run along :attr:`axis_sensor_xy`.
+        """
+
+    def _convolve_psf(
+        self,
+        weights: tuple[na.AbstractScalar, dict[str, int], dict[str, int]],
+    ) -> tuple[na.AbstractScalar, dict[str, int], dict[str, int]]:
+        """
+        Fold :attr:`psf` into a set of weights which map the scene onto the
+        sensor, if there is one.
+
+        Parameters
+        ----------
+        weights
+            Weights which map the scene onto the sensor.
+        """
+        if self.psf is None:
+            return weights
+        return na.regridding.convolve_weights(
+            weights=weights,
+            kernel=self.psf,
+            axis=dict(zip(self.axis_sensor_xy, self.axis_psf_xy)),
+        )
+
+    @property
     def num_channel(self) -> int:
 
         shape = self.weights[0].shape
@@ -367,8 +403,8 @@ class IdealInstrument(
     This ideal instrument is characterized by an effective area,
     exposure time, plate scale and dispersion magnitude/angle.
 
-    It has no point-spread function, distortion, or vignetting, and it
-    considers only photon shot noise.
+    It has no distortion or vignetting, and it considers only photon shot
+    noise and read noise.  It may have a point-spread function, :attr:`psf`.
     """
 
     area_effective: u.Quantity | na.AbstractScalar
@@ -468,6 +504,31 @@ class IdealInstrument(
     once per readout (after integrating over wavelength), in electrons.
     """
 
+    psf: None | na.AbstractScalar = None
+    r"""
+    The point-spread function of the instrument on the sensor, or :obj:`None`
+    (the default) for none.
+
+    It is the fraction of the light landing in a pixel which reaches each of
+    the pixels around it, so it is the point-spread function convolved with a
+    pixel twice, once for the pixel the light lands in and once for the pixel
+    it is collected in, as :func:`optika.sensors.kernel_diffusion` returns it.
+    Its axes :attr:`axis_psf_xy` run along :attr:`axis_sensor_xy`, and are
+    centered on the element at index :math:`\lfloor n / 2 \rfloor`.
+    Any other axis is broadcast by name: :attr:`axis_channel` or
+    :attr:`axis_wavelength` give a point-spread function for each channel or
+    wavelength, and :attr:`axis_sensor_xy` one which varies across the sensor.
+
+    The point-spread function is folded into :attr:`weights` with
+    :func:`named_arrays.regridding.convolve_weights`, so :meth:`image` blurs the
+    scene by it and :meth:`backproject`, the transpose, accounts for it too.
+    """
+
+    axis_psf_xy: tuple[str, str] = ("psf_x", "psf_y")
+    """
+    The logical axes of :attr:`psf` which run along :attr:`axis_sensor_xy`.
+    """
+
     def _shot_noise(self, image: na.ScalarArray) -> na.ScalarArray:
         # photon shot noise, converted back into electrons to match the
         # electron-valued image
@@ -553,13 +614,15 @@ class IdealInstrument(
         coordinates_input = self._coordinates_input
         coordinates_output = self._coordinates_output
 
-        return na.regridding.weights(
+        weights = na.regridding.weights(
             coordinates_input=coordinates_input.position,
             coordinates_output=coordinates_output.position,
             axis_input=self.axis_scene_xy,
             axis_output=self.axis_sensor_xy,
             method="conservative",
         )
+
+        return self._convolve_psf(weights)
 
     @functools.cached_property
     def weights_transpose(self):
@@ -680,7 +743,8 @@ class OptikaInstrument(
     A CTIS instrument whose forward model is an :mod:`optika`
     :class:`~optika.systems.AbstractLinearSystem`.
 
-    The optika system supplies the distortion, effective area, and vignetting;
+    The optika system supplies the distortion, effective area, and vignetting,
+    and this class may add a point-spread function, :attr:`psf`;
     this class adapts its regridding forward model to the
     :class:`AbstractLinearInstrument` interface and adds the transpose
     (:meth:`backproject`) used during inversion. The system may be
@@ -723,6 +787,31 @@ class OptikaInstrument(
     position coordinate.
     """
 
+    psf: None | na.AbstractScalar = None
+    r"""
+    The point-spread function of the instrument on the sensor, or :obj:`None`
+    (the default) for none.
+
+    It is the fraction of the light landing in a pixel which reaches each of
+    the pixels around it, so it is the point-spread function convolved with a
+    pixel twice, once for the pixel the light lands in and once for the pixel
+    it is collected in, as :func:`optika.sensors.kernel_diffusion` returns it.
+    Its axes :attr:`axis_psf_xy` run along :attr:`axis_sensor_xy`, and are
+    centered on the element at index :math:`\lfloor n / 2 \rfloor`.
+    Any other axis is broadcast by name: :attr:`axis_channel` or
+    :attr:`axis_wavelength` give a point-spread function for each channel or
+    wavelength, and :attr:`axis_sensor_xy` one which varies across the sensor.
+
+    The point-spread function is folded into :attr:`weights` with
+    :func:`named_arrays.regridding.convolve_weights`, so :meth:`image` blurs the
+    scene by it and :meth:`backproject`, the transpose, accounts for it too.
+    """
+
+    axis_psf_xy: tuple[str, str] = ("psf_x", "psf_y")
+    """
+    The logical axes of :attr:`psf` which run along :attr:`axis_sensor_xy`.
+    """
+
     @property
     def axis_sensor_xy(self) -> tuple[str, str]:
         axis_pixel = self.system.sensor.axis_pixel
@@ -737,11 +826,12 @@ class OptikaInstrument(
 
     @functools.cached_property
     def weights(self) -> tuple[na.AbstractScalar, dict[str, int], dict[str, int]]:
-        return self.system.weights(
+        weights = self.system.weights(
             coordinates=self.coordinates_scene,
             axis_wavelength=self.axis_wavelength,
             axis_field=self.axis_scene_xy,
         )
+        return self._convolve_psf(weights)
 
     @functools.cached_property
     def weights_transpose(
