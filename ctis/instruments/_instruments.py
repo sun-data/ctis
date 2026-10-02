@@ -512,7 +512,7 @@ class IdealInstrument(
     It is the fraction of the light landing in a pixel which reaches each of
     the pixels around it, so it is the point-spread function convolved with a
     pixel twice, once for the pixel the light lands in and once for the pixel
-    it is collected in, as :func:`optika.sensors.kernel_diffusion` returns it.
+    it is collected in.
     Its axes :attr:`axis_psf_xy` run along :attr:`axis_sensor_xy`, and are
     centered on the element at index :math:`\lfloor n / 2 \rfloor`.
     Any other axis is broadcast by name: :attr:`axis_channel` or
@@ -795,7 +795,7 @@ class OptikaInstrument(
     It is the fraction of the light landing in a pixel which reaches each of
     the pixels around it, so it is the point-spread function convolved with a
     pixel twice, once for the pixel the light lands in and once for the pixel
-    it is collected in, as :func:`optika.sensors.kernel_diffusion` returns it.
+    it is collected in.
     Its axes :attr:`axis_psf_xy` run along :attr:`axis_sensor_xy`, and are
     centered on the element at index :math:`\lfloor n / 2 \rfloor`.
     Any other axis is broadcast by name: :attr:`axis_channel` or
