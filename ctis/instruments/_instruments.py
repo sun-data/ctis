@@ -367,8 +367,8 @@ class IdealInstrument(
     This ideal instrument is characterized by an effective area,
     exposure time, plate scale and dispersion magnitude/angle.
 
-    It has no point-spread function, distortion, or vignetting, and it
-    considers only photon shot noise.
+    It has no distortion or vignetting, and it considers only photon shot
+    noise and read noise.  It may have a point-spread function, :attr:`psf`.
     """
 
     area_effective: u.Quantity | na.AbstractScalar
@@ -468,6 +468,31 @@ class IdealInstrument(
     once per readout (after integrating over wavelength), in electrons.
     """
 
+    psf: None | na.AbstractScalar = None
+    r"""
+    The point-spread function of the instrument on the sensor, or :obj:`None`
+    (the default) for none.
+
+    It is the fraction of the light landing in a pixel which reaches each of
+    the pixels around it, so it is the point-spread function convolved with a
+    pixel twice, once for the pixel the light lands in and once for the pixel
+    it is collected in.
+    Its axes :attr:`axis_psf_xy` run along :attr:`axis_sensor_xy`, and are
+    centered on the element at index :math:`\lfloor n / 2 \rfloor`.
+    Any other axis is broadcast by name: :attr:`axis_channel` or
+    :attr:`axis_wavelength` give a point-spread function for each channel or
+    wavelength, and :attr:`axis_sensor_xy` one which varies across the sensor.
+
+    The point-spread function is folded into :attr:`weights` with
+    :func:`named_arrays.regridding.convolve_weights`, so :meth:`image` blurs the
+    scene by it and :meth:`backproject`, the transpose, accounts for it too.
+    """
+
+    axis_psf_xy: tuple[str, str] = ("psf_x", "psf_y")
+    """
+    The logical axes of :attr:`psf` which run along :attr:`axis_sensor_xy`.
+    """
+
     def _shot_noise(self, image: na.ScalarArray) -> na.ScalarArray:
         # photon shot noise, converted back into electrons to match the
         # electron-valued image
@@ -553,13 +578,22 @@ class IdealInstrument(
         coordinates_input = self._coordinates_input
         coordinates_output = self._coordinates_output
 
-        return na.regridding.weights(
+        weights = na.regridding.weights(
             coordinates_input=coordinates_input.position,
             coordinates_output=coordinates_output.position,
             axis_input=self.axis_scene_xy,
             axis_output=self.axis_sensor_xy,
             method="conservative",
         )
+
+        if self.psf is not None:
+            weights = na.regridding.convolve_weights(
+                weights=weights,
+                kernel=self.psf,
+                axis=dict(zip(self.axis_sensor_xy, self.axis_psf_xy)),
+            )
+
+        return weights
 
     @functools.cached_property
     def weights_transpose(self):

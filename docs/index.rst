@@ -224,6 +224,7 @@ Step-by-step examples of how to use this package.
 
     tutorials/ideal-instrument
     tutorials/simple-mart
+    tutorials/psf-mart
 
 Talks
 =====
