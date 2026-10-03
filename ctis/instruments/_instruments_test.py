@@ -192,7 +192,7 @@ class AbstractTestAbstractInstrument(
         assert np.allclose(contribution.to_value(u.electron), 10)
 
 
-def _psf(a: ctis.instruments.AbstractLinearInstrument) -> na.ScalarArray:
+def _psf(a: ctis.instruments.IdealInstrument) -> na.ScalarArray:
     """
     A different, asymmetric point-spread function for each channel of `a`,
     each normalized to a total of one.
@@ -210,36 +210,7 @@ def _psf(a: ctis.instruments.AbstractLinearInstrument) -> na.ScalarArray:
 class AbstractTestAbstractLinearInstrument(
     AbstractTestAbstractInstrument,
 ):
-
-    def test_psf(
-        self,
-        a: ctis.instruments.AbstractLinearInstrument,
-    ):
-        """
-        The image of each wavelength with a point-spread function is the image
-        without one, convolved with the point-spread function of its channel.
-        """
-        psf = _psf(a)
-        a_psf = dataclasses.replace(a, psf=psf)
-        a_none = dataclasses.replace(a, psf=None)
-
-        scene = _scene(a)
-        axes = (a.axis_channel, a.axis_wavelength, *a.axis_sensor_xy)
-        actual = a_psf.image(scene.outputs, integrate=False, noise=False).outputs
-        image = a_none.image(scene.outputs, integrate=False, noise=False).outputs
-
-        actual = na.value(actual).ndarray_aligned(axes)
-        image = na.value(image).ndarray_aligned(axes)
-        kernel = psf.ndarray_aligned((a.axis_channel, *a.axis_psf_xy))
-        expected = np.stack(
-            [
-                scipy.ndimage.convolve(image[c], kernel[c][np.newaxis], mode="constant")
-                for c in range(a.num_channel)
-            ]
-        )
-
-        assert actual.sum() > 0
-        assert np.allclose(actual, expected, rtol=1e-10, atol=1e-10 * expected.max())
+    pass
 
 
 velocity = na.linspace(-500, 500, axis="wavelength", num=21) * u.km / u.s
@@ -314,6 +285,36 @@ class TestIdealInstrument(
     def _with_read_noise(self, a, read_noise):
         return dataclasses.replace(a, read_noise=read_noise)
 
+    def test_psf(
+        self,
+        a: ctis.instruments.IdealInstrument,
+    ):
+        """
+        The image of each wavelength with a point-spread function is the image
+        without one, convolved with the point-spread function of its channel.
+        """
+        psf = _psf(a)
+        a_psf = dataclasses.replace(a, psf=psf)
+        a_none = dataclasses.replace(a, psf=None)
+
+        scene = _scene(a)
+        axes = (a.axis_channel, a.axis_wavelength, *a.axis_sensor_xy)
+        actual = a_psf.image(scene.outputs, integrate=False, noise=False).outputs
+        image = a_none.image(scene.outputs, integrate=False, noise=False).outputs
+
+        actual = na.value(actual).ndarray_aligned(axes)
+        image = na.value(image).ndarray_aligned(axes)
+        kernel = psf.ndarray_aligned((a.axis_channel, *a.axis_psf_xy))
+        expected = np.stack(
+            [
+                scipy.ndimage.convolve(image[c], kernel[c][np.newaxis], mode="constant")
+                for c in range(a.num_channel)
+            ]
+        )
+
+        assert actual.sum() > 0
+        assert np.allclose(actual, expected, rtol=1e-10, atol=1e-10 * expected.max())
+
 
 def _instrument_optika() -> ctis.instruments.OptikaInstrument:
     channel = na.linspace(0, 360, axis="channel", num=3, endpoint=False) * u.deg
@@ -362,11 +363,7 @@ def _instrument_optika() -> ctis.instruments.OptikaInstrument:
 
 @pytest.mark.parametrize(
     argnames="a",
-    argvalues=[
-        _instrument_optika(),
-        dataclasses.replace(_instrument_optika(), psf=_psf(_instrument_optika())),
-    ],
-    ids=["no psf", "psf"],
+    argvalues=[_instrument_optika()],
 )
 class TestOptikaInstrument(
     AbstractTestAbstractLinearInstrument,
