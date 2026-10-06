@@ -41,8 +41,8 @@ Where things stand
       - Conservative transposes of device weights;
         its per-grid cell volumes give the CSR operator its conservative scaling
     * - ``regridding.Regridder``
-      - regridding ``feature/regridder``, built on #69
-      - Prototype, not yet in a pull request, 67 tests
+      - `regridding #70 <https://github.com/sun-data/regridding/pull/70>`__, built on #69
+      - Draft prototype, 67 tests
       - Every channel and wavelength in one CSR matrix,
         with broadcasting declared by shapes, exact and conservative transposes,
         and assembly on the host or GPU that agree bit for bit
