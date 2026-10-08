@@ -1,7 +1,7 @@
 CUDA MART Roadmap
 =================
 
-*As of 2026-10-06.*
+*As of 2026-10-08.*
 
 Every numerical piece of a CUDA implementation of MART now exists,
 and a prototype ``regridding.Regridder`` joins most of them:
@@ -54,7 +54,8 @@ Where things stand
     * - :mod:`torch` ``Regridder``
       - ctis ``feature/parametric-inverter``, ``feature/elastic-net-inverter``
       - Unmerged
-      - Weights as one CSR matrix with an explicit transpose, deterministic on CUDA;
+      - Weights as one CSR matrix with an explicit transpose;
+        its CUDA product is that of :mod:`torch`, which does not repeat exactly on long rows;
         the regridding prototype generalizes it
     * - Level-4 GPU MART scripts
       - esis ``wip/level4-tempest-tooling``
@@ -71,8 +72,8 @@ Where things stand
 What we learned
 ---------------
 
-One CSR operator makes a MART iteration on the GPU 35 to 107 times faster than ctis,
-and 2.6 to 10 times faster than the per-element GPU path,
+One CSR operator makes a MART iteration on the GPU 35 to 178 times faster than ctis,
+and 4.1 to 10 times faster than the per-element GPU path,
 by replacing 160 kernel launches with two.
 On the host alone it is 1.8 to 8 times faster than ctis.
 
@@ -80,8 +81,11 @@ On the host alone it is 1.8 to 8 times faster than ctis.
     :width: 100%
     :alt: Milliseconds per MART iteration for three problems and four implementations, on a log scale.
 
-    Milliseconds per MART iteration on an idle RTX 4090 and 48 host threads,
+    Milliseconds per MART iteration on an RTX 4090 and 48 host threads,
     for the tutorial, the PSF tutorial with 21 by 21 PSFs, and a 256 by 256 scene.
+    The first two were run on 2026-10-06 with the GPU 1 to 4% busy;
+    the 256 by 256 scene on 2026-10-08, over 50 fixed iterations,
+    with the resized thread groups of the GPU kernel and the GPU 10 to 17% busy.
     Every implementation matched ctis to 1e-10 or better.
 
 - **Launches dominate the GPU.**
@@ -96,13 +100,16 @@ On the host alone it is 1.8 to 8 times faster than ctis.
   against 6.3 for the per-element path.
   Building the backprojection straight from the weights would remove
   one of its three assemblies and the transpose.
-- **Short rows waste the GPU kernel.**
-  It gives each row a 32-thread warp,
-  but the rows of the backprojection hold about 3 entries each.
-  That is why the sparse product of :mod:`torch` (cuSPARSE) beats it on the 256 by 256 scene,
-  2.0 ms against 4.9.
-  The backprojection rows of ESIS average 3.5 entries,
-  so the kernel needs fewer threads per short row before M5.
+- **Short rows needed fewer threads.**
+  The kernel gave every row a 32-thread warp,
+  but the rows of a backprojection hold about 3 entries each.
+  It now gives each row as many threads as an average row has entries, up to a warp:
+  2 for a backprojection, that of ESIS included, and 32 for a forward operator.
+  At 256 by 256, the backprojection product went from 3.5 ms to under 0.5,
+  against 0.6 to 0.7 for the sparse product of :mod:`torch` (cuSPARSE).
+  A MART iteration went from 7.3 ms to 3.4, against 2.7 for :mod:`torch`;
+  the gap left is about 0.2 ms of host time per product,
+  which only small problems notice.
 - **Assembly is cheap once parallel.**
   At 145M weights, assembling takes about 0.5 s on the GPU and on 48 host threads alike,
   and the transpose another 0.5 s.
@@ -124,6 +131,14 @@ On the host alone it is 1.8 to 8 times faster than ctis.
   The device scatter adds in no fixed order,
   and the ratios of MART amplified that to 1e-10 where both sides are near zero.
   CSR gives identical results every run.
+- **The sparse product of** :mod:`torch` **does not repeat exactly either.**
+  On rows of 4,500 entries, all 100 repeated products differed,
+  by 1 to 4 ulp in about half the values,
+  even under ``torch.use_deterministic_algorithms(True)``.
+  Short rows repeat, but the result for a column changes with the batch width.
+  The kernel of the regridding ``Regridder`` repeats exactly in every case.
+  The docstring of the :mod:`torch` ``Regridder`` in ctis calls its product
+  bitwise deterministic on CUDA, which is wrong for long rows.
 - **Precision and memory trade off.**
   Tempest stored values as float32 and indices as int32
   to fit the production grid on one 80 GB GPU.
