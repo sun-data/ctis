@@ -21,7 +21,7 @@ dependencies = [
     "astropy",
     # 2.12.1 is the first release to require a version of numpy it works with
     "named-arrays>=2.13.0,<3",
-    "optika~=2.1",
+    "optika>=2.1,<4",
 ]
 dynamic = ["version"]
 
