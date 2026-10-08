@@ -234,6 +234,16 @@ Slide decks for presenting this package.
 * `Simulating and Inverting a CTIS Observation <talks/mart/index.html>`__:
   a step-by-step walkthrough of :doc:`tutorials/simple-mart`.
 
+Roadmap
+=======
+
+Plans for the development of this package.
+
+.. toctree::
+    :maxdepth: 1
+
+    roadmap/cuda-mart
+
 Citation
 ========
 
