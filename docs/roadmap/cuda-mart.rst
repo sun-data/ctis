@@ -37,12 +37,12 @@ Where things stand
         rejects :mod:`torch` tensors
     * - ``regridding.transpose_weights_conservative()`` on the device
       - `regridding #69 <https://github.com/sun-data/regridding/pull/69>`__
-      - Open, CI green, four review rounds
+      - Released in 3.5.1 on 2026-10-08
       - Conservative transposes of device weights;
         its per-grid cell volumes give the CSR operator its conservative scaling
     * - ``regridding.Regridder``
-      - `regridding #70 <https://github.com/sun-data/regridding/pull/70>`__, built on #69
-      - Draft prototype, 67 tests
+      - `regridding #70 <https://github.com/sun-data/regridding/pull/70>`__, on main
+      - Draft prototype, 79 tests, CI green
       - Every channel and wavelength in one CSR matrix,
         with broadcasting declared by shapes, exact and conservative transposes,
         and assembly on the host or GPU that agree bit for bit
@@ -178,6 +178,8 @@ only the two products and where the arrays live differ.
   Each row sums in a fixed order,
   so the host and GPU build the same matrix bit for bit,
   and an iteration is two launches instead of 160.
+  Each row is summed by as many GPU threads as an average row has entries, up to a warp,
+  so the short rows of a backprojection no longer waste most of a warp.
 - **Broadcasting declared by shapes.**
   The operator takes the shapes of the values going in and coming out.
   Where the weights vary along an axis,
@@ -223,6 +225,15 @@ only the two products and where the arrays live differ.
   CSR removes both.
   A second matrix would repeat the indices of the transpose,
   when only its values differ.
+- **Not chosen: the sparse product of** :mod:`torch` **(cuSPARSE).**
+  Its results do not repeat exactly on long rows,
+  even in the deterministic mode of :mod:`torch`,
+  and change with the batch width.
+  It cannot sum float32 entries in float64,
+  and its 64-bit row pointers force 64-bit column indices,
+  8.8 GB more per direction at ESIS scale.
+  Our kernel now takes less time than it for the two products of MART together,
+  from 17M weights up.
 
 Milestones
 ----------
@@ -230,7 +241,8 @@ Milestones
 Eight pull requests take the GPU MART from prototype to the ESIS Level-4 product.
 M5 is the first one users can run.
 The ``Regridder`` prototype already covers most of M3;
-M1, M2 and M4 can start now, M3 needs M1, and M6 needs M3.
+M1 shipped in regridding 3.5.1, M2 and M4 can start now,
+M3 is a draft pull request no longer waiting on M1, and M6 needs M3.
 
 .. figure:: cuda-mart/milestones.png
     :width: 100%
@@ -277,7 +289,9 @@ since :class:`~ctis.inverters.MartInverter` is already validated.
         bit for bit; GPU assembly equals host assembly.
         All three pass in the prototype
       - One launch per product;
-        assembly in about 0.5 s per 145M weights, as in the prototype
+        the two products together no slower than cuSPARSE from 17M weights up;
+        assembly in about 0.5 s per 145M weights.
+        The prototype meets all three
     * - M4
       - Device weights equal the host weights once the ``-1`` slots are dropped
       - The weights of the PSF tutorial in under 1 s (0.74 s in the prototype)
@@ -474,3 +488,10 @@ the rest are questions to settle before the milestone that needs them.
   Tempest stores one per forward weight, 8.8 GB at production.
   It is constant for each channel and velocity slot,
   so the product could compute it from the row and column of each entry instead.
+- **Host time per GPU call (M5).**
+  Each ``Regridder`` call spends about 0.2 ms on the host,
+  in the launch of :mod:`numba`, its array wrappers and the layout in :mod:`torch`.
+  That is why :mod:`torch` still wins a whole iteration on small problems:
+  2.7 ms against 3.4 at 256 by 256.
+  Launching without the wrappers of :mod:`numba` could cut it;
+  at ESIS scale it is negligible.
