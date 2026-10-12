@@ -1,14 +1,15 @@
 CUDA MART Roadmap
 =================
 
-*As of 2026-10-08.*
+*As of 2026-10-12.*
 
 Every numerical piece of a CUDA implementation of MART now exists,
 and a prototype ``regridding.Regridder`` joins most of them:
 one sparse CSR operator with both of its transposes, assembled on the GPU.
-What remains is a GPU path in :class:`~ctis.inverters.MartInverter`,
-and a streaming build for weights too large to hold at once,
-which the ESIS Level-4 product needs.
+What remains is a GPU path in :class:`~ctis.inverters.MartInverter`
+and, for the ESIS Level-4 product,
+a streaming build for weights too large to hold at once,
+with the charge diffusion of the sensor applied beside the matrix.
 
 Where things stand
 ------------------
@@ -57,6 +58,11 @@ Where things stand
       - Weights as one CSR matrix with an explicit transpose;
         its CUDA product is that of :mod:`torch`, which does not repeat exactly on long rows;
         the regridding prototype generalizes it
+    * - Sensor kernels, with charge diffusion
+      - `optika #255 <https://github.com/sun-data/optika/pull/255>`__, for optika 4.0
+      - Draft
+      - The blur of the noise-free sensor as a kernel per wavelength,
+        its exact and scaled transposes, and a variance kernel for the noise model
     * - Level-4 GPU MART scripts
       - esis ``wip/level4-tempest-tooling``
       - Unmerged scripts
@@ -209,8 +215,16 @@ only the two products and where the arrays live differ.
   Column indices are int32 whenever the matrix has fewer than :math:`2^{31}` columns.
 - **The noise model of the instrument.**
   :class:`~ctis.instruments.IdealInstrument` gets shot plus read noise, as on the host.
-  :class:`~ctis.instruments.OptikaInstrument` gets the exact per-wavelength model of tempest,
-  measured with its noise probe, in a later milestone.
+  :class:`~ctis.instruments.OptikaInstrument` gets the per-wavelength model of its sensor
+  in a later milestone,
+  read from the kernels the sensor publishes from optika 4.0
+  instead of measured with a noise probe.
+  The variance of an image is the variance kernel convolved with the photon image:
+  on the GPU, a second product with the amplitude of each wavelength in its values,
+  then one convolution.
+  The variance kernel starts as the variance-to-mean ratio times the kernel,
+  the model of tempest,
+  and can become exact later behind the same interface.
 - **Streaming two-pass assembly at ESIS scale.**
   The production weights are 35 to 53 GB on the device,
   more than any GPU holds beside the matrix.
@@ -220,6 +234,36 @@ only the two products and where the arrays live differ.
   Exact zeros, which the field stop leaves behind, are dropped.
   Each block carries an explicit row and column offset and a scale,
   so the tied lines of ESIS fold into their windows.
+- **Blurs on the pixel grid beside the matrix, at ESIS scale.**
+  From optika 4.0, the noise-free model of a sensor includes charge diffusion:
+  the expected image is the photon image convolved, per wavelength, with a small kernel.
+  Folding that kernel into the weights, as ``convolve_weights()`` does for the PSF tutorial,
+  would grow the 3.5 pixels each scene cell touches at production
+  to about :math:`(\sqrt{3.5} + k - 1)^2` for a k by k kernel:
+  4 times the entries for 3 by 3, and 10 times for 5 by 5,
+  which the 15 µm pixels of ESIS need to hold all but 1e-6 of the charge.
+  The forward matrix would grow from 17.7 GB to 70 to 180 GB in float32.
+  Instead, the forward product is followed by the blur,
+  and the backprojection starts with its transpose:
+  two more launches an iteration, and no stored weights.
+  The blur is a gather, each pixel summing its neighbors in a fixed order,
+  so it repeats exactly like the products.
+  The sensor supplies both of its transposes, as the ``Regridder`` does:
+  the exact one for gradient inverters and the scaled one for MART.
+  An optical PSF of ESIS, if one is added, goes the same way.
+- **Spectral lines on their own axis, at ESIS scale.**
+  The diffusion kernel depends on wavelength, but the forward product sums over it.
+  For the e2v CCD97 of :mod:`optika` with 15 µm pixels and a 5 by 5 kernel,
+  the kernel varies by up to 8e-4 across 580 to 640 Å, 0.7% of a nearest-neighbor value,
+  but only about 1e-5 within the velocity window of one line.
+  So the scene of ESIS keeps each line on its own axis,
+  the forward matrix sums only within a line,
+  and one kernel per channel and line blurs each image before the lines are summed.
+  The shape rules of the ``Regridder`` need nothing new for this.
+  The gain of each wavelength folds into the forward values,
+  and its inverse into the conservative ones,
+  so the GPU matches the per-wavelength model of :mod:`optika` to about 1e-5.
+  At production this costs about 0.5 GB of row pointers and 0.25 GB of intermediate images.
 - **Not chosen: a single-launch scatter, or a second matrix of transposed weights.**
   The scatter would remove the launch overhead but stay nondeterministic;
   CSR removes both.
@@ -261,6 +305,7 @@ M3 should be reviewed by the author of the :mod:`torch` ``Regridder``,
 which it generalizes.
 M6 is new: the production weights do not fit on any GPU at once,
 so the operator has to be built from blocks of weights produced on demand.
+M7 needs optika 4.0, whose sensor publishes the kernels of its blur and noise.
 
 Validation and benchmarks
 -------------------------
@@ -306,11 +351,14 @@ since :class:`~ctis.inverters.MartInverter` is already validated.
       - Production assembly, beyond building the weights,
         in under a minute on an 80 GB GPU
     * - M7
-      - ESIS frame 15 matches ``reproduce_level4.py`` of tempest
+      - With diffusion off (``diffusion=None`` on the material of the sensor),
+        ESIS frame 15 matches ``reproduce_level4.py`` of tempest;
+        with it on, a science check
       - The production grid fits one GPU;
         tempest ran 30 frames in about 10 minutes on an H100
     * - M8
-      - The 30-frame cube matches the distributed Level-4 FITS files
+      - With diffusion off, the 30-frame cube matches the distributed Level-4 FITS files;
+        with it on, a science check
       - No slower than tempest
 
 The benchmark problems are the tutorial, the PSF tutorial and the 256 by 256 scene.
@@ -388,6 +436,8 @@ The scene is 1139 cells across at 0.75″,
 from the raytrace field of the distortion fit padded by 1.25, as tempest builds it.
 Fewer velocity bins shrink the problem most;
 coarser cells help less, since each one touches more detector pixels.
+Keeping the spectral lines on their own axis, for the blur of the sensor,
+adds about 0.75 GB at production.
 
 Regenerate or cache
 -------------------
@@ -488,6 +538,13 @@ the rest are questions to settle before the milestone that needs them.
   Tempest stores one per forward weight, 8.8 GB at production.
   It is constant for each channel and velocity slot,
   so the product could compute it from the row and column of each entry instead.
+- **Charge diffusion changes Level-4 (M7, M8).**
+  From optika 4.0, the noise-free model of a sensor includes charge diffusion,
+  so MART will also undo the diffusion blur,
+  and Level-4 reconstructions will differ from those of tempest.
+  ctis allows only optika below 4, so nothing changes until ctis raises that cap.
+  M7 and M8 therefore reproduce tempest with diffusion off,
+  and check the science with it on.
 - **Host time per GPU call (M5).**
   Each ``Regridder`` call spends about 0.2 ms on the host,
   in the launch of :mod:`numba`, its array wrappers and the layout in :mod:`torch`.
