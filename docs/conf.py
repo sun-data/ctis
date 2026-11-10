@@ -50,6 +50,23 @@ autosummary_ignore_module_all = False
 
 autodoc_typehints = "description"
 
+# Put a link to download the notebook at the top of each tutorial page.
+# nbsphinx copies each notebook, with the outputs from executing it,
+# into the build next to its page, so the link is relative to the page.
+# The link is raw HTML because nbsphinx turns a reST link to a notebook into
+# a link to that notebook's page.
+nbsphinx_prolog = r"""
+{% set notebook = env.docname.split('/')[-1] + '.ipynb' %}
+
+.. note::
+
+    Download this tutorial as a Jupyter notebook: |notebook|
+
+.. |notebook| raw:: html
+
+    <a href="{{ notebook|e }}" download>{{ notebook|e }}</a>
+"""
+
 graphviz_output_format = 'png'
 inheritance_graph_attrs = dict(rankdir='TB')
 
