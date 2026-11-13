@@ -7,8 +7,10 @@ Every numerical piece of a fast MART now exists,
 and ``regridding.Regridder`` joins most of them:
 one sparse CSR operator with both of its transposes,
 assembled and applied on the host or on a GPU.
-What remains is a path in :class:`~ctis.inverters.MartInverter` that runs on it
-and, for the ESIS Level-4 product,
+:class:`~ctis.inverters.MartInverter` now runs on it on the host,
+for an :class:`~ctis.instruments.IdealInstrument`.
+What remains is the same loop on a GPU and, for the ESIS Level-4 product,
+the model of the flight instrument on the operator,
 a streaming build for weights too large to hold at once
 and the tied model of ESIS, which today lives in scripts.
 The host comes first.
@@ -50,7 +52,7 @@ Where things stand
         its per-grid cell volumes give the CSR operator its conservative scaling
     * - ``regridding.Regridder``
       - `regridding #70 <https://github.com/sun-data/regridding/pull/70>`__
-      - Merged, to be released in 3.7.0
+      - Released in 3.7.0 on 2026-11-13
       - Every channel and wavelength in one CSR matrix,
         with broadcasting declared by shapes, exact and conservative transposes,
         assembly on the host or GPU that agree bit for bit,
@@ -60,6 +62,13 @@ Where things stand
       - Released
       - The reference algorithm, on the host through :mod:`named_arrays`,
         with PSF support in :class:`~ctis.instruments.IdealInstrument`
+    * - :class:`~ctis.inverters.MartInverter` on the ``Regridder``
+      - ctis main
+      - Unreleased
+      - The same algorithm on the host, on raw arrays and compiled code,
+        for an :class:`~ctis.instruments.IdealInstrument`:
+        frames solved together, float32 as an option,
+        and the reference path kept for the instruments without matrices
     * - ``torch`` ``Regridder``
       - ctis ``feature/parametric-inverter``, ``feature/elastic-net-inverter``
       - Unmerged
@@ -276,12 +285,17 @@ which every gate compares against.
   a length of 1 in the input means broadcast inside the matrix,
   and a length of 1 in the output means summed.
   Axes the weights lack are batch columns.
-  The forward model is one product from (wavelength, x, y) to (channel, x′, y′),
-  with the scene shared by the channels.
-  Its transpose would sum the channels,
-  but MART backprojects each channel on its own,
-  so the backprojection is the transpose of a second operator on the same weights,
-  which takes a scene per channel, (channel, wavelength, x, y).
+  The forward model is one product from (channel, wavelength, x, y) to (channel, x′, y′),
+  on a scene for each channel:
+  the scene times the photons that each of its units sends toward that channel,
+  which one compiled pass writes.
+  MART backprojects each channel on its own,
+  so the backprojection is the conservative transpose of that same operator,
+  derived the first time it is needed,
+  and only one operator is assembled from the weights.
+  An operator which shared the scene between the channels would save that pass,
+  but its transpose would sum the channels,
+  so the backprojection would need a second assembly.
 - **Conservative values on the indices of the transpose.**
   The conservative transpose scales each entry of the exact one
   by an input-cell factor over an output-cell volume,
@@ -427,11 +441,10 @@ Milestones
 
 Nine milestones take the fast MART from prototype to the ESIS Level-4 product,
 on the host first and then on a GPU.
-M5 is the first one users can run.
-M1 shipped in regridding 3.5.1.
-M3 is merged and waits to be released as regridding 3.7.0;
-M5 and M6 need it.
-The host half of M5 is built on a branch and needs that release.
+M5 is the first one users can run, and its host half is done:
+:class:`~ctis.inverters.MartInverter` runs on the ``Regridder`` on the host,
+and the ``device`` option, for a GPU, remains.
+M1 shipped in regridding 3.5.1 and M3 in regridding 3.7.0, which M5 and M6 need.
 M2 and M4 can start now, and the host needs neither.
 
 .. figure:: cuda-mart/milestones.png
@@ -513,9 +526,14 @@ At ESIS scale, where it cannot run, the standard is the product of tempest.
         the same iteration count as the reference path,
         and :math:`\langle \chi^2 \rangle` and the solution within 1e-10 of its,
         on all three benchmark problems.
-        In float32, the same within a tolerance agreed before the run.
+        In float32, the same iteration count,
+        and :math:`\langle \chi^2 \rangle` and the solution within 1e-5.
         A batch of frames gives the solutions of the frames solved one at a time,
-        bit for bit
+        bit for bit.
+        The host passes all three:
+        on the benchmark problems its solutions agree with those of the reference path
+        to 1.5e-14 of their peaks in float64 and to 2.3e-7 in float32,
+        at the same iteration counts
       - On the host, the loop outside the two products takes less time than they do
         at the production size of ESIS.
         On a GPU, at least 6 times faster end to end on the PSF tutorial
@@ -767,6 +785,10 @@ The rest are questions to settle before the milestone that needs them.
   whenever the instrument provides its matrices,
   and the reference path serves the instruments which cannot, and the tests.
   The ``device`` option is still to come.
+- **The width of a batch of frames (M8).**
+  :class:`~ctis.inverters.MartInverter` solves every frame of the images it is given at once.
+  At production four frames fit in the host, not thirty,
+  so either the caller passes four at a time, or the inverter takes a limit.
 - **Regenerate or cache (resolved).**
   Rebuild.
   Since :mod:`named_arrays` 2.20.0 the preparation in :mod:`optika`
