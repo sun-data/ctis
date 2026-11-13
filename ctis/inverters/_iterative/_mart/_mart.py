@@ -32,8 +32,12 @@ class MartInverter(
     the instrument, which is slower.
     The two give the same result.
 
-    Several frames, sets of images of the same instrument, can be
-    reconstructed in one call, see :meth:`__call__`.
+    The images can have axes beyond those of the channels and the sensor,
+    which are those of independent frames, sets of images of the same
+    instrument.
+    The scene of each frame is reconstructed on its own, and stops at its
+    own iteration, exactly as it would alone, and the result has the axes of
+    the frames, see :class:`~ctis.inverters.IterativeInversionResult`.
     On the matrices, the frames are iterated on together and share each pass
     over them, which takes less time for each frame than a pass of its own.
     """
