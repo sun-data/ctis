@@ -14,6 +14,7 @@ import regridding
 __all__ = [
     "Operators",
     "aligned",
+    "framed",
     "regridder",
     "vertices",
 ]
@@ -62,6 +63,47 @@ def aligned(
         return None
 
     return np.asarray(result, dtype=float)
+
+
+def framed(
+    a: Any,
+    shape: dict[str, int],
+    shape_frames: dict[str, int],
+    unit: u.UnitBase,
+    dtype: type = np.float64,
+) -> None | np.ndarray:
+    """
+    The values of a named array as a plain, contiguous array of a given
+    shape, followed by one axis for the frames.
+
+    It is :obj:`None` if `a` cannot be expressed this way, see
+    :func:`aligned`.
+    The result can share the memory of `a`, so it is not to be overwritten.
+
+    Parameters
+    ----------
+    a
+        The array, or anything which can be converted to one.
+    shape
+        The axes which come first in the result and their lengths.
+        If `a` does not vary along one of them, it is broadcast along it.
+    shape_frames
+        The axes of the frames and their lengths, which are merged into the
+        last axis of the result.
+    unit
+        The unit of the result.
+    dtype
+        The precision of the result.
+    """
+    result = aligned(a, shape=shape | shape_frames, unit=unit)
+    if result is None:
+        return None
+
+    shape_result = tuple(shape.values())
+    result = np.broadcast_to(result, shape_result + tuple(shape_frames.values()))
+    result = np.ascontiguousarray(result, dtype=dtype)
+
+    return result.reshape(shape_result + (math.prod(shape_frames.values()),))
 
 
 def vertices(
@@ -208,6 +250,10 @@ class Operators:
     the instrument they came from, without the cost of the named arrays, and
     are what the inverters iterate on if the instrument provides them.
 
+    The matrix of the backprojection is derived from that of the forward
+    model the first time it is needed, so that an instrument which is only
+    used to image scenes holds one matrix and not two.
+
     A scene is an array of shape :attr:`shape_scene` in units of
     :attr:`unit_scene`, and the images are an array of shape
     :attr:`shape_images` in units of :attr:`unit_images`.
@@ -230,10 +276,17 @@ class Operators:
     channel, summed over wavelength.
     """
 
-    backward: regridding.Regridder
+    vertices_scene: tuple[np.ndarray, ...]
     """
-    The matrix which spreads the signal in every pixel of every channel over
-    the voxels which could have contributed to it, for each channel.
+    The components of the vertices of the cells of the scene, where each
+    channel puts them on the sensor at each wavelength, which
+    :attr:`backward` is derived from.
+    """
+
+    vertices_sensor: tuple[np.ndarray, ...]
+    """
+    The components of the vertices of the pixels of the sensor, for each
+    channel and each wavelength, which :attr:`backward` is derived from.
     """
 
     scale: np.ndarray
@@ -297,6 +350,15 @@ class Operators:
     so that the next call overwrites them instead of allocating them again.
     """
 
+    _backward: None | regridding.Regridder = dataclasses.field(
+        default=None,
+        init=False,
+        repr=False,
+    )
+    """
+    The matrix of the backprojection, once :attr:`backward` has derived it.
+    """
+
     def __post_init__(self) -> None:
 
         num_axis_channel = len(self.shape_channel)
@@ -311,6 +373,22 @@ class Operators:
         scale = scale.reshape((math.prod(shape_channel),) + shape_factor)
 
         self._scale = np.broadcast_to(scale, scale.shape[:1] + shape_scene)
+
+    @property
+    def backward(self) -> regridding.Regridder:
+        """
+        The matrix which spreads the signal in every pixel of every channel
+        over the voxels which could have contributed to it, for each channel.
+
+        It is the transpose of :attr:`forward`, normalized to conserve flux,
+        and it is derived the first time it is asked for.
+        """
+        if self._backward is None:
+            self._backward = self.forward.transpose_conservative(
+                coordinates_input=self.vertices_scene,
+                coordinates_output=self.vertices_sensor,
+            )
+        return self._backward
 
     @property
     def shape_images(self) -> dict[str, int]:
@@ -333,16 +411,24 @@ class Operators:
         """
         return np.dtype(self.forward.data.dtype)
 
-    def image(self, scene: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    def photons(self, scene: np.ndarray, keep: bool = False) -> np.ndarray:
         """
-        The images expected of the scene of each frame, without noise, and
-        the variance of their noise.
+        The photons expected in every pixel of the images of the scene of
+        each frame, summed over wavelength, without noise.
+
+        The result is a new array of shape :attr:`shape_images` followed by
+        an axis for the frames, which the caller is free to overwrite.
 
         Parameters
         ----------
         scene
             The scenes, of shape :attr:`shape_scene` followed by an axis for
             the frames.
+        keep
+            Whether to keep the photons leaving every voxel, an array the
+            size of a scene for each channel, so that the next call with
+            scenes of the same shape overwrites it instead of allocating it
+            again, which an iteration is faster for.
         """
         num_frame = scene.shape[~0]
 
@@ -350,9 +436,11 @@ class Operators:
         # array of the shape the matrix takes, which can have a scene for
         # each channel, rather than broadcast to it by the matrix afterward
         shape = self.forward.shape_input + (num_frame,)
-        if self._photons is None or self._photons.shape != shape:
-            self._photons = np.empty(shape, dtype=self.dtype)
         photons = self._photons
+        if photons is None or photons.shape != shape:
+            photons = np.empty(shape, dtype=self.dtype)
+            if keep:
+                self._photons = photons
         _multiply(
             scene=scene,
             scale=self._scale,
@@ -363,7 +451,23 @@ class Operators:
         photons = photons.reshape(tuple(self.shape_images.values()) + (num_frame,))
         np.maximum(photons, 0, out=photons)
 
-        images = photons
+        return photons
+
+    def image(self, scene: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """
+        The images expected of the scene of each frame, without noise, and
+        the variance of their noise.
+
+        The photons leaving every voxel are kept for the next call, see
+        :meth:`photons`.
+
+        Parameters
+        ----------
+        scene
+            The scenes, of shape :attr:`shape_scene` followed by an axis for
+            the frames.
+        """
+        images = self.photons(scene, keep=True)
         images *= self.gain
 
         # the variance of the shot noise of the photons, in units of the images

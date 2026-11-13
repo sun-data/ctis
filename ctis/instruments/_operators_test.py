@@ -206,3 +206,51 @@ def test_regridder_axes(
             shape_input=shape_input,
             shape_output=shape_output,
         )
+
+
+@pytest.mark.parametrize("dtype", [np.float64, np.float32])
+def test_framed(dtype: type) -> None:
+    """
+    The axes of the frames are merged into one last axis, in the order they
+    are given in, and an array which does not vary along an axis is
+    broadcast along it.
+    """
+    shape_frames = dict(time=4, repeat=2)
+
+    rng = np.random.default_rng(0)
+    values = rng.uniform(size=(2, 4, 3))
+    a = na.ScalarArray(values, axes=("repeat", "time", "x")) * u.m
+
+    result = _operators.framed(
+        a=a,
+        shape=shape,
+        shape_frames=shape_frames,
+        unit=u.cm,
+        dtype=dtype,
+    )
+
+    expected = 100 * values.transpose(2, 1, 0)[:, np.newaxis]
+    expected = np.broadcast_to(expected, (3, 2, 4, 2)).reshape(3, 2, 8)
+
+    assert result.shape == (3, 2, 8)
+    assert result.dtype == dtype
+    assert result.flags.c_contiguous
+    assert np.array_equal(result, expected.astype(dtype))
+
+
+def test_framed_one_frame() -> None:
+    """An array without frames has one, along a last axis of length one."""
+    values = np.arange(6.0).reshape(3, 2)
+    a = na.ScalarArray(values, axes=("x", "y")) * u.m
+
+    result = _operators.framed(a, shape=shape, shape_frames=dict(), unit=u.m)
+
+    assert result.shape == (3, 2, 1)
+    assert np.array_equal(result[..., 0], values)
+
+
+def test_framed_unsupported() -> None:
+    """An array which cannot be expressed as a plain array is left alone."""
+    a = na.ScalarArray(np.ones(3), axes="x") * u.s
+
+    assert _operators.framed(a, shape=shape, shape_frames=dict(), unit=u.m) is None

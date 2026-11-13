@@ -83,6 +83,50 @@ def _uses_operators(
     return a._arrays(images.outputs, guess, shape_frames) is not None
 
 
+@dataclasses.dataclass
+class _IdealInstrumentWeights(
+    ctis.instruments.IdealInstrument,
+):
+    """
+    An ideal instrument which does not provide its matrices, so that it is
+    imaged, backprojected and inverted through its weights, as named arrays,
+    one wavelength at a time.
+    """
+
+    def _operators(self, dtype: type = np.float64) -> None:
+        return None
+
+
+def _reference(
+    a: ctis.inverters.MartInverter,
+    images: na.FunctionArray[na.SpectralPositionalVectorArray, na.ScalarArray],
+    guess: None | na.ScalarArray = None,
+) -> ctis.inverters.IterativeInversionResult:
+    """
+    The inversion which `a` is expected to reproduce: the iteration on the
+    `image` and `backproject` methods of the same instrument without its
+    matrices, which shares none of the code that the matrices run on.
+
+    The result is given the inverter `a`, so that the two can be compared.
+    """
+    instrument = a.instrument
+    kwargs = {
+        field.name: getattr(instrument, field.name)
+        for field in dataclasses.fields(instrument)
+        if field.init
+    }
+    reference = dataclasses.replace(
+        a,
+        instrument=_IdealInstrumentWeights(**kwargs),
+    )
+
+    assert not _uses_operators(reference, images, guess)
+
+    result = reference(images, guess=guess)
+
+    return dataclasses.replace(result, inverter=a)
+
+
 def _assert_same(
     result: ctis.inverters.IterativeInversionResult,
     expected: ctis.inverters.IterativeInversionResult,
@@ -191,14 +235,15 @@ class TestMartInverter(
         """
         The iteration on the operators of the instrument, which is the one
         used for this instrument, takes the same path to the same solution
-        as the iteration on its `image` and `backproject` methods.
+        as the iteration on the `image` and `backproject` methods of the
+        same instrument without its matrices.
         """
         assert _uses_operators(a, images, guess)
 
         guess_original = None if guess is None else guess.copy()
 
         result = a(images, guess=guess)
-        expected = a._call_named(images, guess, False)
+        expected = _reference(a, images, guess)
 
         _assert_same(result, expected)
 
@@ -267,7 +312,8 @@ def test_plot_moments_no_runtime_warnings():
 def test__call__two_channel_axes() -> None:
     """
     An instrument with more than one channel axis is inverted the same way by
-    the iteration on its operators and by the iteration on its methods.
+    the iteration on its operators and by the iteration on the methods of
+    the same instrument without its matrices.
     """
     angle_two = na.ScalarArray(
         ndarray=angle.ndarray.reshape(2, 2),
@@ -288,7 +334,7 @@ def test__call__two_channel_axes() -> None:
     assert _uses_operators(a, images_two)
 
     result = a(images_two)
-    expected = a._call_named(images_two, None, False)
+    expected = _reference(a, images_two)
 
     _assert_same(result, expected)
     assert result.mean_chi_squared.shape == dict(

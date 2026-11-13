@@ -36,6 +36,130 @@ def _scene(
     return na.FunctionArray(inputs=coordinates, outputs=outputs)
 
 
+def _scene_frames(
+    a: ctis.instruments.IdealInstrument,
+    shape_frames: dict[str, int],
+) -> na.FunctionArray[na.AbstractSpectralPositionalVectorArray, na.ScalarArray]:
+    """
+    A different random scene for each of several frames, defined on the scene
+    grid of `a`, which fills the field of view.
+    """
+    operators = a._operators()
+    values = na.random.uniform(
+        low=1,
+        high=2,
+        shape_random=operators.shape_scene | shape_frames,
+        seed=0,
+    )
+    return na.FunctionArray(
+        inputs=a.coordinates_scene,
+        outputs=values * operators.unit_scene,
+    )
+
+
+def _assert_close(result: na.AbstractScalar, expected: na.AbstractScalar) -> None:
+    """
+    Assert that two named arrays have the same axes, the same unit, and the
+    same values to within the rounding of their arithmetic.
+    """
+    assert result.shape == expected.shape
+    assert na.unit_normalized(result) == na.unit_normalized(expected)
+
+    result = na.value(result).ndarray_aligned(expected.axes)
+    expected = na.value(expected).ndarray
+
+    assert np.allclose(
+        result,
+        expected,
+        rtol=1e-10,
+        atol=1e-10 * np.abs(expected).max(),
+    )
+
+
+def _assert_image_matrices(
+    a: ctis.instruments.IdealInstrument,
+    shape_frames: dict[str, int],
+    function: bool = False,
+) -> None:
+    """
+    Assert that the image integrated along wavelength, which `a` computes
+    with its matrices, is the one it computes from its weights, with the same
+    uncertainty, for the scene of every frame.
+
+    Parameters
+    ----------
+    a
+        The instrument to image the scenes with.
+    shape_frames
+        The axes of the frames and their lengths.
+    function
+        Whether to give the scenes with their coordinates, as a function,
+        or as their values alone.
+    """
+    scene = _scene_frames(a, shape_frames)
+    if not function:
+        scene = scene.outputs
+
+    kwargs = dict(noise=False, uncertainty=True)
+
+    assert a._image_matrices(scene, **kwargs) is not None
+
+    result = a.image(scene, **kwargs)
+    expected = a._image_weights(scene, integrate=True, **kwargs)
+
+    assert isinstance(result, na.FunctionArray)
+    assert np.all(result.inputs == expected.inputs)
+    assert isinstance(result.outputs, na.NormalUncertainScalarArray)
+    assert result.outputs.nominal.shape == a._operators().shape_images | shape_frames
+    assert result.outputs.nominal.sum() > 0
+    _assert_close(result.outputs.nominal, expected.outputs.nominal)
+    _assert_close(result.outputs.width, expected.outputs.width)
+
+    result = a.image(scene, noise=False)
+
+    assert isinstance(result.outputs, na.ScalarArray)
+    _assert_close(result.outputs, expected.outputs.nominal)
+
+
+def _assert_backproject_matrices(
+    a: ctis.instruments.IdealInstrument,
+    shape_frames: dict[str, int],
+    function: bool = False,
+) -> None:
+    """
+    Assert that the backprojection of images integrated along wavelength,
+    which `a` computes with its matrices, is the one it computes from its
+    weights, for the images of every frame.
+
+    Parameters
+    ----------
+    a
+        The instrument to backproject the images with.
+    shape_frames
+        The axes of the frames and their lengths.
+    function
+        Whether to give the images with their coordinates, as a function,
+        or as their values alone.
+    """
+    image = a.image(_scene_frames(a, shape_frames), noise=False)
+    if not function:
+        image = image.outputs
+
+    assert a._backproject_matrices(image) is not None
+
+    result = a.backproject(image)
+    expected = a._backproject_weights(image, integrate=True)
+
+    operators = a._operators()
+    shape = operators.shape_channel | operators.shape_scene | shape_frames
+
+    assert isinstance(result, na.FunctionArray)
+    assert np.all(result.inputs == expected.inputs)
+    assert result.outputs.shape == shape
+    assert result.outputs.sum() > 0
+    _assert_close(result.outputs, expected.outputs)
+
+
 class AbstractTestAbstractInstrument(
     abc.ABC,
 ):
@@ -436,6 +560,11 @@ class TestIdealInstrument(
         assert a._operators() is not None
         super().test__operators(a)
 
+        # and its `image` and `backproject` methods, which are computed with
+        # the matrices, are those computed from its weights
+        _assert_image_matrices(a, shape_frames=dict(time=2))
+        _assert_backproject_matrices(a, shape_frames=dict(time=2))
+
     @pytest.mark.parametrize(
         argnames="kwargs",
         argvalues=[
@@ -462,11 +591,21 @@ class TestIdealInstrument(
     ) -> None:
         """
         An instrument which the operators cannot express does not provide
-        them, which leaves it to its `image` and `backproject` methods.
+        them, which leaves its images and backprojections to its weights.
         """
         a = dataclasses.replace(a, **kwargs)
 
         assert a._operators() is None
+
+        scene = _scene(a)
+
+        assert a._image_matrices(scene, noise=False, uncertainty=False) is None
+
+        image = a.image(scene, noise=False)
+
+        assert image.outputs.sum() > 0
+        assert a._backproject_matrices(image) is None
+        assert a.backproject(image).outputs.sum() > 0
 
     def test__operators_weights(
         self,
@@ -489,6 +628,298 @@ class TestIdealInstrument(
 
         assert a.weights[0].shape == shape
         assert "weights" in vars(a)
+
+    def test__operators_backward(
+        self,
+        a: ctis.instruments.IdealInstrument,
+    ) -> None:
+        """
+        The matrix of the backprojection is derived the first time it is
+        needed, which an image does not.
+        """
+        a = dataclasses.replace(a)
+
+        scene = _scene(a)
+        image = a.image(scene, noise=False)
+        operators = a._operators()
+
+        assert operators._backward is None
+        assert "weights" not in vars(a)
+
+        a.backproject(image)
+        backward = operators._backward
+
+        assert backward is not None
+        assert operators.backward is backward
+        assert "weights" not in vars(a)
+        assert "weights_transpose" not in vars(a)
+
+    def test__operators_photons(
+        self,
+        a: ctis.instruments.IdealInstrument,
+    ) -> None:
+        """
+        The photons leaving every voxel are only kept if that is asked for,
+        as it is by the images of an iteration, and the array which is kept
+        is overwritten by every call with scenes of its shape.
+        """
+        a = dataclasses.replace(a)
+        operators = a._operators()
+
+        rng = np.random.default_rng(0)
+        scene = rng.uniform(1, 2, size=tuple(operators.shape_scene.values()) + (2,))
+
+        photons = operators.photons(scene)
+
+        assert operators._photons is None
+
+        images, variance = operators.image(scene)
+        kept = operators._photons
+
+        assert kept is not None
+        assert np.array_equal(images, photons * operators.gain)
+
+        photons_kept = operators.photons(scene)
+
+        assert operators._photons is kept
+        assert np.array_equal(photons_kept, photons)
+
+        # scenes of another shape replace the array only if it is to be kept
+        scene = np.ascontiguousarray(scene[..., :1])
+        operators.photons(scene)
+
+        assert operators._photons is kept
+
+        operators.image(scene)
+
+        assert operators._photons is not kept
+
+    @pytest.mark.parametrize(
+        argnames="shape_frames",
+        argvalues=[dict(), dict(time=2), dict(time=2, repeat=3)],
+        ids=["one frame", "an axis of frames", "two axes of frames"],
+    )
+    @pytest.mark.parametrize(
+        argnames="function",
+        argvalues=[False, True],
+        ids=["values", "function"],
+    )
+    def test_image_matrices(
+        self,
+        a: ctis.instruments.IdealInstrument,
+        shape_frames: dict[str, int],
+        function: bool,
+    ) -> None:
+        """
+        The image integrated along wavelength is computed with the matrices,
+        and is the one computed from the weights.
+        """
+        _assert_image_matrices(a, shape_frames=shape_frames, function=function)
+
+    @pytest.mark.parametrize(
+        argnames="shape_frames",
+        argvalues=[dict(), dict(time=2), dict(time=2, repeat=3)],
+        ids=["one frame", "an axis of frames", "two axes of frames"],
+    )
+    @pytest.mark.parametrize(
+        argnames="function",
+        argvalues=[False, True],
+        ids=["values", "function"],
+    )
+    def test_backproject_matrices(
+        self,
+        a: ctis.instruments.IdealInstrument,
+        shape_frames: dict[str, int],
+        function: bool,
+    ) -> None:
+        """
+        The backprojection of images integrated along wavelength is computed
+        with the matrices, and is the one computed from the weights.
+        """
+        _assert_backproject_matrices(a, shape_frames=shape_frames, function=function)
+
+    @pytest.mark.parametrize(
+        argnames="matrices",
+        argvalues=[True, False],
+        ids=["matrices", "weights"],
+    )
+    def test_image_noise(
+        self,
+        a: ctis.instruments.IdealInstrument,
+        matrices: bool,
+    ) -> None:
+        """
+        The noise of an image has the mean and the variance that its
+        uncertainty says, whether it is drawn once for each pixel, as it is
+        with the matrices, or for each wavelength, as it is from the weights,
+        and it is drawn independently for each frame.
+        """
+        quantum_yield = 3 * u.electron / u.photon
+        a = dataclasses.replace(
+            a,
+            quantum_yield=quantum_yield,
+            read_noise=5 * u.electron,
+        )
+
+        # the same scene in every frame, dim enough for its shot noise to
+        # be skewed, and bright enough to outweigh the read noise
+        scene = _scene_frames(a, shape_frames=dict()).outputs
+        brightest = a.image(scene, noise=False).outputs.max() / quantum_yield
+        scene = scene * (30 / brightest.ndarray.to_value(u.photon))
+        scene = na.broadcast_to(scene, scene.shape | dict(repeat=20))
+
+        kwargs = dict(noise=True, uncertainty=True)
+
+        state = np.random.get_state()
+        np.random.seed(0)
+        try:
+            if matrices:
+                result = a.image(scene, **kwargs).outputs
+            else:
+                result = a._image_weights(scene, integrate=True, **kwargs).outputs
+        finally:
+            np.random.set_state(state)
+
+        expected = a.image(scene, noise=False, uncertainty=True).outputs
+
+        _assert_close(result.width, expected.width)
+
+        residual = (result.nominal - expected.nominal) / expected.width
+        residual = residual.ndarray
+        num = residual.size
+
+        # the frames are separate realizations of the noise
+        axes = tuple(ax for ax in result.nominal.axes if ax != "repeat")
+        frames = na.value(result.nominal).ndarray_aligned(("repeat",) + axes)
+        assert not np.any(np.all(frames[0] == frames[1:], axis=(1, 2, 3)))
+
+        # the mean and the variance of the residuals are within five standard
+        # errors of zero and of one, the kurtosis of the residuals being
+        # under four
+        assert np.abs(residual.mean()) < 5 / np.sqrt(num)
+        assert np.abs(residual.var() - 1) < 5 * np.sqrt(3 / num)
+
+    @pytest.mark.parametrize(
+        argnames="matrices",
+        argvalues=[True, False],
+        ids=["matrices", "weights"],
+    )
+    def test_image_noise_photons(
+        self,
+        a: ctis.instruments.IdealInstrument,
+        matrices: bool,
+    ) -> None:
+        """
+        Without read noise, the image is a whole number of photons in every
+        pixel, each converted into the electrons of the quantum yield,
+        whether it is computed with the matrices or from the weights.
+        """
+        quantum_yield = 3 * u.electron / u.photon
+        a = dataclasses.replace(a, quantum_yield=quantum_yield)
+
+        scene = _scene_frames(a, shape_frames=dict()).outputs
+        brightest = a.image(scene, noise=False).outputs.max() / quantum_yield
+        scene = scene * (30 / brightest.ndarray.to_value(u.photon))
+
+        if matrices:
+            result = a.image(scene).outputs
+        else:
+            result = a._image_weights(
+                scene=scene,
+                integrate=True,
+                noise=True,
+                uncertainty=False,
+            ).outputs
+        photons = (result / quantum_yield).ndarray.to_value(u.photon)
+
+        assert result.unit == u.electron
+        assert photons.sum() > 0
+        assert np.array_equal(photons, np.round(photons))
+
+    def test_image_matrices_unsupported(
+        self,
+        a: ctis.instruments.IdealInstrument,
+    ) -> None:
+        """
+        A scene which the matrices cannot take is left to the weights, which
+        image it, or raise the error they always have.
+        """
+        operators = a._operators()
+        kwargs = dict(noise=False, uncertainty=False)
+
+        # a scene for each channel
+        scene = _scene_frames(a, shape_frames=operators.shape_channel)
+
+        assert a._image_matrices(scene, **kwargs) is None
+        assert a.image(scene, noise=False).outputs.sum() > 0
+
+        # a scene which is not in units of energy
+        scene = _scene(a).outputs / u.erg
+
+        assert a._image_matrices(scene, **kwargs) is None
+        with pytest.raises(u.UnitConversionError):
+            a.image(scene, noise=False)
+
+        # a scene on another grid
+        scene = _scene(a)
+        scene = scene.replace(
+            inputs=scene.inputs.replace(position=2 * scene.inputs.position)
+        )
+
+        with pytest.raises(ValueError, match="coordinates_scene"):
+            a.image(scene, noise=False)
+
+    def test_backproject_matrices_unsupported(
+        self,
+        a: ctis.instruments.IdealInstrument,
+    ) -> None:
+        """
+        An image which the matrices cannot take is left to the weights, which
+        backproject it, or raise the error they always have.
+        """
+        scene = _scene(a)
+
+        # an image of each wavelength
+        image = a.image(scene, integrate=False, noise=False)
+
+        assert a._backproject_matrices(image.outputs) is None
+        assert a.backproject(image.outputs, integrate=False).outputs.sum() > 0
+
+        # an image without a unit
+        image = a.image(scene, noise=False)
+
+        assert a._backproject_matrices(na.value(image.outputs)) is None
+        with pytest.raises(u.UnitConversionError):
+            a.backproject(na.value(image.outputs))
+
+        # an image on another grid
+        image = image.replace(
+            inputs=image.inputs.replace(position=2 * image.inputs.position)
+        )
+
+        with pytest.raises(ValueError, match="coordinates_sensor"):
+            a.backproject(image)
+
+    def test_image_separate(
+        self,
+        a: ctis.instruments.IdealInstrument,
+    ) -> None:
+        """
+        With the wavelengths kept separate, the images and the
+        backprojections are computed from the weights, and the matrices are
+        not assembled.
+        """
+        a = dataclasses.replace(a)
+        scene = _scene(a)
+
+        image = a.image(scene, integrate=False, noise=False)
+        result = a.backproject(image, integrate=False)
+
+        assert a.axis_wavelength in image.outputs.shape
+        assert result.outputs.sum() > 0
+        assert a._operators_kept is None
+        assert "weights" in vars(a)
+        assert "weights_transpose" in vars(a)
 
     def test__operators_single(
         self,

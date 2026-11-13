@@ -8,7 +8,7 @@ import astropy.units as u
 import astropy.constants
 import named_arrays as na
 import optika
-from ._operators import Operators, aligned, regridder, vertices
+from ._operators import Operators, aligned, framed, regridder, vertices
 
 __all__ = [
     "AbstractInstrument",
@@ -261,6 +261,32 @@ class AbstractLinearInstrument(
 
         return energy_per_photon
 
+    def _collapse_wavelength(
+        self,
+        coordinates: na.AbstractSpectralPositionalVectorArray,
+    ) -> na.AbstractSpectralPositionalVectorArray:
+        """
+        Collapse the wavelength coordinates of an image to the band edges,
+        which are the coordinates of an image integrated along the wavelength
+        axis.
+
+        Parameters
+        ----------
+        coordinates
+            The coordinates of the image before it is integrated.
+        """
+        axis = self.axis_wavelength
+
+        return coordinates.replace(
+            wavelength=na.stack(
+                arrays=[
+                    coordinates.wavelength.min(axis),
+                    coordinates.wavelength.max(axis),
+                ],
+                axis=axis,
+            )
+        )
+
     def _integrate_wavelength(
         self,
         outputs: na.AbstractScalar,
@@ -284,17 +310,7 @@ class AbstractLinearInstrument(
         else:
             outputs = outputs.sum(axis)
 
-        coordinates = coordinates.replace(
-            wavelength=na.stack(
-                arrays=[
-                    coordinates.wavelength.min(axis),
-                    coordinates.wavelength.max(axis),
-                ],
-                axis=axis,
-            )
-        )
-
-        return outputs, coordinates
+        return outputs, self._collapse_wavelength(coordinates)
 
     def image(
         self,
@@ -387,6 +403,25 @@ class IdealInstrument(
 
     It has no distortion or vignetting, and it considers only photon shot
     noise and read noise.  It may have a point-spread function, :attr:`psf`.
+
+    The images and the backprojections which are integrated along the
+    wavelength axis are computed with a pair of sparse matrices, which are
+    assembled from :attr:`weights` the first time they are needed, and which
+    are the matrices that the inverters iterate on.
+    The matrix of the forward model sums the photons over wavelength, so the
+    shot noise of an image is drawn once for each pixel, from the photons
+    expected there at all wavelengths together.
+    A sum of independent Poisson variables is itself a Poisson variable, so
+    this is the distribution that a draw for each wavelength would have.
+
+    With `integrate` set to :obj:`False`, or if the instrument cannot be
+    expressed as a pair of matrices, the images and the backprojections are
+    computed from :attr:`weights` and :attr:`weights_transpose` instead, one
+    wavelength at a time, with the shot noise drawn for each wavelength,
+    which is slower.
+    An instrument cannot be expressed as a pair of matrices if its
+    :attr:`quantum_yield` varies with wavelength or across the sensor, or if
+    it varies along an axis of its own, such as time.
     """
 
     area_effective: u.Quantity | na.AbstractScalar
@@ -668,8 +703,9 @@ class IdealInstrument(
         hold, in another form, and an instrument large enough for it to
         matter cannot afford both.
         Assembling the matrices therefore releases the weights,
-        which are computed again if :meth:`image` or :meth:`backproject`
-        need them.
+        which are computed again if they are needed,
+        as they are by :meth:`image` and :meth:`backproject` if `integrate`
+        is :obj:`False`.
 
         Parameters
         ----------
@@ -793,7 +829,7 @@ class IdealInstrument(
             return None
 
         # the matrix takes a scene for each channel, rather than one shared
-        # by the channels, so that its transpose below gives a backprojection
+        # by the channels, so that its transpose gives a backprojection
         # for each channel, and it sums the images over wavelength
         forward = regridder(
             weights=weights,
@@ -802,16 +838,12 @@ class IdealInstrument(
             dtype=dtype,
         )
 
-        # the weights are released before the backprojection is assembled,
-        # which would otherwise have to fit in memory beside them
+        # the weights are released, so that the matrix of the backprojection,
+        # which is derived from the one above when it is first needed,
+        # does not have to fit in memory beside them
         del weights, array
         vars(self).pop("weights", None)
         vars(self).pop("weights_transpose", None)
-
-        backward = forward.transpose_conservative(
-            coordinates_input=vertices_scene,
-            coordinates_output=vertices_sensor,
-        )
 
         gain = gain.reshape(gain.shape + (1,) * len(shape_sensor))
         variance_read = np.square(read_noise)
@@ -820,7 +852,8 @@ class IdealInstrument(
         # broadcast along, and the precision of the matrices
         return Operators(
             forward=forward,
-            backward=backward,
+            vertices_scene=vertices_scene,
+            vertices_sensor=vertices_sensor,
             scale=scale[..., np.newaxis].astype(dtype),
             scale_backproject=scale_backproject[..., np.newaxis].astype(dtype),
             gain=gain[..., np.newaxis].astype(dtype),
@@ -839,6 +872,147 @@ class IdealInstrument(
         noise: bool = True,
         uncertainty: bool = False,
     ) -> na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar]:
+
+        # the matrices sum over wavelength, so they only give the image
+        # which is integrated along it
+        if integrate:
+            result = self._image_matrices(
+                scene=scene,
+                noise=noise,
+                uncertainty=uncertainty,
+            )
+            if result is not None:
+                return result
+
+        return self._image_weights(
+            scene=scene,
+            integrate=integrate,
+            noise=noise,
+            uncertainty=uncertainty,
+        )
+
+    def _image_matrices(
+        self,
+        scene: na.AbstractScalar | na.AbstractFunctionArray,
+        noise: bool,
+        uncertainty: bool,
+    ) -> None | na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar]:
+        """
+        The image of a scene, integrated along the wavelength axis, computed
+        with the sparse matrices of this instrument, or :obj:`None` if the
+        instrument or the scene cannot be expressed as plain arrays, which
+        leaves the image to :meth:`_image_weights`.
+
+        Any axes of the scene beyond its own are those of independent frames,
+        which are imaged in the same pass over the matrix.
+
+        The shot noise is drawn once for each pixel, from the photons
+        expected there at all wavelengths together, where
+        :meth:`_image_weights` draws it for each wavelength.
+        The two have the same distribution, since a sum of independent
+        Poisson variables is itself a Poisson variable, but not the same
+        values for a given seed.
+
+        Parameters
+        ----------
+        scene
+            The spectral radiance of the observed scene.
+        noise
+            Whether to include the effect of noise in the image.
+        uncertainty
+            Whether to attach the standard deviation of the noise to the
+            image.
+        """
+        operators = self._operators()
+        if operators is None:
+            return None
+
+        if isinstance(scene, na.AbstractFunctionArray):
+            if not np.all(scene.inputs == self.coordinates_scene):
+                raise ValueError(
+                    "`scene.inputs` and `self.coordinates_scene` are not equal."
+                )
+            scene = scene.outputs
+
+        shape_images = operators.shape_images
+
+        # every other axis of the scene is an axis of the frames, unless it
+        # is one of those of the images, which the named arrays are left to
+        shape = na.shape(scene)
+        shape_frames = {
+            ax: shape[ax] for ax in shape if ax not in operators.shape_scene
+        }
+        if not shape_frames.keys().isdisjoint(shape_images):
+            return None
+
+        values = framed(
+            a=scene,
+            shape=operators.shape_scene,
+            shape_frames=shape_frames,
+            unit=operators.unit_scene,
+        )
+        if values is None:
+            return None
+
+        # the photons expected in every pixel, at all wavelengths together
+        expected = operators.photons(values)
+        expected = expected.reshape(expected.shape[:~0] + tuple(shape_frames.values()))
+        expected = na.ScalarArray(
+            ndarray=expected << u.photon,
+            axes=(*shape_images, *shape_frames),
+        )
+
+        photons = expected
+        if noise:
+            photons = na.random.poisson(expected)
+
+        # convert the measured photons into electrons
+        electrons = photons * self.quantum_yield
+
+        if uncertainty:
+            # the width of the shot noise is that of the photons expected,
+            # whatever the noise drawn above
+            width = self._shot_noise(expected * self.quantum_yield)
+            width = np.sqrt(np.square(width) + np.square(self.read_noise))
+
+        # add read noise once, at the readout
+        if noise:
+            electrons = na.random.normal(loc=electrons, scale=self.read_noise)
+
+        if uncertainty:
+            electrons = na.NormalUncertainScalarArray(nominal=electrons, width=width)
+
+        return na.FunctionArray(
+            inputs=self._collapse_wavelength(self.coordinates_sensor),
+            outputs=electrons,
+        )
+
+    def _image_weights(
+        self,
+        scene: na.AbstractScalar | na.AbstractFunctionArray,
+        integrate: bool,
+        noise: bool,
+        uncertainty: bool,
+    ) -> na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar]:
+        """
+        The image of a scene, computed from :attr:`weights`, one wavelength
+        at a time, as named arrays.
+
+        This is the image of any instrument and any scene, and the only one
+        which keeps the wavelengths separate.
+
+        Parameters
+        ----------
+        scene
+            The spectral radiance of the observed scene.
+        integrate
+            Whether to integrate along the wavelength axis.
+        noise
+            Whether to include the effect of noise in the image.
+        uncertainty
+            Whether to attach the standard deviation of the noise to the
+            image.
+        """
 
         scene = scene * self.area_effective * self.timedelta_exposure
 
@@ -911,6 +1085,102 @@ class IdealInstrument(
         unit: None | u.UnitBase = None,
     ) -> na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar]:
 
+        # the matrices spread an image over every wavelength, so they only
+        # give the backprojection of an image integrated along wavelength
+        result = None
+        if integrate:
+            result = self._backproject_matrices(image)
+
+        if result is None:
+            result = self._backproject_weights(image, integrate=integrate)
+
+        # the backprojection is in energy units; express it in the
+        # requested unit, converting to photons if necessary.
+        return result.replace(outputs=self._to_unit(result.outputs, unit))
+
+    def _backproject_matrices(
+        self,
+        image: na.AbstractScalar | na.AbstractFunctionArray,
+    ) -> None | na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar]:
+        """
+        The backprojection of an image integrated along the wavelength axis,
+        in energy units, computed with the sparse matrices of this
+        instrument, or :obj:`None` if the instrument or the image cannot be
+        expressed as plain arrays, which leaves the backprojection to
+        :meth:`_backproject_weights`.
+
+        Any axes of the image beyond those of the channels and the sensor
+        are those of independent frames, which are backprojected in the
+        same pass over the matrix.
+
+        Parameters
+        ----------
+        image
+            The images captured by this instrument.
+        """
+        operators = self._operators()
+        if operators is None:
+            return None
+
+        if isinstance(image, na.AbstractFunctionArray):
+            if not np.all(image.inputs.position == self.coordinates_sensor.position):
+                raise ValueError(
+                    "`image.inputs` and `self.coordinates_sensor` are not equal."
+                )
+            image = image.outputs
+
+        shape_voxels = operators.shape_channel | operators.shape_scene
+
+        # every other axis of the image is an axis of the frames, unless it
+        # is one of those of the scene, which the named arrays are left to
+        shape = na.shape(image)
+        shape_frames = {
+            ax: shape[ax] for ax in shape if ax not in operators.shape_images
+        }
+        if not shape_frames.keys().isdisjoint(shape_voxels):
+            return None
+
+        values = framed(
+            a=image,
+            shape=operators.shape_images,
+            shape_frames=shape_frames,
+            unit=operators.unit_images,
+        )
+        if values is None:
+            return None
+
+        result = operators.backproject(values)
+        result *= operators.scale_backproject
+        result = result.reshape(result.shape[:~0] + tuple(shape_frames.values()))
+
+        return na.FunctionArray(
+            inputs=self.coordinates_scene,
+            outputs=na.ScalarArray(
+                ndarray=result << operators.unit_scene,
+                axes=(*shape_voxels, *shape_frames),
+            ),
+        )
+
+    def _backproject_weights(
+        self,
+        image: na.AbstractScalar | na.AbstractFunctionArray,
+        integrate: bool,
+    ) -> na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar]:
+        """
+        The backprojection of an image, in energy units, computed from
+        :attr:`weights_transpose`, one wavelength at a time, as named arrays.
+
+        This is the backprojection of any instrument and any image, and the
+        only one of an image which keeps the wavelengths separate.
+
+        Parameters
+        ----------
+        image
+            The images captured by this instrument.
+        integrate
+            Whether the image is integrated along the wavelength axis.
+        """
+
         # convert the measured electrons back into photons
         if isinstance(image, na.AbstractFunctionArray):
             image = image.replace(outputs=image.outputs / self.quantum_yield)
@@ -922,11 +1192,7 @@ class IdealInstrument(
             integrate=integrate,
         )
 
-        result = result / (self.area_effective * self.timedelta_exposure)
-
-        # the super() backprojection is in energy units; express it in the
-        # requested unit, converting to photons if necessary.
-        return result.replace(outputs=self._to_unit(result.outputs, unit))
+        return result / (self.area_effective * self.timedelta_exposure)
 
 
 @dataclasses.dataclass

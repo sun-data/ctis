@@ -5,7 +5,7 @@ import numpy as np
 import astropy.units as u
 import named_arrays as na
 import ctis
-from ctis.instruments._operators import Operators, aligned
+from ctis.instruments._operators import Operators, aligned, framed
 from .. import AbstractIterativeInverter, IterativeInversionResult
 from . import _kernels
 
@@ -204,21 +204,17 @@ class MartInverter(
 
         num_frame = math.prod(shape_frames.values())
 
-        shape_images = tuple(operators.shape_images.values())
         shape_scene = tuple(operators.shape_scene.values())
 
-        observed = aligned(
+        observed = framed(
             a=images,
-            shape=operators.shape_images | shape_frames,
+            shape=operators.shape_images,
+            shape_frames=shape_frames,
             unit=operators.unit_images,
+            dtype=operators.dtype,
         )
         if observed is None:
             return None
-        observed = np.broadcast_to(
-            observed, shape_images + tuple(shape_frames.values())
-        )
-        observed = np.ascontiguousarray(observed, dtype=operators.dtype)
-        observed = observed.reshape(shape_images + (num_frame,))
 
         scene = None
         if guess is not None:
