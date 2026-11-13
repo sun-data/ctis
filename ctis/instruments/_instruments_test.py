@@ -176,7 +176,7 @@ class AbstractTestAbstractInstrument(
     ) -> None:
         # the operators of an instrument, if it provides them, reproduce its
         # `image` and `backproject` methods on plain arrays
-        operators = a._operators
+        operators = a._operators()
         if operators is None:
             return
 
@@ -385,7 +385,7 @@ class TestIdealInstrument(
         self,
         a: ctis.instruments.IdealInstrument,
     ) -> None:
-        assert a._operators is not None
+        assert a._operators() is not None
         super().test__operators(a)
 
     @pytest.mark.parametrize(
@@ -431,7 +431,7 @@ class TestIdealInstrument(
         """
         a = dataclasses.replace(a, **kwargs)
 
-        assert a._operators is not None
+        assert a._operators() is not None
         super().test__operators(a)
 
     @pytest.mark.parametrize(
@@ -464,7 +464,7 @@ class TestIdealInstrument(
         """
         a = dataclasses.replace(a, **kwargs)
 
-        assert a._operators is None
+        assert a._operators() is None
 
     def test__operators_weights(
         self,
@@ -481,12 +481,58 @@ class TestIdealInstrument(
         assert "weights" in vars(a)
         assert "weights_transpose" in vars(a)
 
-        assert a._operators is not None
+        assert a._operators() is not None
         assert "weights" not in vars(a)
         assert "weights_transpose" not in vars(a)
 
         assert a.weights[0].shape == shape
         assert "weights" in vars(a)
+
+    def test__operators_single(
+        self,
+        a: ctis.instruments.IdealInstrument,
+    ) -> None:
+        """
+        The operators are assembled in the precision asked for, and kept in
+        the precision they were last asked for in.
+        """
+        a = dataclasses.replace(a)
+
+        double = a._operators()
+        assert double.dtype == np.float64
+        assert a._operators() is double
+
+        single = a._operators(np.float32)
+        assert single.dtype == np.float32
+        assert a._operators(np.float32) is single
+        for array in (
+            single.forward.data,
+            single.backward.data,
+            single.scale,
+            single.scale_backproject,
+            single.gain,
+            single.variance_read,
+        ):
+            assert array.dtype == np.float32
+
+        rng = np.random.default_rng(0)
+        scene = rng.uniform(1, 2, size=tuple(single.shape_scene.values()) + (2,))
+
+        images, variance = single.image(scene.astype(np.float32))
+        images_expected, variance_expected = double.image(scene)
+        result = single.backproject(images)
+        result_expected = double.backproject(images_expected)
+
+        for array, expected in (
+            (images, images_expected),
+            (variance, variance_expected),
+            (result, result_expected),
+        ):
+            assert array.dtype == np.float32
+            assert np.allclose(array, expected, rtol=1e-5, atol=1e-5 * expected.max())
+
+        # the operators in double precision were released for those in single
+        assert a._operators() is not double
 
     def test_psf(
         self,
@@ -576,7 +622,7 @@ class TestOptikaInstrument(
         a: ctis.instruments.OptikaInstrument,
     ) -> None:
         # the operators of this instrument are not implemented yet
-        assert a._operators is None
+        assert a._operators() is None
         super().test__operators(a)
 
     def _with_read_noise(self, a, read_noise):

@@ -174,14 +174,19 @@ class AbstractInstrument(
         instrument.
         """
 
-    @property
-    def _operators(self) -> None | Operators:
+    def _operators(self, dtype: type = np.float64) -> None | Operators:
         """
         This instrument as a pair of sparse matrices which act on plain
         arrays, or :obj:`None` if it does not provide them.
 
         The inverters iterate on these, in place of :meth:`image` and
         :meth:`backproject`, if they are provided.
+
+        Parameters
+        ----------
+        dtype
+            The precision of the matrices and of the arrays they act on,
+            :obj:`numpy.float64` or :obj:`numpy.float32`.
         """
         return None
 
@@ -506,6 +511,17 @@ class IdealInstrument(
     The logical axes of :attr:`psf` which run along :attr:`axis_sensor_xy`.
     """
 
+    _operators_kept: None | tuple[np.dtype, None | Operators] = dataclasses.field(
+        default=None,
+        init=False,
+        repr=False,
+        compare=False,
+    )
+    """
+    The operators of this instrument, with the precision they are in, as
+    :meth:`_operators` last assembled them.
+    """
+
     def _shot_noise(self, image: na.ScalarArray) -> na.ScalarArray:
         # photon shot noise, converted back into electrons to match the
         # electron-valued image
@@ -639,11 +655,14 @@ class IdealInstrument(
 
         return math.prod(shape[ax] for ax in axis_channel)
 
-    @functools.cached_property
-    def _operators(self) -> None | Operators:
+    def _operators(self, dtype: type = np.float64) -> None | Operators:
         """
         This instrument as a pair of sparse matrices which act on plain
         arrays, or :obj:`None` if it cannot be expressed as one.
+
+        The matrices are kept, in the precision they were last asked for in,
+        so they are assembled once for any number of inversions in that
+        precision, and again if another is asked for.
 
         The matrices hold what :attr:`weights` and :attr:`weights_transpose`
         hold, in another form, and an instrument large enough for it to
@@ -651,6 +670,37 @@ class IdealInstrument(
         Assembling the matrices therefore releases the weights,
         which are computed again if :meth:`image` or :meth:`backproject`
         need them.
+
+        Parameters
+        ----------
+        dtype
+            The precision of the matrices and of the arrays they act on,
+            :obj:`numpy.float64` or :obj:`numpy.float32`.
+        """
+        dtype = np.dtype(dtype)
+
+        kept = self._operators_kept
+        if kept is not None and kept[0] == dtype:
+            return kept[1]
+
+        # matrices kept in another precision are released first, so that the
+        # two never have to fit in memory together
+        self._operators_kept = None
+
+        operators = self._operators_new(dtype)
+
+        self._operators_kept = (dtype, operators)
+
+        return operators
+
+    def _operators_new(self, dtype: np.dtype) -> None | Operators:
+        """
+        Assemble the operators of this instrument, see :meth:`_operators`.
+
+        Parameters
+        ----------
+        dtype
+            The precision of the matrices and of the arrays they act on.
         """
 
         axis_channel = self.axis_channel
@@ -748,6 +798,7 @@ class IdealInstrument(
             weights=weights,
             shape_input=shape_voxels,
             shape_output=shape_channel | {axis_wavelength: 1} | shape_sensor,
+            dtype=dtype,
         )
 
         # the weights are released before the backprojection is assembled,
@@ -761,15 +812,18 @@ class IdealInstrument(
             coordinates_output=vertices_sensor,
         )
 
+        gain = gain.reshape(gain.shape + (1,) * len(shape_sensor))
+        variance_read = np.square(read_noise)
+
         # every factor is given one more axis, which the frames are
-        # broadcast along
+        # broadcast along, and the precision of the matrices
         return Operators(
             forward=forward,
             backward=backward,
-            scale=scale[..., np.newaxis],
-            scale_backproject=scale_backproject[..., np.newaxis],
-            gain=gain.reshape(gain.shape + (1,) * len(shape_sensor) + (1,)),
-            variance_read=np.square(read_noise)[..., np.newaxis],
+            scale=scale[..., np.newaxis].astype(dtype),
+            scale_backproject=scale_backproject[..., np.newaxis].astype(dtype),
+            gain=gain[..., np.newaxis].astype(dtype),
+            variance_read=variance_read[..., np.newaxis].astype(dtype),
             shape_channel=shape_channel,
             shape_scene=shape_scene,
             shape_sensor=shape_sensor,

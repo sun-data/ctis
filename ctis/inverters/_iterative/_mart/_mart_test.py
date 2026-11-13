@@ -607,3 +607,103 @@ def test__call__frames_without_operators(intermediate: bool) -> None:
 
     result = dataclasses.replace(result, inverter=expected.inverter)
     _assert_same(result, expected)
+
+
+@pytest.mark.parametrize(
+    argnames="dtype",
+    argvalues=[np.float32, "float32", np.dtype("float32")],
+    ids=["type", "name", "dtype"],
+)
+def test_dtype(dtype: type | str | np.dtype) -> None:
+    """
+    In single precision, each frame stops at the iteration it stops at in
+    double precision, at the same solution to within the precision, and is
+    still reconstructed as it would be alone, bit for bit.
+    """
+    shape_frames = dict(time=3)
+    images_frames = _images_frames(shape_frames)
+
+    a = ctis.inverters.MartInverter(
+        instrument=instrument,
+        threshold_convergence=1e-2,
+        dtype=dtype,
+    )
+
+    assert _uses_operators(a, images_frames)
+
+    result = a(images_frames)
+    expected = ctis.inverters.MartInverter(
+        instrument=instrument,
+        threshold_convergence=1e-2,
+    )(images_frames)
+
+    assert result.solutions.outputs.ndarray.dtype == np.float32
+    assert result.mean_chi_squared.ndarray.dtype == np.float64
+    assert result.correlation_residual.ndarray.dtype == np.float64
+
+    assert np.all(result.num_iteration == expected.num_iteration)
+    assert np.all(result.success == expected.success)
+
+    for name in ("solutions", "mean_chi_squared", "correlation_residual"):
+        value = getattr(result, name)
+        value_expected = getattr(expected, name)
+        if name == "solutions":
+            value = value.outputs
+            value_expected = value_expected.outputs
+        assert value.unit == value_expected.unit
+        value = value.ndarray_aligned(value_expected.axes).value
+        value_expected = value_expected.ndarray.value
+        assert np.allclose(
+            value,
+            value_expected,
+            rtol=1e-5,
+            atol=1e-5 * np.nanmax(np.abs(value_expected)),
+            equal_nan=True,
+        )
+
+    for index in na.ndindex(shape_frames):
+        _assert_frame(result, index, a(images_frames[index]))
+
+
+def test_dtype_guess() -> None:
+    """
+    In single precision, the solution is in the units of the guess, and in
+    single precision.
+    """
+    a = ctis.inverters.MartInverter(
+        instrument=instrument,
+        threshold_convergence=1e-2,
+        dtype=np.float32,
+    )
+    guess = na.ScalarArray.ones(scene.outputs.shape) * scene.outputs.unit
+
+    result = a(images, guess=guess)
+
+    assert result.solution.outputs.unit == guess.unit
+    assert result.solution.outputs.ndarray.dtype == np.float32
+    assert guess.ndarray.dtype == np.float64
+
+
+@pytest.mark.parametrize("dtype", [np.int32, np.float16, np.complex128])
+def test_dtype_invalid(dtype: type) -> None:
+    with pytest.raises(ValueError, match="dtype"):
+        ctis.inverters.MartInverter(instrument=instrument, dtype=dtype)
+
+
+def test_dtype_without_operators() -> None:
+    """
+    An instrument which does not provide operators cannot be inverted in
+    single precision.
+    """
+    quantum_yield = na.ScalarArray(np.ones(velocity.size - 1), axes="wavelength")
+    instrument_named = dataclasses.replace(
+        instrument,
+        quantum_yield=quantum_yield * u.electron / u.photon,
+    )
+    a = ctis.inverters.MartInverter(
+        instrument=instrument_named,
+        dtype=np.float32,
+    )
+
+    with pytest.raises(ValueError, match="dtype"):
+        a(images)

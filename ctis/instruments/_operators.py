@@ -96,6 +96,7 @@ def regridder(
     weights: tuple[na.AbstractScalarArray, dict[str, int], dict[str, int]],
     shape_input: dict[str, int],
     shape_output: dict[str, int],
+    dtype: type = np.float64,
 ) -> regridding.Regridder:
     """
     Assemble weights computed by :func:`named_arrays.regridding.weights` into
@@ -119,6 +120,9 @@ def regridder(
         the output grid.
         An orthogonal axis can have a length of one, which sums what the
         elements of the weights along it give.
+    dtype
+        The type of the entries of the matrix, :obj:`numpy.float64` or
+        :obj:`numpy.float32`.
     """
     array, shape_grid_input, shape_grid_output = weights
 
@@ -151,6 +155,7 @@ def regridder(
         axis_output=tuple(range(num_orthogonal, len(shape_output))),
         shape_input=tuple(shape_input.values()),
         shape_output=tuple(shape_output.values()),
+        dtype=dtype,
     )
 
 
@@ -213,6 +218,9 @@ class Operators:
     frame gets the result it would have alone, bit for bit.
     The frames come last because that is how the matrices store them, so
     that no array is rearranged on its way in or out.
+
+    The matrices, the factors around them and the arrays they act on are all
+    in one precision, :attr:`dtype`.
     """
 
     forward: regridding.Regridder
@@ -317,6 +325,14 @@ class Operators:
         """The total number of channels."""
         return math.prod(self.shape_channel.values())
 
+    @property
+    def dtype(self) -> np.dtype:
+        """
+        The precision of the matrices, which the arrays they act on are
+        expected in, and their results are given in.
+        """
+        return np.dtype(self.forward.data.dtype)
+
     def image(self, scene: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """
         The images expected of the scene of each frame, without noise, and
@@ -335,7 +351,7 @@ class Operators:
         # each channel, rather than broadcast to it by the matrix afterward
         shape = self.forward.shape_input + (num_frame,)
         if self._photons is None or self._photons.shape != shape:
-            self._photons = np.empty(shape)
+            self._photons = np.empty(shape, dtype=self.dtype)
         photons = self._photons
         _multiply(
             scene=scene,

@@ -63,10 +63,31 @@ class MartInverter(
     then the algorithm is considered to be converged.
     """
 
+    dtype: type = dataclasses.field(default=np.float64, kw_only=True)
+    """
+    The precision of the iteration,
+    :obj:`numpy.float64` or :obj:`numpy.float32`.
+
+    In single precision, the scenes, the images and the sparse matrices of
+    the instrument take half the memory, which the largest problems need,
+    and the solution is given in single precision.
+    Every sum is still accumulated in double precision, and the merit of
+    each iteration is given in double precision.
+
+    Single precision is only available for an instrument which can be
+    expressed as a pair of sparse matrices.
+    """
+
     def __post_init__(self):
 
         if self.gamma is None:
             self.gamma = 2 / self.instrument.num_channel
+
+        if np.dtype(self.dtype) not in (np.float32, np.float64):
+            raise ValueError(
+                f"`dtype` must be `numpy.float32` or `numpy.float64`, "
+                f"got {self.dtype}."
+            )
 
     def __call__(
         self,
@@ -112,6 +133,16 @@ class MartInverter(
 
         if arrays is not None:
             return self._call_arrays(images, guess, verbose, shape_frames, *arrays)
+
+        # the methods of an instrument compute in the precision of its own
+        # arrays, whatever precision is asked for here
+        dtype = np.dtype(self.dtype)
+        if dtype != np.float64 and instrument._operators(dtype) is None:
+            raise ValueError(
+                f"`dtype` is {dtype}, but this instrument cannot be expressed as "
+                f"a pair of sparse matrices, so it is inverted through its "
+                f"`image` and `backproject` methods, in double precision."
+            )
 
         if shape_frames:
             return self._call_frames(images, guess, verbose, shape_frames)
@@ -163,7 +194,7 @@ class MartInverter(
         shape_frames
             The axes of the frames and their lengths.
         """
-        operators = self.instrument._operators
+        operators = self.instrument._operators(self.dtype)
         if operators is None:
             return None
 
@@ -182,7 +213,7 @@ class MartInverter(
         observed = np.broadcast_to(
             observed, shape_images + tuple(shape_frames.values())
         )
-        observed = np.ascontiguousarray(observed)
+        observed = np.ascontiguousarray(observed, dtype=operators.dtype)
         observed = observed.reshape(shape_images + (num_frame,))
 
         scene = None
@@ -197,7 +228,7 @@ class MartInverter(
             if scene is None or scene.shape[: len(shape_scene)] != shape_scene:
                 return None
             scene = np.broadcast_to(scene, shape_scene + tuple(shape_frames.values()))
-            scene = np.array(scene, order="C")
+            scene = np.array(scene, dtype=operators.dtype, order="C")
             scene = scene.reshape(shape_scene + (num_frame,))
 
         return operators, observed, scene
@@ -241,6 +272,8 @@ class MartInverter(
             The values of `guess`, as the operators take them, which can be
             overwritten, or :obj:`None` if there is no guess.
         """
+        dtype = operators.dtype
+
         num_channel = operators.num_channel
         num_frame = observed.shape[~0]
 
@@ -252,10 +285,11 @@ class MartInverter(
         if scene is None:
             # the mean of the backprojection of the instrument, in every
             # voxel, for each frame
-            scene = np.empty((num_voxel, num_frame))
+            scene = np.empty((num_voxel, num_frame), dtype=dtype)
             for f in range(num_frame):
                 mean = backprojected[..., f] * operators.scale_backproject[..., 0]
-                scene[:, f] = mean.reshape(num_channel, -1).mean(axis=0).mean()
+                mean = mean.reshape(num_channel, -1).mean(axis=0, dtype=np.float64)
+                scene[:, f] = mean.mean()
 
         # the arrays of the frames which are still iterating, which every
         # iteration overwrites the scenes of
@@ -267,7 +301,7 @@ class MartInverter(
         # which frames those are
         active = np.arange(num_frame)
 
-        solution = np.empty((num_voxel, num_frame))
+        solution = np.empty((num_voxel, num_frame), dtype=dtype)
         num_iteration = np.full(num_frame, self.num_iteration)
         success = np.zeros(num_frame, dtype=bool)
 
