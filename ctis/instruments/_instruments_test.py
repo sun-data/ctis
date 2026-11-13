@@ -1,6 +1,7 @@
 import pytest
 import abc
 import math
+import weakref
 import dataclasses
 import numpy as np
 import scipy.ndimage
@@ -9,6 +10,7 @@ import astropy.constants
 import named_arrays as na
 import optika
 import ctis
+from ctis.instruments._operators import Operators
 
 
 def _scene(
@@ -533,6 +535,33 @@ class TestIdealInstrument(
 
         # the operators in double precision were released for those in single
         assert a._operators() is not double
+
+    def test__operators_released(
+        self,
+        a: ctis.instruments.IdealInstrument,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """
+        The operators kept in one precision are released before those of
+        another precision are assembled, so that the two never have to fit
+        in memory together.
+        """
+        a = dataclasses.replace(a)
+
+        kept = weakref.ref(a._operators())
+        assert kept() is not None
+
+        released = []
+        operators_new = a._operators_new
+
+        def spy(dtype: np.dtype) -> None | Operators:
+            released.append(kept() is None)
+            return operators_new(dtype)
+
+        monkeypatch.setattr(a, "_operators_new", spy)
+
+        assert a._operators(np.float32).dtype == np.float32
+        assert released == [True]
 
     def test_psf(
         self,

@@ -685,6 +685,7 @@ class IdealInstrument(
 
         # matrices kept in another precision are released first, so that the
         # two never have to fit in memory together
+        del kept
         self._operators_kept = None
 
         operators = self._operators_new(dtype)
