@@ -1,12 +1,14 @@
 import numpy as np
 from typing import Callable
 import abc
+import math
 import functools
 import dataclasses
 import astropy.units as u
 import astropy.constants
 import named_arrays as na
 import optika
+from ._operators import Operators, aligned, regridder, vertices
 
 __all__ = [
     "AbstractInstrument",
@@ -171,6 +173,17 @@ class AbstractInstrument(
         The total number of dispersion magnitudes/angles observed by this
         instrument.
         """
+
+    @property
+    def _operators(self) -> None | Operators:
+        """
+        This instrument as a pair of sparse matrices which act on plain
+        arrays, or :obj:`None` if it does not provide them.
+
+        The inverters iterate on these, in place of :meth:`image` and
+        :meth:`backproject`, if they are provided.
+        """
+        return None
 
 
 @dataclasses.dataclass
@@ -607,6 +620,159 @@ class IdealInstrument(
             coordinates_output=coordinates_output.position,
             axis_input=self.axis_scene_xy,
             axis_output=self.axis_sensor_xy,
+        )
+
+    @property
+    def num_channel(self) -> int:
+
+        # the channels are counted on the grids that the weights are computed
+        # from, so that counting them does not compute the weights
+        shape = na.shape_broadcasted(
+            self._coordinates_input.position,
+            self._coordinates_output.position,
+            self.psf,
+        )
+
+        axis_channel = self.axis_channel
+        if isinstance(axis_channel, str):
+            axis_channel = (axis_channel,)
+
+        return math.prod(shape[ax] for ax in axis_channel)
+
+    @functools.cached_property
+    def _operators(self) -> None | Operators:
+        """
+        This instrument as a pair of sparse matrices which act on plain
+        arrays, or :obj:`None` if it cannot be expressed as one.
+
+        The matrices hold what :attr:`weights` and :attr:`weights_transpose`
+        hold, in another form, and an instrument large enough for it to
+        matter cannot afford both.
+        Assembling the matrices therefore releases the weights,
+        which are computed again if :meth:`image` or :meth:`backproject`
+        need them.
+        """
+
+        axis_channel = self.axis_channel
+        if isinstance(axis_channel, str):
+            axis_channel = (axis_channel,)
+        axis_wavelength = self.axis_wavelength
+
+        weights = self.weights
+        array, shape_grid_scene, shape_grid_sensor = weights
+
+        # an instrument which varies along any other axis, such as time,
+        # is left to the named arrays
+        if set(array.shape) != {*axis_channel, axis_wavelength}:
+            return None
+
+        shape_channel = {ax: array.shape[ax] for ax in axis_channel}
+        shape_wavelength = {axis_wavelength: array.shape[axis_wavelength]}
+        shape_scene_xy = {
+            ax: shape_grid_scene[ax] for ax in shape_grid_scene if ax not in array.shape
+        }
+        shape_sensor = {
+            ax: shape_grid_sensor[ax]
+            for ax in shape_grid_sensor
+            if ax not in array.shape
+        }
+        shape_scene = shape_wavelength | shape_scene_xy
+        shape_voxels = shape_channel | shape_scene
+        shape_pixels = shape_channel | shape_sensor
+
+        exposure = self.area_effective * self.timedelta_exposure
+        volume = self._volume_scene
+        energy = self._energy_per_photon
+        num_wavelength = self.coordinates_scene.wavelength.shape[axis_wavelength] - 1
+
+        # the units that `image` and `backproject` give their results in
+        unit_images = u.photon * na.unit_normalized(self.quantum_yield)
+        unit_scene = u.erg / na.unit_normalized(volume) / na.unit_normalized(exposure)
+
+        # the factors that `image` applies to the scene before resampling it,
+        # and those that `backproject` applies around its resampling
+        scale = (1 * unit_scene) * exposure * volume / energy
+        scale_backproject = (1 * unit_images) / self.quantum_yield / num_wavelength
+        scale_backproject = scale_backproject * energy / volume / exposure
+
+        scale = aligned(scale, shape=shape_voxels, unit=u.photon)
+        scale_backproject = aligned(
+            a=scale_backproject,
+            shape=shape_voxels,
+            unit=unit_scene,
+        )
+        gain = aligned(
+            a=self.quantum_yield,
+            shape=shape_channel,
+            unit=unit_images / u.photon,
+        )
+        read_noise = aligned(self.read_noise, shape=shape_pixels, unit=unit_images)
+
+        # the vertices of the two grids that the weights were computed from
+        position_scene = self._coordinates_input.position
+        position_sensor = self._coordinates_output.position
+        unit_position = na.unit_normalized(position_sensor.x)
+        vertices_scene = vertices(
+            coordinates=position_scene,
+            shape=shape_channel
+            | shape_wavelength
+            | {ax: num + 1 for ax, num in shape_scene_xy.items()},
+            unit=unit_position,
+        )
+        vertices_sensor = vertices(
+            coordinates=position_sensor,
+            shape=shape_channel
+            | shape_wavelength
+            | {ax: num + 1 for ax, num in shape_sensor.items()},
+            unit=unit_position,
+        )
+
+        # a quantum yield which varies with wavelength or across the sensor
+        # cannot be applied after the sum over wavelength, and anything
+        # with other axes or units is left to the named arrays
+        arrays = (
+            scale,
+            scale_backproject,
+            gain,
+            read_noise,
+            vertices_scene,
+            vertices_sensor,
+        )
+        if any(a is None for a in arrays):
+            return None
+
+        # the matrix takes a scene for each channel, rather than one shared
+        # by the channels, so that its transpose below gives a backprojection
+        # for each channel, and it sums the images over wavelength
+        forward = regridder(
+            weights=weights,
+            shape_input=shape_voxels,
+            shape_output=shape_channel | {axis_wavelength: 1} | shape_sensor,
+        )
+
+        # the weights are released before the backprojection is assembled,
+        # which would otherwise have to fit in memory beside them
+        del weights, array
+        vars(self).pop("weights", None)
+        vars(self).pop("weights_transpose", None)
+
+        backward = forward.transpose_conservative(
+            coordinates_input=vertices_scene,
+            coordinates_output=vertices_sensor,
+        )
+
+        return Operators(
+            forward=forward,
+            backward=backward,
+            scale=scale,
+            scale_backproject=scale_backproject,
+            gain=gain.reshape(gain.shape + (1,) * len(shape_sensor)),
+            variance_read=np.square(read_noise),
+            shape_channel=shape_channel,
+            shape_scene=shape_scene,
+            shape_sensor=shape_sensor,
+            unit_scene=unit_scene,
+            unit_images=unit_images,
         )
 
     def image(

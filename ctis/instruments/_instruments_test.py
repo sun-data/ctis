@@ -1,5 +1,6 @@
 import pytest
 import abc
+import math
 import dataclasses
 import numpy as np
 import scipy.ndimage
@@ -169,6 +170,72 @@ class AbstractTestAbstractInstrument(
             result.outputs.width.to_value(u.electron),
         )
 
+    def test__operators(
+        self,
+        a: ctis.instruments.AbstractInstrument,
+    ) -> None:
+        # the operators of an instrument, if it provides them, reproduce its
+        # `image` and `backproject` methods on plain arrays
+        operators = a._operators
+        if operators is None:
+            return
+
+        shape_scene = operators.shape_scene
+        shape_images = operators.shape_images
+        shape_voxels = operators.shape_channel | shape_scene
+
+        assert operators.num_channel == a.num_channel
+
+        rng = np.random.default_rng(0)
+        scene = rng.uniform(1, 2, size=tuple(shape_scene.values()))
+
+        expected = a.image(
+            scene=na.ScalarArray(
+                ndarray=scene << operators.unit_scene,
+                axes=tuple(shape_scene),
+            ),
+            noise=False,
+            uncertainty=True,
+        ).outputs
+        nominal = expected.nominal.ndarray_aligned(tuple(shape_images))
+        nominal = nominal.to_value(operators.unit_images)
+        variance_expected = np.square(expected.width)
+        variance_expected = variance_expected.ndarray_aligned(tuple(shape_images))
+        variance_expected = variance_expected.to_value(operators.unit_images**2)
+
+        images, variance = operators.image(scene)
+
+        assert images.shape == tuple(shape_images.values())
+        assert variance.shape == tuple(shape_images.values())
+        assert images.sum() > 0
+        assert np.allclose(images, nominal, rtol=1e-10, atol=1e-10 * nominal.max())
+        assert np.allclose(
+            variance,
+            variance_expected,
+            rtol=1e-10,
+            atol=1e-10 * variance_expected.max(),
+        )
+
+        expected = a.backproject(
+            image=na.ScalarArray(
+                ndarray=images << operators.unit_images,
+                axes=tuple(shape_images),
+            ),
+        ).outputs
+        expected = expected.ndarray_aligned(tuple(shape_voxels))
+        expected = expected.to_value(operators.unit_scene)
+
+        result = operators.backproject(images)
+
+        assert result.shape == tuple(shape_voxels.values())
+        assert result.sum() > 0
+        assert np.allclose(
+            result * operators.scale_backproject,
+            expected,
+            rtol=1e-10,
+            atol=1e-10 * expected.max(),
+        )
+
     @abc.abstractmethod
     def _with_read_noise(
         self,
@@ -210,7 +277,19 @@ def _psf(a: ctis.instruments.IdealInstrument) -> na.ScalarArray:
 class AbstractTestAbstractLinearInstrument(
     AbstractTestAbstractInstrument,
 ):
-    pass
+    def test_num_channel(
+        self,
+        a: ctis.instruments.AbstractLinearInstrument,
+    ) -> None:
+        super().test_num_channel(a)
+
+        # the channels are those that the weights are an array over
+        axis_channel = a.axis_channel
+        if isinstance(axis_channel, str):
+            axis_channel = (axis_channel,)
+        shape = a.weights[0].shape
+
+        assert a.num_channel == math.prod(shape[ax] for ax in axis_channel)
 
 
 velocity = na.linspace(-500, 500, axis="wavelength", num=21) * u.km / u.s
@@ -284,6 +363,113 @@ class TestIdealInstrument(
 ):
     def _with_read_noise(self, a, read_noise):
         return dataclasses.replace(a, read_noise=read_noise)
+
+    def test__operators(
+        self,
+        a: ctis.instruments.IdealInstrument,
+    ) -> None:
+        assert a._operators is not None
+        super().test__operators(a)
+
+    @pytest.mark.parametrize(
+        argnames="kwargs",
+        argvalues=[
+            dict(
+                area_effective=na.linspace(1, 2, axis="channel", num=3) * u.cm**2,
+                timedelta_exposure=na.linspace(10, 20, axis="channel", num=3) * u.s,
+            ),
+            dict(
+                quantum_yield=na.linspace(2, 3, axis="channel", num=3)
+                * u.electron
+                / u.photon,
+            ),
+            dict(
+                read_noise=na.random.uniform(
+                    low=1 * u.electron,
+                    high=2 * u.electron,
+                    shape_random=dict(channel=3, sensor_x=63, sensor_y=63),
+                    seed=0,
+                ),
+            ),
+            dict(quantum_yield=2, read_noise=3 * u.photon),
+            dict(quantum_yield=2 * u.DN / u.photon, read_noise=3 * u.DN),
+        ],
+        ids=[
+            "exposure for each channel",
+            "quantum yield for each channel",
+            "read noise for each pixel",
+            "images in photons",
+            "images in DN",
+        ],
+    )
+    def test__operators_varying(
+        self,
+        a: ctis.instruments.IdealInstrument,
+        kwargs: dict,
+    ) -> None:
+        """
+        The operators reproduce an instrument whose exposure, quantum yield
+        or read noise vary along the axes that the operators can express,
+        and one whose images are not in electrons.
+        """
+        a = dataclasses.replace(a, **kwargs)
+
+        assert a._operators is not None
+        super().test__operators(a)
+
+    @pytest.mark.parametrize(
+        argnames="kwargs",
+        argvalues=[
+            dict(
+                quantum_yield=na.ScalarArray(np.ones(20), axes="wavelength")
+                * u.electron
+                / u.photon,
+            ),
+            dict(
+                plate_scale=na.linspace(2, 2.1, axis="time", num=2) * u.arcsec / u.pix,
+            ),
+            dict(read_noise=0),
+        ],
+        ids=[
+            "quantum yield for each wavelength",
+            "plate scale for each time",
+            "read noise without a unit",
+        ],
+    )
+    def test__operators_unsupported(
+        self,
+        a: ctis.instruments.IdealInstrument,
+        kwargs: dict,
+    ) -> None:
+        """
+        An instrument which the operators cannot express does not provide
+        them, which leaves it to its `image` and `backproject` methods.
+        """
+        a = dataclasses.replace(a, **kwargs)
+
+        assert a._operators is None
+
+    def test__operators_weights(
+        self,
+        a: ctis.instruments.IdealInstrument,
+    ) -> None:
+        """
+        Assembling the operators releases the weights, which hold the same
+        matrices in another form, and which are computed again if needed.
+        """
+        a = dataclasses.replace(a)
+
+        shape = a.weights[0].shape
+        a.weights_transpose
+        assert "weights" in vars(a)
+        assert "weights_transpose" in vars(a)
+
+        assert a._operators is not None
+        assert "weights" not in vars(a)
+        assert "weights_transpose" not in vars(a)
+
+        assert a.weights[0].shape == shape
+        assert "weights" in vars(a)
 
     def test_psf(
         self,
@@ -368,6 +554,14 @@ def _instrument_optika() -> ctis.instruments.OptikaInstrument:
 class TestOptikaInstrument(
     AbstractTestAbstractLinearInstrument,
 ):
+    def test__operators(
+        self,
+        a: ctis.instruments.OptikaInstrument,
+    ) -> None:
+        # the operators of this instrument are not implemented yet
+        assert a._operators is None
+        super().test__operators(a)
+
     def _with_read_noise(self, a, read_noise):
         sensor = dataclasses.replace(a.system.sensor, read_noise=read_noise)
         return dataclasses.replace(

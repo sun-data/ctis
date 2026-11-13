@@ -1,4 +1,6 @@
 import warnings
+import dataclasses
+import numpy as np
 import matplotlib.pyplot as plt
 import pytest
 import astropy.units as u
@@ -68,6 +70,40 @@ inverter = ctis.inverters.MartInverter(
 )
 
 
+def _assert_same(
+    result: ctis.inverters.IterativeInversionResult,
+    expected: ctis.inverters.IterativeInversionResult,
+) -> None:
+    """
+    Assert that two inversions took the same path to the same solution, to
+    within the rounding of their arithmetic.
+    """
+    assert result.num_iteration == expected.num_iteration
+    assert result.success == expected.success
+    assert result.message == expected.message
+
+    for name in ("solutions", "mean_chi_squared", "correlation_residual"):
+        a = getattr(result, name)
+        b = getattr(expected, name)
+        if name == "solutions":
+            assert np.all(a.inputs == b.inputs)
+            a = a.outputs
+            b = b.outputs
+        assert a.shape == b.shape
+        a = a.ndarray_aligned(b.axes)
+        b = b.ndarray
+        assert a.unit == b.unit
+        assert np.allclose(
+            a.value,
+            b.value,
+            rtol=1e-10,
+            atol=1e-10 * np.abs(b.value).max(),
+        )
+
+    assert np.all(result.images == expected.images)
+    assert result.inverter == expected.inverter
+
+
 @pytest.mark.parametrize(
     argnames="a",
     argvalues=[
@@ -115,6 +151,46 @@ class TestMartInverter(
         assert isinstance(fig, plt.Figure)
         for ax in axs:
             assert isinstance(ax, plt.Axes)
+
+    @pytest.mark.parametrize("images", [images])
+    @pytest.mark.parametrize(
+        argnames="guess",
+        argvalues=[
+            None,
+            na.ScalarArray.ones(scene.outputs.shape) * scene.outputs.unit,
+            na.random.uniform(
+                low=1,
+                high=2,
+                shape_random=dict(reversed(scene.outputs.shape.items())),
+                seed=0,
+            )
+            * scene.outputs.unit,
+        ],
+        ids=["no guess", "uniform guess", "guess with its axes reversed"],
+    )
+    def test__call__named(
+        self,
+        a: ctis.inverters.MartInverter,
+        images: na.FunctionArray[na.SpectralPositionalVectorArray, na.ScalarArray],
+        guess: None | na.ScalarArray,
+    ) -> None:
+        """
+        The iteration on the operators of the instrument, which is the one
+        used for this instrument, takes the same path to the same solution
+        as the iteration on its `image` and `backproject` methods.
+        """
+        assert a._arrays(images.outputs, guess) is not None
+
+        guess_original = None if guess is None else guess.copy()
+
+        result = a(images, guess=guess)
+        expected = a._call_named(images, guess, False)
+
+        _assert_same(result, expected)
+
+        if guess is not None:
+            assert result.solution.outputs.unit == guess.unit
+            assert np.all(guess == guess_original)
 
 
 def test__call__verbose_convergence():
@@ -172,3 +248,111 @@ def test_plot_moments_no_runtime_warnings():
         fig, axs = result.plot_moments(scene_background, axis="wavelength")
 
     plt.close(fig)
+
+
+def test__call__two_channel_axes() -> None:
+    """
+    An instrument with more than one channel axis is inverted the same way by
+    the iteration on its operators and by the iteration on its methods.
+    """
+    angle_two = na.ScalarArray(
+        ndarray=angle.ndarray.reshape(2, 2),
+        axes=("channel_a", "channel_b"),
+    )
+    instrument_two = dataclasses.replace(
+        instrument,
+        angle=angle_two,
+        channel=angle_two,
+        axis_channel=("channel_a", "channel_b"),
+    )
+    a = ctis.inverters.MartInverter(
+        instrument=instrument_two,
+        threshold_convergence=1e-2,
+    )
+    images_two = instrument_two.image(scene)
+
+    assert a._arrays(images_two.outputs, None) is not None
+
+    result = a(images_two)
+    expected = a._call_named(images_two, None, False)
+
+    _assert_same(result, expected)
+    assert result.mean_chi_squared.shape == dict(
+        iteration=result.num_iteration,
+        channel_a=2,
+        channel_b=2,
+    )
+
+
+def test__call__without_operators() -> None:
+    """
+    An instrument which does not provide operators is inverted by the
+    iteration on its methods, with the same result.
+    """
+    quantum_yield = na.ScalarArray(np.ones(velocity.size - 1), axes="wavelength")
+    instrument_named = dataclasses.replace(
+        instrument,
+        quantum_yield=quantum_yield * u.electron / u.photon,
+    )
+    a = ctis.inverters.MartInverter(
+        instrument=instrument_named,
+        threshold_convergence=1e-2,
+    )
+
+    assert a._arrays(images.outputs, None) is None
+
+    result = a(images)
+    expected = ctis.inverters.MartInverter(
+        instrument=instrument,
+        threshold_convergence=1e-2,
+    )(images)
+
+    result = dataclasses.replace(result, inverter=expected.inverter)
+    _assert_same(result, expected)
+
+
+@pytest.mark.parametrize(
+    argnames="guess",
+    argvalues=[
+        na.ScalarArray.ones(scene.outputs.shape),
+        na.ScalarArray.ones(scene.outputs.shape) * u.photon / u.s / u.cm**2,
+        na.ScalarArray.ones(dict(scene_x=64, scene_y=64)) * scene.outputs.unit,
+    ],
+    ids=["no unit", "another unit", "no wavelength axis"],
+)
+def test__call__guess_unsupported(guess: na.ScalarArray) -> None:
+    """
+    A guess which cannot be expressed as a plain array is left to the
+    iteration on named arrays, which raises the error it always has.
+    """
+    a = ctis.inverters.MartInverter(
+        instrument=instrument,
+        threshold_convergence=1e-2,
+    )
+
+    assert a._arrays(images.outputs, guess) is None
+
+    with pytest.raises((u.UnitConversionError, ValueError)):
+        a(images, guess=guess)
+
+
+def test__call__images_unsupported() -> None:
+    """
+    Images which cannot be expressed as a plain array are left to the
+    iteration on named arrays, which raises the error it always has.
+    """
+    a = ctis.inverters.MartInverter(
+        instrument=instrument,
+        threshold_convergence=1e-2,
+    )
+    images_bare = images.replace(
+        outputs=na.ScalarArray(
+            ndarray=images.outputs.ndarray.value,
+            axes=images.outputs.axes,
+        ),
+    )
+
+    assert a._arrays(images_bare.outputs, None) is None
+
+    with pytest.raises(u.UnitConversionError):
+        a(images_bare)
