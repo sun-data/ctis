@@ -1,7 +1,7 @@
 CPU and CUDA MART Roadmap
 =========================
 
-*As of 2026-11-12.*
+*As of 2026-11-13.*
 
 Every numerical piece of a fast MART now exists,
 and ``regridding.Regridder`` joins most of them:
@@ -49,8 +49,8 @@ Where things stand
       - Conservative transposes of device weights;
         its per-grid cell volumes give the CSR operator its conservative scaling
     * - ``regridding.Regridder``
-      - `regridding #70 <https://github.com/sun-data/regridding/pull/70>`__, on main
-      - Draft, through one code review, 102 tests of its own, tests green in CI
+      - `regridding #70 <https://github.com/sun-data/regridding/pull/70>`__
+      - Merged, to be released in 3.7.0
       - Every channel and wavelength in one CSR matrix,
         with broadcasting declared by shapes, exact and conservative transposes,
         assembly on the host or GPU that agree bit for bit,
@@ -167,6 +167,23 @@ On the host alone it is 2.1 to 8 times faster than ctis.
   which a batch of frames reads once.
   Four frames at once went through the forward product 2.1 times faster per frame,
   and through the backprojection 2.3 times.
+- **The noise of the sensor changes between spectral lines, hardly within one.**
+  In the model of the flight 1 sensor of ESIS in optika 3.9.0, an e2v CCD97 at -55 °C,
+  an absorbed photon gives 3.75 electrons at He I 584 Å and 2.99 at O V 630 Å,
+  and the variance-to-mean ratio of the signal falls from 2.34 to 2.04:
+  25% and 14% across the lines of Level-4.
+  Across ±200 km/s around one line they change by under 0.4% and by 0.2%.
+  A forward product which keeps the lines apart
+  can therefore give the variance from one ratio for each line.
+  On the tutorial and the PSF tutorial, with their 20 wavelengths split into five lines
+  of different yields, it gave the image and the variance of the reference path
+  to 3e-15 of their peaks.
+  Against an iteration with one yield, on the host,
+  it took 1 to 3% longer on the PSF tutorial, 12 to 16% on the 256 by 256 scene,
+  and about a quarter on the tutorial, as much as a second product does there.
+  A second product, which a ratio for each wavelength needs,
+  took from a quarter longer on the tutorial
+  to between a half and two thirds longer on the PSF tutorial.
 - **Building the weights was the expensive step at production scale.**
   Tempest needed about 1.3 TB of cached CPU weights and 1.2 TB jobs per frame.
   Built on the GPU, the 148M weights of the PSF tutorial and their transpose
@@ -310,16 +327,23 @@ which every gate compares against.
 - **The noise model of the instrument.**
   :class:`~ctis.instruments.IdealInstrument` gets shot plus read noise,
   as on the reference path.
-  :class:`~ctis.instruments.OptikaInstrument` gets the per-wavelength model of its sensor
+  :class:`~ctis.instruments.OptikaInstrument` gets the model of its sensor
   in two steps.
-  In M7 it is the model of tempest,
-  a gain and a variance-to-mean ratio for each channel and wavelength,
-  read from the sensor model of today instead of measured with a noise probe:
-  the variance of an image is a second product
-  with the ratio of each wavelength in its values.
+  In M7 it is a gain for each channel and wavelength,
+  and a variance-to-mean ratio for each channel and spectral line,
+  both read from the sensor model of today instead of measured with a noise probe.
+  The gain folds into the forward values, so the image is that of the reference path.
+  The ratio changes by 14% across the lines of ESIS but by 0.2% within one,
+  so one ratio serves a line, to about 0.1%.
+  The forward matrix keeps the lines apart, as described below,
+  and the variance of an image is the sum of the images of its lines,
+  each times its ratio:
+  one product gives the image and its variance.
+  Tempest keeps a ratio for each wavelength,
+  which needs a second product in every iteration.
   In M9, from optika 4.0, the sensor publishes kernels,
-  and the variance is the variance kernel convolved with the photon image:
-  the same second product, then one convolution.
+  and the variance of a line is its variance kernel convolved with its photon image:
+  still one product, and one more convolution for each line.
   The variance kernel starts as the variance-to-mean ratio times the kernel
   and can become exact later behind the same interface.
 - **Streaming two-pass assembly at ESIS scale.**
@@ -363,7 +387,9 @@ which every gate compares against.
   the exact one for gradient inverters and the scaled one for MART.
   An optical PSF of ESIS, if one is added, goes the same way.
 - **Spectral lines on their own axis, at ESIS scale.**
-  The diffusion kernel depends on wavelength, but the forward product sums over it.
+  The noise of the sensor and, from optika 4.0, its diffusion kernel
+  depend on wavelength, but the forward product sums over it.
+  Both change from one line to the next and hardly within one.
   For the e2v CCD97 of optika #255 with 15 µm pixels,
   the gain falls by a quarter across 580 to 640 Å,
   but the shape of the kernel changes little:
@@ -371,12 +397,15 @@ which every gate compares against.
   which moves 2.3e-4 of the charge,
   and within the ±210 km/s window of one line it moves under 3e-6.
   So the scene of ESIS keeps each line on its own axis,
-  the forward matrix sums only within a line,
-  and one kernel per channel and line blurs each image before the lines are summed.
+  and the forward matrix sums only within a line.
+  What depends on the line is applied to its image before the lines are summed:
+  from M7 its variance-to-mean ratio, which gives the variance without a second product,
+  and from M9 one kernel per channel and line, which blurs it.
   The shape rules of the ``Regridder`` need nothing new for this.
   The gain of each wavelength folds into the forward values,
   and its inverse into the conservative ones,
-  so the GPU matches the per-wavelength model of :mod:`optika` to a few parts in a million.
+  so the image matches the per-wavelength model of :mod:`optika` to a few parts in a million,
+  and its variance to about 0.1%.
   At production this costs about 0.5 GB of row pointers and 0.25 GB of intermediate images.
 - **Not chosen: a single-launch scatter, or a second matrix of transposed weights.**
   The scatter would remove the launch overhead but stay nondeterministic;
@@ -400,8 +429,9 @@ Nine milestones take the fast MART from prototype to the ESIS Level-4 product,
 on the host first and then on a GPU.
 M5 is the first one users can run.
 M1 shipped in regridding 3.5.1.
-M3 is a draft pull request, through one code review and waiting on a human one;
+M3 is merged and waits to be released as regridding 3.7.0;
 M5 and M6 need it.
+The host half of M5 is built on a branch and needs that release.
 M2 and M4 can start now, and the host needs neither.
 
 .. figure:: cuda-mart/milestones.png
@@ -427,7 +457,9 @@ M6 builds the operators from blocks of weights produced on demand,
 since the production weights fit beside the matrices on no GPU,
 and on the host only barely.
 M7 no longer waits for optika 4.0.
-It reads the gain and the noise of each wavelength from the sensor model of today,
+It reads the gain of each wavelength and the noise of each spectral line
+from the sensor model of today,
+keeps the lines on their own axis,
 and its gate is one that ctis can run by itself.
 The comparison of frame 15 with tempest moves to M8,
 since it needs the tied model of ESIS, which only M8 builds.
@@ -466,11 +498,11 @@ At ESIS scale, where it cannot run, the standard is the product of tempest.
         and the conservative transpose equals ``transpose_weights_conservative()``,
         bit for bit; GPU assembly equals host assembly;
         a float32 matrix applied to float32 values returns float32.
-        All four pass in the draft
+        All four pass
       - One launch per product;
         the two products together no slower than cuSPARSE from 17M weights up;
         assembly in about 0.5 s per 145M weights.
-        The draft meets all three
+        It met all three as a draft
     * - M4
       - Device weights match the host weights to 1e-12 in float64,
         compared as dense matrices once the ``-1`` slots are dropped,
@@ -498,10 +530,12 @@ At ESIS scale, where it cannot run, the standard is the product of tempest.
         in under a minute on an 80 GB GPU
     * - M7
       - On a grid of ESIS that fits both, with no lines tied,
-        the fast path gives the images, the noise and the solution
+        the fast path gives the images and, at a fixed iteration count, the solution
         of the reference :class:`~ctis.instruments.OptikaInstrument`
         within 1e-10 in float64,
-        and within the tolerance of M5 in float32
+        and within the tolerance of M5 in float32.
+        Its variance agrees with that of the reference to 2e-3,
+        since it takes one variance-to-mean ratio for each line
       - The weights of one spectral line of ESIS at production
         in under 20 s on the host and under 10 s on a GPU
     * - M8
@@ -612,7 +646,8 @@ The scene is 1139 cells across at 0.75″,
 from the raytrace field of the distortion fit padded by 1.25, as tempest builds it.
 Fewer velocity bins shrink the problem most;
 coarser cells help less, since each one touches more detector pixels.
-Keeping the spectral lines on their own axis, for the blur of the sensor,
+Keeping the spectral lines on their own axis,
+for the noise of the sensor from M7 and its blur from M9,
 adds about 0.75 GB at production.
 
 Regenerate or cache
@@ -727,8 +762,11 @@ The rest are questions to settle before the milestone that needs them.
 - **A** ``device`` **option or a separate inverter (M5).**
   The design assumes the fast path goes inside :class:`~ctis.inverters.MartInverter`,
   on a GPU behind a ``device`` option, rather than in a separate inverter.
-  Whether the fast path on the host replaces the reference path as the default,
-  or sits beside it, is open.
+  On the host this is settled:
+  the fast path is what :class:`~ctis.inverters.MartInverter` runs
+  whenever the instrument provides its matrices,
+  and the reference path serves the instruments which cannot, and the tests.
+  The ``device`` option is still to come.
 - **Regenerate or cache (resolved).**
   Rebuild.
   Since :mod:`named_arrays` 2.20.0 the preparation in :mod:`optika`
@@ -787,14 +825,26 @@ The rest are questions to settle before the milestone that needs them.
   So M4, M5 and M7 compare to a tolerance,
   and a GPU-built Level-4 run will match neither tempest's nor the host's bit for bit:
   M8 needs a tolerance agreed before the run.
-- **The second product of the noise model (M7).**
-  The variance of an image needs a second forward product,
-  with the variance-to-mean ratio of each wavelength in its values.
-  Stored as a second values array on the forward indices, as tempest stores its ratio,
-  that is 8.8 GB at production in float32,
-  beyond the 48.5 GB of `Memory at ESIS scale`_.
-  The ratio is constant for each channel and wavelength,
-  so the product could compute it from the row and column of each entry instead.
+- **The second product of the noise model (resolved).**
+  None is needed.
+  A variance-to-mean ratio for each wavelength needs a second forward product,
+  and tempest stores a second values array for it on the forward indices:
+  8.8 GB at production in float32,
+  beyond the 48.5 GB of `Memory at ESIS scale`_,
+  and a quarter to two thirds more time for each iteration of the benchmark problems.
+  The ratio changes by 0.2% within a spectral line,
+  so with the lines on their own axis one ratio for each channel and line
+  multiplies the image of that line, after the one product.
+  See `Design`_.
+- **How an instrument names its spectral lines (M7).**
+  Keeping the lines apart needs the instrument to say
+  which wavelengths belong to which line.
+  The reference :class:`~ctis.instruments.OptikaInstrument` has one wavelength axis,
+  and so does :class:`~ctis.instruments.IdealInstrument`,
+  where the fast path supports one line,
+  with a quantum yield which does not vary with wavelength.
+  An axis for the lines in the coordinates of the scene, named explicitly,
+  is the leading option, and it is new public API to agree before M7 starts.
 - **Charge diffusion changes Level-4 (M9).**
   From optika 4.0, the noise-free model of a sensor includes charge diffusion,
   so MART will also undo the diffusion blur,
