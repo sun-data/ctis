@@ -1,5 +1,11 @@
 """
 Compiled kernels for the multiplicative algebraic reconstruction technique.
+
+Every array has the frames, the independent sets of images which are
+reconstructed together, along its last axis.
+Each frame is computed on its own, in the same order whatever the number of
+frames, so a frame gives the same result in a batch as it does alone, bit for
+bit.
 """
 
 import numpy as np
@@ -20,13 +26,13 @@ def merit(
     correlation: np.ndarray,
 ) -> None:
     r"""
-    Evaluate, for each channel, the mean :math:`\chi^2` of the predicted
-    images, and Pearson's correlation coefficient between the predicted
-    images and the residual.
+    Evaluate, for each frame and each channel, the mean :math:`\chi^2` of the
+    predicted images, and Pearson's correlation coefficient between the
+    predicted images and the residual.
 
     These are the quantities computed by
     :func:`ctis.inverters.merit.mean_chi_squared` and
-    :func:`ctis.inverters.merit.correlation_residual`, in one pass over the
+    :func:`ctis.inverters.merit.correlation_residual`, in two passes over the
     pixels of each channel.
     The pixels of a channel are summed in order by a single thread, so the
     result does not depend on the number of threads.
@@ -34,56 +40,65 @@ def merit(
     Parameters
     ----------
     observed
-        The measured images, with one row for each channel.
+        The measured images, an array with an axis for the channels, one for
+        the pixels and one for the frames.
     predicted
-        The images predicted by the model, with one row for each channel.
+        The images predicted by the model.
     variance
         The variance of the noise in the predicted images.
         A pixel where it is zero, such as one outside the field of view, is
         left out of the mean :math:`\chi^2`.
     chi_squared
-        An array with an element for each channel, which is overwritten with
-        the mean :math:`\chi^2`.
+        An array with an axis for the frames and one for the channels, which
+        is overwritten with the mean :math:`\chi^2`.
     correlation
-        An array with an element for each channel, which is overwritten with
-        the correlation coefficient.
+        An array with an axis for the frames and one for the channels, which
+        is overwritten with the correlation coefficient.
     """
-    num_channel, num_pixel = observed.shape
+    num_channel, num_pixel, num_frame = observed.shape
 
     for c in numba.prange(num_channel):
-        total = 0.0
-        count = 0
-        mean_predicted = 0.0
-        mean_residual = 0.0
+        total = np.zeros(num_frame)
+        count = np.zeros(num_frame, dtype=np.int64)
+        mean_predicted = np.zeros(num_frame)
+        mean_residual = np.zeros(num_frame)
         for p in range(num_pixel):
-            residual = observed[c, p] - predicted[c, p]
-            if variance[c, p] != 0:
-                total += residual * residual / variance[c, p]
-                count += 1
-            mean_predicted += predicted[c, p]
-            mean_residual += residual
-        mean_predicted /= num_pixel
-        mean_residual /= num_pixel
+            for f in range(num_frame):
+                expected = np.float64(predicted[c, p, f])
+                residual = np.float64(observed[c, p, f]) - expected
+                noise = np.float64(variance[c, p, f])
+                if noise != 0:
+                    total[f] += residual * residual / noise
+                    count[f] += 1
+                mean_predicted[f] += expected
+                mean_residual[f] += residual
+        for f in range(num_frame):
+            mean_predicted[f] /= num_pixel
+            mean_residual[f] /= num_pixel
 
-        covariance = 0.0
-        variance_predicted = 0.0
-        variance_residual = 0.0
+        covariance = np.zeros(num_frame)
+        variance_predicted = np.zeros(num_frame)
+        variance_residual = np.zeros(num_frame)
         for p in range(num_pixel):
-            x = predicted[c, p] - mean_predicted
-            y = observed[c, p] - predicted[c, p] - mean_residual
-            covariance += x * y
-            variance_predicted += x * x
-            variance_residual += y * y
+            for f in range(num_frame):
+                expected = np.float64(predicted[c, p, f])
+                residual = np.float64(observed[c, p, f]) - expected
+                x = expected - mean_predicted[f]
+                y = residual - mean_residual[f]
+                covariance[f] += x * y
+                variance_predicted[f] += x * x
+                variance_residual[f] += y * y
 
-        # a channel with nothing to average has no merit, compiled or not
-        chi_squared[c] = np.nan
-        if count > 0:
-            chi_squared[c] = total / count
+        for f in range(num_frame):
+            # a channel with nothing to average has no merit, compiled or not
+            chi_squared[f, c] = np.nan
+            if count[f] > 0:
+                chi_squared[f, c] = total[f] / count[f]
 
-        correlation[c] = np.nan
-        denominator = np.sqrt(variance_predicted * variance_residual)
-        if denominator > 0:
-            correlation[c] = covariance / denominator
+            correlation[f, c] = np.nan
+            denominator = np.sqrt(variance_predicted[f] * variance_residual[f])
+            if denominator > 0:
+                correlation[f, c] = covariance[f] / denominator
 
 
 @numba.njit(cache=True, parallel=True, error_model="numpy")
@@ -94,10 +109,10 @@ def update(
     gamma: float,
 ) -> None:
     r"""
-    Multiply every voxel of a scene by its correction, the geometric mean
-    over the channels of :math:`(B / B')^\gamma`, where :math:`B` is the
-    backprojection of the observed images and :math:`B'` is the
-    backprojection of the predicted images.
+    Multiply every voxel of the scene of each frame by its correction, the
+    geometric mean over the channels of :math:`(B / B')^\gamma`,
+    where :math:`B` is the backprojection of the observed images and
+    :math:`B'` is the backprojection of the predicted images.
 
     A negative backprojection is treated as zero.
     The correction of a channel which is not finite, such as that of a voxel
@@ -106,31 +121,32 @@ def update(
     Parameters
     ----------
     scene
-        The voxels of the scene, which are overwritten.
+        The scenes, an array with an axis for the voxels and one for the
+        frames, which is overwritten.
     backprojected
-        The backprojection of the observed images, with one row for each
-        channel.
+        The backprojection of the observed images, an array with an axis for
+        the channels, one for the voxels and one for the frames.
     backprojected_new
-        The backprojection of the images predicted from `scene`, with one
-        row for each channel.
+        The backprojection of the images predicted from `scene`.
     gamma
         The exponent applied to the correction of each channel,
         :math:`\gamma`.
     """
-    num_channel, num_voxel = backprojected.shape
+    num_channel, num_voxel, num_frame = backprojected.shape
     power = 1 / num_channel
 
     for v in numba.prange(num_voxel):
-        correction = 1.0
-        for c in range(num_channel):
-            numerator = backprojected[c, v]
-            denominator = backprojected_new[c, v]
-            # a denominator which is zero, negative or not a number gives a
-            # ratio which is not finite
-            if denominator > 0:
-                if numerator < 0:
-                    numerator = 0.0
-                ratio = numerator / denominator
-                if np.isfinite(ratio):
-                    correction *= ratio**gamma
-        scene[v] *= correction**power
+        for f in range(num_frame):
+            correction = 1.0
+            for c in range(num_channel):
+                numerator = np.float64(backprojected[c, v, f])
+                denominator = np.float64(backprojected_new[c, v, f])
+                # a denominator which is zero, negative or not a number gives
+                # a ratio which is not finite
+                if denominator > 0:
+                    if numerator < 0:
+                        numerator = 0.0
+                    ratio = numerator / denominator
+                    if np.isfinite(ratio):
+                        correction *= ratio**gamma
+            scene[v, f] *= correction**power

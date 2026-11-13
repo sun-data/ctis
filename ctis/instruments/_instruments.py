@@ -761,13 +761,15 @@ class IdealInstrument(
             coordinates_output=vertices_sensor,
         )
 
+        # every factor is given one more axis, which the frames are
+        # broadcast along
         return Operators(
             forward=forward,
             backward=backward,
-            scale=scale,
-            scale_backproject=scale_backproject,
-            gain=gain.reshape(gain.shape + (1,) * len(shape_sensor)),
-            variance_read=np.square(read_noise),
+            scale=scale[..., np.newaxis],
+            scale_backproject=scale_backproject[..., np.newaxis],
+            gain=gain.reshape(gain.shape + (1,) * len(shape_sensor) + (1,)),
+            variance_read=np.square(read_noise)[..., np.newaxis],
             shape_channel=shape_channel,
             shape_scene=shape_scene,
             shape_sensor=shape_sensor,

@@ -203,10 +203,15 @@ class AbstractTestAbstractInstrument(
         variance_expected = variance_expected.ndarray_aligned(tuple(shape_images))
         variance_expected = variance_expected.to_value(operators.unit_images**2)
 
-        images, variance = operators.image(scene)
+        # the operators take the frames along a last axis
+        images, variance = operators.image(scene[..., np.newaxis])
 
-        assert images.shape == tuple(shape_images.values())
-        assert variance.shape == tuple(shape_images.values())
+        assert images.shape == tuple(shape_images.values()) + (1,)
+        assert variance.shape == tuple(shape_images.values()) + (1,)
+
+        images = images[..., 0]
+        variance = variance[..., 0]
+
         assert images.sum() > 0
         assert np.allclose(images, nominal, rtol=1e-10, atol=1e-10 * nominal.max())
         assert np.allclose(
@@ -225,16 +230,28 @@ class AbstractTestAbstractInstrument(
         expected = expected.ndarray_aligned(tuple(shape_voxels))
         expected = expected.to_value(operators.unit_scene)
 
-        result = operators.backproject(images)
+        result = operators.backproject(images[..., np.newaxis])
 
-        assert result.shape == tuple(shape_voxels.values())
+        assert result.shape == tuple(shape_voxels.values()) + (1,)
         assert result.sum() > 0
         assert np.allclose(
-            result * operators.scale_backproject,
+            (result * operators.scale_backproject)[..., 0],
             expected,
             rtol=1e-10,
             atol=1e-10 * expected.max(),
         )
+
+        # each frame of several gets the result it would have alone
+        num_frame = 3
+        scenes = rng.uniform(1, 2, size=tuple(shape_scene.values()) + (num_frame,))
+        images, variance = operators.image(scenes)
+        result = operators.backproject(images)
+        for f in range(num_frame):
+            images_f, variance_f = operators.image(scenes[..., f : f + 1])
+            result_f = operators.backproject(images_f)
+            assert np.array_equal(images[..., f : f + 1], images_f)
+            assert np.array_equal(variance[..., f : f + 1], variance_f)
+            assert np.array_equal(result[..., f : f + 1], result_f)
 
     @abc.abstractmethod
     def _with_read_noise(

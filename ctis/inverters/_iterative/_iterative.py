@@ -1,5 +1,6 @@
 from typing import ClassVar
 import dataclasses
+import numpy as np
 import named_arrays as na
 import ctis
 from .. import AbstractInverter, AbstractInversionResult
@@ -106,10 +107,17 @@ class IterativeInversionResult(
     along the :attr:`~AbstractIterativeInverter.axis_iteration` logical axis.
     Otherwise this has only one element along the
     :attr:`~AbstractIterativeInverter.axis_iteration` axis.
+
+    If the observed images had axes for independent frames, this has those
+    axes too, and a frame which stopped before the others keeps its solution
+    for the iterations which follow.
     """
 
-    success: bool = dataclasses.MISSING
-    """A boolean flag indicating whether the inversion was successful."""
+    success: bool | na.AbstractScalar = dataclasses.MISSING
+    """
+    A boolean flag indicating whether the inversion was successful,
+    for each frame if the observed images had axes for independent frames.
+    """
 
     images: na.FunctionArray[
         na.SpectralPositionalVectorArray,
@@ -123,16 +131,27 @@ class IterativeInversionResult(
     message: str = dataclasses.MISSING
     """Any message from the inversion routine concerning the results."""
 
-    num_iteration: int = dataclasses.MISSING
-    """The number of iterations performed by the inverter."""
+    num_iteration: int | na.AbstractScalar = dataclasses.MISSING
+    """
+    The number of iterations performed by the inverter,
+    for each frame if the observed images had axes for independent frames.
+    """
 
     mean_chi_squared: na.ScalarArray = dataclasses.MISSING
-    """The mean chi squared statistic for each iteration."""
+    """
+    The mean chi squared statistic for each iteration.
+
+    A frame which stopped before the others has no value,
+    which is to say :obj:`numpy.nan`, for the iterations which follow.
+    """
 
     correlation_residual: na.ScalarArray = dataclasses.MISSING
     """
     The correlation between the predicted images and the residuals 
     for each iteration.
+
+    A frame which stopped before the others has no value,
+    which is to say :obj:`numpy.nan`, for the iterations which follow.
     """
 
     @property
@@ -144,9 +163,13 @@ class IterativeInversionResult(
 
     @property
     def iteration(self) -> na.ScalarArray:
-        """The iteration value for each iteration."""
+        """
+        The iteration value for each iteration, up to the last iteration of
+        the frame which took the most.
+        """
+        num_iteration = na.as_named_array(self.num_iteration).ndarray
         return na.arange(
             start=0,
-            stop=self.num_iteration,
+            stop=int(np.max(num_iteration)),
             axis=self.inverter.axis_iteration,
         )

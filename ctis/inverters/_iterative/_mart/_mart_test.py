@@ -70,6 +70,19 @@ inverter = ctis.inverters.MartInverter(
 )
 
 
+def _uses_operators(
+    a: ctis.inverters.MartInverter,
+    images: na.FunctionArray[na.SpectralPositionalVectorArray, na.ScalarArray],
+    guess: None | na.ScalarArray = None,
+) -> bool:
+    """
+    Whether an inversion iterates on the operators of the instrument, instead
+    of its `image` and `backproject` methods.
+    """
+    shape_frames = a._shape_frames(images.outputs)
+    return a._arrays(images.outputs, guess, shape_frames) is not None
+
+
 def _assert_same(
     result: ctis.inverters.IterativeInversionResult,
     expected: ctis.inverters.IterativeInversionResult,
@@ -78,8 +91,8 @@ def _assert_same(
     Assert that two inversions took the same path to the same solution, to
     within the rounding of their arithmetic.
     """
-    assert result.num_iteration == expected.num_iteration
-    assert result.success == expected.success
+    assert np.all(result.num_iteration == expected.num_iteration)
+    assert np.all(result.success == expected.success)
     assert result.message == expected.message
 
     for name in ("solutions", "mean_chi_squared", "correlation_residual"):
@@ -97,7 +110,8 @@ def _assert_same(
             a.value,
             b.value,
             rtol=1e-10,
-            atol=1e-10 * np.abs(b.value).max(),
+            atol=1e-10 * np.nanmax(np.abs(b.value)),
+            equal_nan=True,
         )
 
     assert np.all(result.images == expected.images)
@@ -179,7 +193,7 @@ class TestMartInverter(
         used for this instrument, takes the same path to the same solution
         as the iteration on its `image` and `backproject` methods.
         """
-        assert a._arrays(images.outputs, guess) is not None
+        assert _uses_operators(a, images, guess)
 
         guess_original = None if guess is None else guess.copy()
 
@@ -271,7 +285,7 @@ def test__call__two_channel_axes() -> None:
     )
     images_two = instrument_two.image(scene)
 
-    assert a._arrays(images_two.outputs, None) is not None
+    assert _uses_operators(a, images_two)
 
     result = a(images_two)
     expected = a._call_named(images_two, None, False)
@@ -299,7 +313,7 @@ def test__call__without_operators() -> None:
         threshold_convergence=1e-2,
     )
 
-    assert a._arrays(images.outputs, None) is None
+    assert not _uses_operators(a, images)
 
     result = a(images)
     expected = ctis.inverters.MartInverter(
@@ -330,7 +344,7 @@ def test__call__guess_unsupported(guess: na.ScalarArray) -> None:
         threshold_convergence=1e-2,
     )
 
-    assert a._arrays(images.outputs, guess) is None
+    assert not _uses_operators(a, images, guess)
 
     with pytest.raises((u.UnitConversionError, ValueError)):
         a(images, guess=guess)
@@ -352,7 +366,244 @@ def test__call__images_unsupported() -> None:
         ),
     )
 
-    assert a._arrays(images_bare.outputs, None) is None
+    assert not _uses_operators(a, images_bare)
 
     with pytest.raises(u.UnitConversionError):
         a(images_bare)
+
+
+def _images_frames(
+    shape_frames: dict[str, int],
+) -> na.FunctionArray[na.SpectralPositionalVectorArray, na.ScalarArray]:
+    """
+    The images of several frames, each of the scene at a different
+    brightness, so that the frames converge after different numbers of
+    iterations.
+
+    The scene has a background, without which the inversion of every frame
+    stops at its second iteration.
+    """
+    scene_background = scene + scene.max() / 100
+    expected = instrument.image(scene_background, noise=False).outputs
+    values = expected.ndarray.value
+
+    num_frame = int(np.prod(list(shape_frames.values())))
+    rng = np.random.default_rng(0)
+    frames = [rng.poisson(k * values) for k in np.geomspace(0.2, 5, num_frame)]
+    frames = np.stack(frames, axis=~0)
+    frames = frames.reshape(values.shape + tuple(shape_frames.values()))
+
+    return na.FunctionArray(
+        inputs=images.inputs,
+        outputs=na.ScalarArray(
+            ndarray=frames * u.electron,
+            axes=(*expected.axes, *shape_frames),
+        ),
+    )
+
+
+def _assert_frame(
+    result: ctis.inverters.IterativeInversionResult,
+    index: dict[str, int],
+    expected: ctis.inverters.IterativeInversionResult,
+) -> None:
+    """
+    Assert that one frame of an inversion of several frames is the inversion
+    of that frame alone, bit for bit.
+
+    The iterations which follow the last of the frame keep its solution and
+    have no merit.
+    """
+    axis_iteration = result.inverter.axis_iteration
+    num = expected.num_iteration
+
+    assert result.num_iteration[index] == num
+    assert result.success[index] == expected.success
+
+    solutions = result.solutions.outputs[index]
+    solutions_expected = expected.solutions.outputs
+    num_solutions = solutions_expected.shape[axis_iteration]
+
+    assert solutions.unit == solutions_expected.unit
+    assert np.all(
+        solutions[{axis_iteration: slice(num_solutions)}] == solutions_expected
+    )
+    assert np.all(
+        solutions[{axis_iteration: slice(num_solutions, None)}]
+        == solutions_expected[{axis_iteration: ~0}]
+    )
+    assert np.all(result.solution.outputs[index] == expected.solution.outputs)
+
+    for name in ("mean_chi_squared", "correlation_residual"):
+        merit = getattr(result, name)[index]
+        merit_expected = getattr(expected, name)
+        assert np.all(merit[{axis_iteration: slice(num)}] == merit_expected)
+        assert np.all(np.isnan(merit[{axis_iteration: slice(num, None)}]))
+
+
+@pytest.mark.parametrize(
+    argnames="kwargs",
+    argvalues=[
+        dict(),
+        dict(intermediate=True),
+        dict(num_iteration=3),
+        dict(num_iteration=3, intermediate=True),
+    ],
+    ids=["final solutions", "every solution", "too few iterations", "both"],
+)
+@pytest.mark.parametrize(
+    argnames="shape_frames",
+    argvalues=[
+        dict(time=3),
+        dict(time=2, repeat=2),
+    ],
+    ids=["one axis", "two axes"],
+)
+def test__call__frames(kwargs: dict, shape_frames: dict[str, int]) -> None:
+    """
+    Each frame of several is reconstructed as it would be alone, bit for bit,
+    and stops at its own iteration.
+    """
+    a = ctis.inverters.MartInverter(
+        instrument=instrument,
+        threshold_convergence=1e-2,
+        **kwargs,
+    )
+    images_frames = _images_frames(shape_frames)
+
+    assert _uses_operators(a, images_frames)
+
+    result = a(images_frames)
+
+    assert result.solutions.outputs.shape == dict(
+        iteration=result.iteration.size if a.intermediate else 1,
+        **scene.outputs.shape,
+        **shape_frames,
+    )
+    assert result.mean_chi_squared.shape == dict(
+        iteration=result.iteration.size,
+        **shape_frames,
+        channel=4,
+    )
+    assert result.iteration.size == result.num_iteration.max()
+    assert result.num_iteration.shape == shape_frames
+    assert result.success.shape == shape_frames
+    assert np.all(result.images == images_frames)
+
+    for index in na.ndindex(shape_frames):
+        _assert_frame(result, index, a(images_frames[index]))
+
+    if "num_iteration" in kwargs:
+        assert not np.any(result.success)
+        assert np.all(result.num_iteration == a.num_iteration)
+        assert "exceeded" in result.message
+    else:
+        # the frames stop at iterations of their own
+        assert np.all(result.success)
+        assert result.num_iteration.min() < result.num_iteration.max()
+        assert "Achieved" in result.message
+
+
+def test__call__frames_unconverged() -> None:
+    """
+    If only some of the frames converge within the iterations allowed, the
+    others stop at the last, as they would alone.
+    """
+    shape_frames = dict(time=3)
+    images_frames = _images_frames(shape_frames)
+
+    a = ctis.inverters.MartInverter(
+        instrument=instrument,
+        threshold_convergence=1e-2,
+    )
+    num_iteration = a(images_frames).num_iteration
+
+    # as many iterations as the first frame to converge needs, and no more
+    a = dataclasses.replace(a, num_iteration=int(num_iteration.ndarray.min()))
+
+    with pytest.warns(UserWarning, match="exceeded"):
+        result = a(images_frames)
+
+    assert np.any(result.success)
+    assert not np.all(result.success)
+    assert np.all(result.success == (num_iteration == a.num_iteration))
+    assert "exceeded" in result.message
+
+    for index in na.ndindex(shape_frames):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            expected = a(images_frames[index])
+        _assert_frame(result, index, expected)
+
+
+@pytest.mark.parametrize(
+    argnames="guess",
+    argvalues=[
+        na.ScalarArray.ones(scene.outputs.shape) * scene.outputs.unit,
+        na.random.uniform(
+            low=1,
+            high=2,
+            shape_random=dict(time=3) | scene.outputs.shape,
+            seed=0,
+        )
+        * scene.outputs.unit,
+    ],
+    ids=["one guess", "a guess for each frame"],
+)
+def test__call__frames_guess(guess: na.ScalarArray) -> None:
+    """
+    A guess is shared by the frames, unless it has their axes, and is not
+    overwritten.
+    """
+    shape_frames = dict(time=3)
+    images_frames = _images_frames(shape_frames)
+
+    a = ctis.inverters.MartInverter(
+        instrument=instrument,
+        threshold_convergence=1e-2,
+    )
+
+    assert _uses_operators(a, images_frames, guess)
+
+    guess_original = guess.copy()
+
+    result = a(images_frames, guess=guess)
+
+    assert result.solution.outputs.unit == guess.unit
+    assert np.all(guess == guess_original)
+
+    for index in na.ndindex(shape_frames):
+        _assert_frame(result, index, a(images_frames[index], guess=guess[index]))
+
+
+@pytest.mark.parametrize("intermediate", [False, True])
+def test__call__frames_without_operators(intermediate: bool) -> None:
+    """
+    An instrument which does not provide operators has its frames
+    reconstructed one at a time, with the same result.
+    """
+    shape_frames = dict(time=3)
+    images_frames = _images_frames(shape_frames)
+
+    quantum_yield = na.ScalarArray(np.ones(velocity.size - 1), axes="wavelength")
+    instrument_named = dataclasses.replace(
+        instrument,
+        quantum_yield=quantum_yield * u.electron / u.photon,
+    )
+    a = ctis.inverters.MartInverter(
+        instrument=instrument_named,
+        threshold_convergence=1e-2,
+        intermediate=intermediate,
+    )
+
+    assert not _uses_operators(a, images_frames)
+
+    result = a(images_frames)
+    expected = ctis.inverters.MartInverter(
+        instrument=instrument,
+        threshold_convergence=1e-2,
+        intermediate=intermediate,
+    )(images_frames)
+
+    result = dataclasses.replace(result, inverter=expected.inverter)
+    _assert_same(result, expected)

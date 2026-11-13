@@ -6,6 +6,7 @@ from typing import Any
 import dataclasses
 import math
 import numpy as np
+import numba
 import astropy.units as u
 import named_arrays as na
 import regridding
@@ -153,6 +154,43 @@ def regridder(
     )
 
 
+@numba.njit(cache=True, parallel=True)
+def _multiply(
+    scene: np.ndarray,
+    scale: np.ndarray,
+    result: np.ndarray,
+) -> None:
+    """
+    Multiply the scene of each frame by a factor for each channel and each
+    voxel.
+
+    This is one pass of :func:`numpy.multiply`, shared between the threads.
+
+    Parameters
+    ----------
+    scene
+        The scenes, an array with an axis for the wavelengths, two for the
+        positions and one for the frames.
+    scale
+        The factors, an array with an axis for the channels followed by
+        those of a scene, which need not be contiguous: a factor which
+        does not vary along an axis can be broadcast along it.
+    result
+        An array with an axis for the channels followed by those of `scene`,
+        which is overwritten with the products.
+    """
+    num_channel, num_wavelength, num_x, num_y, num_frame = result.shape
+
+    for k in numba.prange(num_channel * num_wavelength):
+        c = k // num_wavelength
+        w = k % num_wavelength
+        for x in range(num_x):
+            for y in range(num_y):
+                factor = scale[c, w, x, y]
+                for f in range(num_frame):
+                    result[c, w, x, y, f] = scene[w, x, y, f] * factor
+
+
 @dataclasses.dataclass(eq=False)
 class Operators:
     """
@@ -168,6 +206,13 @@ class Operators:
     A scene is an array of shape :attr:`shape_scene` in units of
     :attr:`unit_scene`, and the images are an array of shape
     :attr:`shape_images` in units of :attr:`unit_images`.
+
+    Both are followed by one more axis for the frames, the independent sets
+    of images of one instrument which are computed together.
+    The matrices are applied along that axis in a single pass, in which each
+    frame gets the result it would have alone, bit for bit.
+    The frames come last because that is how the matrices store them, so
+    that no array is rearranged on its way in or out.
     """
 
     forward: regridding.Regridder
@@ -186,26 +231,28 @@ class Operators:
     scale: np.ndarray
     """
     The photons leaving each voxel toward each channel for every unit of the
-    scene there, which broadcasts against the channels and the scene.
+    scene there, which broadcasts against the channels, the scene and the
+    frames.
     """
 
     scale_backproject: np.ndarray
     """
     The factor, for each channel and each voxel, between what :meth:`backproject`
     returns and the backprojection of the instrument in units of
-    :attr:`unit_scene`.
+    :attr:`unit_scene`, which broadcasts against the channels, the scene and
+    the frames.
     """
 
     gain: np.ndarray
     """
     The signal measured for each photon landing in a pixel, which broadcasts
-    against the images.
+    against the images and the frames.
     """
 
     variance_read: np.ndarray
     """
     The variance of the read noise, in units of :attr:`unit_images` squared,
-    which broadcasts against the images.
+    which broadcasts against the images and the frames.
     """
 
     shape_channel: dict[str, int]
@@ -226,6 +273,37 @@ class Operators:
     unit_images: u.UnitBase
     """The unit of the images."""
 
+    _scale: np.ndarray = dataclasses.field(init=False, repr=False)
+    """
+    :attr:`scale` as :meth:`image` applies it: a view with one axis for the
+    channels, as many as :attr:`forward` takes, followed by those of a scene.
+    """
+
+    _photons: None | np.ndarray = dataclasses.field(
+        default=None,
+        init=False,
+        repr=False,
+    )
+    """
+    The photons leaving every voxel in the last call of :meth:`image`, kept
+    so that the next call overwrites them instead of allocating them again.
+    """
+
+    def __post_init__(self) -> None:
+
+        num_axis_channel = len(self.shape_channel)
+        shape_channel = self.forward.shape_input[:num_axis_channel]
+        shape_scene = self.forward.shape_input[num_axis_channel:]
+
+        # the axes of the channels are merged before the factor is broadcast
+        # along the scene, so that merging them copies as little as it can
+        scale = self.scale[..., 0]
+        shape_factor = scale.shape[num_axis_channel:]
+        scale = np.broadcast_to(scale, shape_channel + shape_factor)
+        scale = scale.reshape((math.prod(shape_channel),) + shape_factor)
+
+        self._scale = np.broadcast_to(scale, scale.shape[:1] + shape_scene)
+
     @property
     def shape_images(self) -> dict[str, int]:
         """
@@ -241,22 +319,32 @@ class Operators:
 
     def image(self, scene: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """
-        The images expected of a scene, without noise, and the variance of
-        their noise.
+        The images expected of the scene of each frame, without noise, and
+        the variance of their noise.
 
         Parameters
         ----------
         scene
-            A scene, of shape :attr:`shape_scene`.
+            The scenes, of shape :attr:`shape_scene` followed by an axis for
+            the frames.
         """
+        num_frame = scene.shape[~0]
+
         # the photons which leave every voxel, written straight into an
         # array of the shape the matrix takes, which can have a scene for
         # each channel, rather than broadcast to it by the matrix afterward
-        photons = np.empty(self.forward.shape_input)
-        np.multiply(scene, self.scale, out=photons)
+        shape = self.forward.shape_input + (num_frame,)
+        if self._photons is None or self._photons.shape != shape:
+            self._photons = np.empty(shape)
+        photons = self._photons
+        _multiply(
+            scene=scene,
+            scale=self._scale,
+            result=photons.reshape(self._scale.shape + (num_frame,)),
+        )
 
-        photons = self.forward(photons)
-        photons = photons.reshape(tuple(self.shape_images.values()))
+        photons = self._apply(self.forward, photons)
+        photons = photons.reshape(tuple(self.shape_images.values()) + (num_frame,))
         np.maximum(photons, 0, out=photons)
 
         images = photons
@@ -270,8 +358,8 @@ class Operators:
 
     def backproject(self, images: np.ndarray) -> np.ndarray:
         """
-        Spread images evenly over the voxels which could have contributed to
-        them, giving a scene for each channel.
+        Spread the images of each frame evenly over the voxels which could
+        have contributed to them, giving a scene for each channel.
 
         The result is the backprojection of the instrument divided, for each
         channel and each voxel, by :attr:`scale_backproject`.
@@ -281,6 +369,30 @@ class Operators:
         Parameters
         ----------
         images
-            The images, of shape :attr:`shape_images`.
+            The images, of shape :attr:`shape_images` followed by an axis for
+            the frames.
         """
-        return self.backward(images.reshape(self.backward.shape_input))
+        num_frame = images.shape[~0]
+        images = images.reshape(self.backward.shape_input + (num_frame,))
+        return self._apply(self.backward, images)
+
+    @staticmethod
+    def _apply(matrix: regridding.Regridder, values: np.ndarray) -> np.ndarray:
+        """
+        Apply a matrix to values with the frames along their last axis, and
+        return the result with the frames along its last axis.
+
+        The matrix takes the frames along a leading axis, and stores them
+        along the last, so a view of the values goes in, and a view of the
+        result comes out, without either being copied.
+
+        Parameters
+        ----------
+        matrix
+            The matrix to apply.
+        values
+            The values, of the shape the matrix takes followed by an axis
+            for the frames.
+        """
+        result = matrix(np.moveaxis(values, ~0, 0))
+        return np.moveaxis(result, 0, ~0)

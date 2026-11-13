@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Callable
 import pytest
 import numpy as np
 import astropy.units as u
@@ -91,6 +91,32 @@ def test_vertices_unsupported() -> None:
     )
 
     assert _operators.vertices(coordinates, shape=shape, unit=u.m) is None
+
+
+@pytest.mark.parametrize(
+    argnames="multiply",
+    argvalues=[_operators._multiply, _operators._multiply.py_func],
+    ids=["compiled", "python"],
+)
+@pytest.mark.parametrize(
+    argnames="shape_scale",
+    argvalues=[(1, 4, 1, 1), (3, 4, 1, 1), (3, 4, 5, 6)],
+    ids=["for each wavelength", "for each channel", "for each voxel"],
+)
+def test__multiply(multiply: Callable, shape_scale: tuple[int, ...]) -> None:
+    """
+    The kernel multiplies as numpy does, with a factor which is broadcast
+    along the axes it does not vary along.
+    """
+    rng = np.random.default_rng(0)
+    scene = rng.uniform(1, 2, size=(4, 5, 6, 2))
+    scale = rng.uniform(1, 2, size=shape_scale)
+    scale = np.broadcast_to(scale, shape_scale[:1] + (4, 5, 6))
+    result = np.empty(scale.shape + (2,))
+
+    multiply(scene, scale, result)
+
+    assert np.array_equal(result, scene * scale[..., np.newaxis])
 
 
 def _weights() -> tuple[na.AbstractScalarArray, dict[str, int], dict[str, int]]:
