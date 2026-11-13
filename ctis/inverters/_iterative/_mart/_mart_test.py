@@ -1,4 +1,6 @@
 import warnings
+import weakref
+import tracemalloc
 import dataclasses
 import numpy as np
 import matplotlib.pyplot as plt
@@ -6,6 +8,7 @@ import pytest
 import astropy.units as u
 import named_arrays as na
 import ctis
+from ctis.instruments._operators import Operators
 from .._iterative_test import AbstractTestAbstractIterativeInverter
 
 velocity = na.linspace(-500, 500, axis="wavelength", num=21) * u.km / u.s
@@ -79,8 +82,7 @@ def _uses_operators(
     Whether an inversion iterates on the operators of the instrument, instead
     of its `image` and `backproject` methods.
     """
-    shape_frames = a._shape_frames(images.outputs)
-    return a._arrays(images.outputs, guess, shape_frames) is not None
+    return a._arrays(images.outputs, guess) is not None
 
 
 @dataclasses.dataclass
@@ -753,3 +755,251 @@ def test_dtype_without_operators() -> None:
 
     with pytest.raises(ValueError, match="dtype"):
         a(images)
+
+
+def test_dtype_fallback() -> None:
+    """
+    Single precision is refused whenever the iteration cannot run on the
+    operators, and not only when the instrument does not provide them.
+    """
+    a = ctis.inverters.MartInverter(
+        instrument=instrument,
+        dtype=np.float32,
+    )
+    shape_guess = scene.outputs.shape | dict(time=1)
+    guess = na.ScalarArray.ones(shape_guess) * scene.outputs.unit
+
+    assert not _uses_operators(a, images, guess)
+
+    with pytest.raises(ValueError, match="only available on the sparse matrices"):
+        a(images, guess=guess)
+
+
+def _assert_close(a: na.AbstractScalar, b: na.AbstractScalar) -> None:
+    """
+    Assert that two arrays have the same axes, the same unit, and the same
+    values to within the rounding of their arithmetic.
+    """
+    assert a.shape == b.shape
+    a = a.ndarray_aligned(b.axes)
+    b = b.ndarray
+    assert a.unit == b.unit
+    assert np.allclose(
+        a.value,
+        b.value,
+        rtol=1e-10,
+        atol=1e-10 * np.nanmax(np.abs(b.value)),
+        equal_nan=True,
+    )
+
+
+def _instrument_time(num: int) -> ctis.instruments.IdealInstrument:
+    """
+    The instrument with an exposure time for each element of an axis of its
+    own, `time`, each the exposure time of the instrument.
+    """
+    return dataclasses.replace(
+        instrument,
+        timedelta_exposure=na.ScalarArray(np.full(num, 20) * u.s, axes="time"),
+    )
+
+
+def test__call__instrument_axis() -> None:
+    """
+    An axis of the images which the instrument itself varies along is not an
+    axis of frames: the images are inverted along it in one iteration on the
+    methods of the instrument, with the result they have without it.
+    """
+    a = ctis.inverters.MartInverter(
+        instrument=_instrument_time(1),
+        threshold_convergence=1e-2,
+    )
+    images_time = images.replace(outputs=images.outputs.add_axes("time"))
+
+    assert not _uses_operators(a, images_time)
+
+    result = a(images_time)
+    expected = ctis.inverters.MartInverter(
+        instrument=instrument,
+        threshold_convergence=1e-2,
+    )(images)
+
+    assert isinstance(result.num_iteration, int)
+    assert result.num_iteration == expected.num_iteration
+    assert result.success == expected.success
+    assert result.solution.outputs.shape["time"] == 1
+    _assert_close(result.solution.outputs[dict(time=0)], expected.solution.outputs)
+
+
+def test__call__instrument_axis_frames() -> None:
+    """
+    Beside an axis which the instrument itself varies along, the other axes
+    of the images are still those of frames, which are reconstructed one at
+    a time with the axis of the instrument carried along.
+    """
+    shape_frames = dict(repeat=2)
+    images_frames = _images_frames(shape_frames)
+
+    a = ctis.inverters.MartInverter(
+        instrument=_instrument_time(1),
+        threshold_convergence=1e-2,
+    )
+    images_time = images_frames.replace(
+        outputs=images_frames.outputs.add_axes("time"),
+    )
+
+    result = a(images_time)
+    expected = ctis.inverters.MartInverter(
+        instrument=instrument,
+        threshold_convergence=1e-2,
+    )(images_frames)
+
+    assert result.num_iteration.shape == shape_frames
+    assert np.all(result.num_iteration == expected.num_iteration)
+    assert np.all(result.success == expected.success)
+    assert result.solution.outputs.shape["time"] == 1
+    _assert_close(result.solution.outputs[dict(time=0)], expected.solution.outputs)
+
+
+def test__call__instrument_axis_many() -> None:
+    """
+    An instrument which varies along an axis of the images with more than
+    one element is refused before any work, since the iteration on its
+    methods cannot stop its elements one at a time.
+    """
+    instrument_time = _instrument_time(2)
+    images_time = instrument_time.image(scene, noise=False)
+
+    assert images_time.outputs.shape["time"] == 2
+
+    a = ctis.inverters.MartInverter(instrument=instrument_time)
+
+    with pytest.raises(ValueError, match="not those of independent frames"):
+        a(images_time)
+
+
+def test__call__axis_scene() -> None:
+    """
+    Images with an axis named after an axis of the scene are not a stack of
+    frames: they are left to the iteration on the methods of the instrument,
+    which inverts them as it always has.
+    """
+    a = ctis.inverters.MartInverter(
+        instrument=instrument,
+        threshold_convergence=1e-2,
+    )
+    images_wavelength = images.replace(outputs=images.outputs.add_axes("wavelength"))
+
+    assert _uses_operators(a, images)
+    assert not _uses_operators(a, images_wavelength)
+
+    result = a(images_wavelength)
+    expected = a(images)
+
+    assert result.num_iteration == expected.num_iteration
+    assert result.success == expected.success
+    _assert_close(result.solution.outputs, expected.solution.outputs)
+
+
+def test__call__axis_iteration() -> None:
+    """Images with the axis of the iterations of the result are refused."""
+    images_iteration = images.replace(
+        outputs=images.outputs.add_axes(inverter.axis_iteration),
+    )
+
+    with pytest.raises(ValueError, match="the axis of the iterations"):
+        inverter(images_iteration)
+
+
+def test__call__num_iteration_large() -> None:
+    """
+    The memory of an inversion does not grow with the number of iterations
+    it is allowed, only with the number it runs.
+    """
+    a = ctis.inverters.MartInverter(
+        instrument=instrument,
+        threshold_convergence=1e-2,
+        num_iteration=10**6,
+    )
+
+    assert _uses_operators(a, images)
+
+    # the inversion it is compared with also derives the matrix of the
+    # backprojection, if no inversion has yet, which takes memory of its own
+    expected = ctis.inverters.MartInverter(
+        instrument=instrument,
+        threshold_convergence=1e-2,
+    )(images)
+
+    # the merit of a million iterations would take 64 MB
+    tracemalloc.start()
+    result = a(images)
+    _, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+
+    assert peak < 32 * 2**20
+
+    assert result.num_iteration == expected.num_iteration
+    assert result.mean_chi_squared.shape[a.axis_iteration] == result.num_iteration
+    _assert_close(result.mean_chi_squared, expected.mean_chi_squared)
+
+
+@pytest.mark.parametrize("name", ["mean_chi_squared", "correlation_residual"])
+def test__call__merit_replaced(name: str) -> None:
+    """
+    An inverter which replaces a merit function is left to it: the iteration
+    runs on the methods of the instrument, which call the function.
+    """
+
+    def doubled(
+        self: ctis.inverters.MartInverter,
+        *args: na.ScalarArray,
+        **kwargs: na.ScalarArray,
+    ) -> na.ScalarArray:
+        return 2 * getattr(ctis.inverters.MartInverter, name)(self, *args, **kwargs)
+
+    cls = type("Doubled", (ctis.inverters.MartInverter,), {name: doubled})
+
+    a = cls(instrument=instrument, threshold_convergence=1e-2)
+
+    assert not _uses_operators(a, images)
+
+    result = a(images)
+    expected = ctis.inverters.MartInverter(
+        instrument=instrument,
+        threshold_convergence=1e-2,
+    )(images)
+
+    index = {a.axis_iteration: 0}
+
+    _assert_close(getattr(result, name)[index], 2 * getattr(expected, name)[index])
+
+
+def test__call__buffer_released(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    The array which every iteration overwrites with the photons leaving
+    every voxel belongs to the inversion, and nothing keeps it once the
+    inversion has returned.
+    """
+    buffers = []
+    image = Operators.image
+
+    def image_recorded(
+        self: Operators,
+        scene: np.ndarray,
+        buffer: None | np.ndarray = None,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        buffers.append(weakref.ref(buffer))
+        return image(self, scene, buffer=buffer)
+
+    monkeypatch.setattr(Operators, "image", image_recorded)
+
+    a = ctis.inverters.MartInverter(
+        instrument=instrument,
+        threshold_convergence=1e-2,
+    )
+
+    result = a(images)
+
+    assert len(buffers) == result.num_iteration
+    assert all(buffer() is None for buffer in buffers)

@@ -8,7 +8,7 @@ import astropy.units as u
 import astropy.constants
 import named_arrays as na
 import optika
-from ._operators import Operators, aligned, framed, regridder, vertices
+from ._operators import Operators, aligned, framed, frames, regridder, vertices
 
 __all__ = [
     "AbstractInstrument",
@@ -174,6 +174,17 @@ class AbstractInstrument(
         instrument.
         """
 
+    @property
+    def _axis_channel(self) -> tuple[str, ...]:
+        """
+        :attr:`axis_channel` as a tuple of axes, whether it names one axis
+        or several.
+        """
+        axis_channel = self.axis_channel
+        if isinstance(axis_channel, str):
+            axis_channel = (axis_channel,)
+        return tuple(axis_channel)
+
     def _operators(self, dtype: type = np.float64) -> None | Operators:
         """
         This instrument as a pair of sparse matrices which act on plain
@@ -225,12 +236,8 @@ class AbstractLinearInstrument(
 
         shape = self.weights[0].shape
 
-        axis_channel = self.axis_channel
-        if isinstance(axis_channel, str):
-            axis_channel = (axis_channel,)
-
         num_channels = 1
-        for ax in axis_channel:
+        for ax in self._axis_channel:
             num_channels = num_channels * shape[ax]
 
         return num_channels
@@ -287,39 +294,22 @@ class AbstractLinearInstrument(
             )
         )
 
-    def _integrate_wavelength(
-        self,
-        outputs: na.AbstractScalar,
-        coordinates: na.AbstractSpectralPositionalVectorArray,
-    ) -> tuple[na.AbstractScalar, na.AbstractSpectralPositionalVectorArray]:
-        """
-        Integrate an image along the wavelength axis and collapse the
-        wavelength coordinates to the band edges.
-
-        If `outputs` carries an uncertainty (a
-        :class:`~named_arrays.NormalUncertainScalarArray`), the per-wavelength
-        variances are summed in quadrature, which is exact because the noise in
-        each wavelength bin is independent.
-        """
-        axis = self.axis_wavelength
-
-        if isinstance(outputs, na.NormalUncertainScalarArray):
-            nominal = outputs.nominal.sum(axis)
-            width = np.sqrt(np.square(outputs.width).sum(axis))
-            outputs = na.NormalUncertainScalarArray(nominal, width)
-        else:
-            outputs = outputs.sum(axis)
-
-        return outputs, self._collapse_wavelength(coordinates)
-
-    def image(
+    def _image_expected(
         self,
         scene: na.AbstractScalar | na.AbstractFunctionArray,
-        noise: bool = True,
     ) -> na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar]:
-        # this low-level forward model always returns the per-wavelength photons;
-        # integration over wavelength (and any conversion to electrons) is done
-        # by the concrete subclass's `image`.
+        """
+        The photons that a scene sends to every pixel at each wavelength,
+        before they are counted: without noise, and negative wherever the
+        scene makes them so.
+
+        The forward model is linear up to this point.
+
+        Parameters
+        ----------
+        scene
+            The spectral radiance of the observed scene.
+        """
 
         if isinstance(scene, na.AbstractFunctionArray):
             if not np.all(scene.inputs == self.coordinates_scene):
@@ -339,15 +329,30 @@ class AbstractLinearInstrument(
             values_input=values_input,
         )
 
-        values_output = np.maximum(values_output, 0)
+        return na.FunctionArray(
+            inputs=self.coordinates_sensor,
+            outputs=values_output,
+        )
+
+    def image(
+        self,
+        scene: na.AbstractScalar | na.AbstractFunctionArray,
+        noise: bool = True,
+    ) -> na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar]:
+        # this low-level forward model always returns the per-wavelength photons;
+        # integration over wavelength (and any conversion to electrons) is done
+        # by the concrete subclass's `image`.
+
+        result = self._image_expected(scene)
+
+        # the photons counted at a wavelength cannot be negative
+        values_output = np.maximum(result.outputs, 0)
 
         if noise:
             values_output = na.random.poisson(values_output)
 
-        coordinates = self.coordinates_sensor
-
         return na.FunctionArray(
-            inputs=coordinates,
+            inputs=result.inputs,
             outputs=values_output,
         )
 
@@ -422,6 +427,17 @@ class IdealInstrument(
     An instrument cannot be expressed as a pair of matrices if its
     :attr:`quantum_yield` varies with wavelength or across the sensor, or if
     it varies along an axis of its own, such as time.
+    Neither can a subclass which replaces :meth:`image`, :meth:`backproject`
+    or one of the methods they are built from, which is left to its own
+    methods.
+
+    The photons expected in a pixel are kept from being negative once they
+    are summed over wavelength, so the forward model is linear up to the
+    point where the photons are counted, and a scene which is negative
+    somewhere can cancel the light of one wavelength with that of another.
+    The exception is an image with noise which is computed from
+    :attr:`weights`: its photons are drawn for each wavelength, and each
+    wavelength is kept from being negative before it is drawn.
     """
 
     area_effective: u.Quantity | na.AbstractScalar
@@ -546,16 +562,59 @@ class IdealInstrument(
     The logical axes of :attr:`psf` which run along :attr:`axis_sensor_xy`.
     """
 
-    _operators_kept: None | tuple[np.dtype, None | Operators] = dataclasses.field(
-        default=None,
-        init=False,
-        repr=False,
-        compare=False,
+    _operators_kept: None | tuple[np.dtype, tuple, None | Operators] = (
+        dataclasses.field(
+            default=None,
+            init=False,
+            repr=False,
+            compare=False,
+        )
     )
     """
-    The operators of this instrument, with the precision they are in, as
-    :meth:`_operators` last assembled them.
+    The operators of this instrument as :meth:`_operators` last assembled
+    them, with the precision they are in and the fields of this instrument
+    that their factors were computed from.
     """
+
+    @property
+    def _fields_factors(self) -> tuple:
+        """
+        The fields of this instrument which the factors around the matrices
+        of its operators are computed from, and which the matrices do not
+        depend on.
+        """
+        return (
+            self.area_effective,
+            self.timedelta_exposure,
+            self.quantum_yield,
+            self.read_noise,
+        )
+
+    @classmethod
+    def _overridden(cls) -> bool:
+        """
+        Whether this class replaces any of the methods of
+        :class:`IdealInstrument` which its operators stand in for.
+
+        The operators are the forward model, the noise model and the
+        backprojection of :class:`IdealInstrument` itself, so a subclass
+        which defines any of those otherwise does not provide them, and is
+        imaged, backprojected and inverted with its own methods.
+        """
+        names = (
+            "image",
+            "backproject",
+            "_image_expected",
+            "_image_matrices",
+            "_image_weights",
+            "_backproject_matrices",
+            "_backproject_weights",
+            "_shot_noise",
+            "weights_transpose",
+        )
+        return any(
+            getattr(cls, name) is not getattr(IdealInstrument, name) for name in names
+        )
 
     def _shot_noise(self, image: na.ScalarArray) -> na.ScalarArray:
         # photon shot noise, converted back into electrons to match the
@@ -677,18 +736,22 @@ class IdealInstrument(
     def num_channel(self) -> int:
 
         # the channels are counted on the grids that the weights are computed
-        # from, so that counting them does not compute the weights
-        shape = na.shape_broadcasted(
+        # from, so that counting them does not compute the weights.
+        # Only the axes of the channels are compared, since along those of
+        # the sensor the grids hold vertices where a point-spread function
+        # holds cells.
+        arrays = (
             self._coordinates_input.position,
             self._coordinates_output.position,
             self.psf,
         )
 
-        axis_channel = self.axis_channel
-        if isinstance(axis_channel, str):
-            axis_channel = (axis_channel,)
+        shape = dict()
+        for a in arrays:
+            for ax, num in na.shape(a).items():
+                shape[ax] = max(num, shape.get(ax, 1))
 
-        return math.prod(shape[ax] for ax in axis_channel)
+        return math.prod(shape[ax] for ax in self._axis_channel)
 
     def _operators(self, dtype: type = np.float64) -> None | Operators:
         """
@@ -707,6 +770,16 @@ class IdealInstrument(
         as they are by :meth:`image` and :meth:`backproject` if `integrate`
         is :obj:`False`.
 
+        The factors around the matrices follow the effective area, the
+        exposure time, the quantum yield and the read noise of this
+        instrument: if any of those has been assigned since the operators
+        were assembled, the factors are computed again, on the same matrices.
+        The matrices themselves are kept for as long as :attr:`weights` would
+        be.
+
+        A subclass which replaces a method that the operators stand in for
+        does not provide them, see :meth:`_overridden`.
+
         Parameters
         ----------
         dtype
@@ -715,9 +788,24 @@ class IdealInstrument(
         """
         dtype = np.dtype(dtype)
 
+        if self._overridden():
+            return None
+
+        fields = self._fields_factors
+
         kept = self._operators_kept
         if kept is not None and kept[0] == dtype:
-            return kept[1]
+            _, fields_kept, operators = kept
+
+            if all(a is b for a, b in zip(fields, fields_kept)):
+                return operators
+
+            # only the factors depend on those fields, so the matrices,
+            # which are the expensive part, are kept
+            if operators is not None:
+                operators = self._operators_refreshed(operators)
+                self._operators_kept = (dtype, fields, operators)
+                return operators
 
         # matrices kept in another precision are released first, so that the
         # two never have to fit in memory together
@@ -726,51 +814,69 @@ class IdealInstrument(
 
         operators = self._operators_new(dtype)
 
-        self._operators_kept = (dtype, operators)
+        self._operators_kept = (dtype, fields, operators)
 
         return operators
 
-    def _operators_new(self, dtype: np.dtype) -> None | Operators:
+    def _operators_refreshed(self, operators: Operators) -> None | Operators:
         """
-        Assemble the operators of this instrument, see :meth:`_operators`.
+        Operators on the same matrices, with the factors around them computed
+        again from the fields of this instrument, or :obj:`None` if the
+        fields can no longer be expressed as those factors.
 
         Parameters
         ----------
-        dtype
-            The precision of the matrices and of the arrays they act on.
+        operators
+            The operators whose matrices to keep.
         """
-
-        axis_channel = self.axis_channel
-        if isinstance(axis_channel, str):
-            axis_channel = (axis_channel,)
-        axis_wavelength = self.axis_wavelength
-
-        weights = self.weights
-        array, shape_grid_scene, shape_grid_sensor = weights
-
-        # an instrument which varies along any other axis, such as time,
-        # is left to the named arrays
-        if set(array.shape) != {*axis_channel, axis_wavelength}:
+        factors = self._factors(
+            shape_channel=operators.shape_channel,
+            shape_scene=operators.shape_scene,
+            shape_sensor=operators.shape_sensor,
+            dtype=operators.dtype,
+        )
+        if factors is None:
             return None
 
-        shape_channel = {ax: array.shape[ax] for ax in axis_channel}
-        shape_wavelength = {axis_wavelength: array.shape[axis_wavelength]}
-        shape_scene_xy = {
-            ax: shape_grid_scene[ax] for ax in shape_grid_scene if ax not in array.shape
-        }
-        shape_sensor = {
-            ax: shape_grid_sensor[ax]
-            for ax in shape_grid_sensor
-            if ax not in array.shape
-        }
-        shape_scene = shape_wavelength | shape_scene_xy
+        result = dataclasses.replace(operators, **factors)
+
+        # the matrix of the backprojection does not depend on the factors
+        result._backward = operators._backward
+
+        return result
+
+    def _factors(
+        self,
+        shape_channel: dict[str, int],
+        shape_scene: dict[str, int],
+        shape_sensor: dict[str, int],
+        dtype: np.dtype,
+    ) -> None | dict[str, np.ndarray | u.UnitBase]:
+        """
+        The factors around the matrices of the operators of this instrument,
+        and the units of the arrays they act on, as the fields of
+        :class:`~ctis.instruments._operators.Operators` of the same names,
+        or :obj:`None` if the fields of this instrument cannot be expressed
+        as those factors.
+
+        Parameters
+        ----------
+        shape_channel
+            The axes of the channels and their lengths.
+        shape_scene
+            The axes of a scene and their lengths.
+        shape_sensor
+            The two spatial axes of an image and their lengths.
+        dtype
+            The precision of the factors.
+        """
         shape_voxels = shape_channel | shape_scene
         shape_pixels = shape_channel | shape_sensor
 
         exposure = self.area_effective * self.timedelta_exposure
         volume = self._volume_scene
         energy = self._energy_per_photon
-        num_wavelength = self.coordinates_scene.wavelength.shape[axis_wavelength] - 1
+        num_wavelength = shape_scene[self.axis_wavelength]
 
         # the units that `image` and `backproject` give their results in
         unit_images = u.photon * na.unit_normalized(self.quantum_yield)
@@ -795,6 +901,67 @@ class IdealInstrument(
         )
         read_noise = aligned(self.read_noise, shape=shape_pixels, unit=unit_images)
 
+        # a quantum yield which varies with wavelength or across the sensor
+        # cannot be applied after the sum over wavelength, and anything
+        # with other axes or units is left to the named arrays
+        if any(a is None for a in (scale, scale_backproject, gain, read_noise)):
+            return None
+
+        gain = gain.reshape(gain.shape + (1,) * len(shape_sensor))
+        variance_read = np.square(read_noise)
+
+        # every factor is given one more axis, which the frames are
+        # broadcast along, and the precision of the matrices
+        return dict(
+            scale=scale[..., np.newaxis].astype(dtype),
+            scale_backproject=scale_backproject[..., np.newaxis].astype(dtype),
+            gain=gain[..., np.newaxis].astype(dtype),
+            variance_read=variance_read[..., np.newaxis].astype(dtype),
+            unit_scene=unit_scene,
+            unit_images=unit_images,
+        )
+
+    def _operators_new(self, dtype: np.dtype) -> None | Operators:
+        """
+        Assemble the operators of this instrument, see :meth:`_operators`.
+
+        Parameters
+        ----------
+        dtype
+            The precision of the matrices and of the arrays they act on.
+        """
+
+        axis_channel = self._axis_channel
+        axis_wavelength = self.axis_wavelength
+
+        weights = self.weights
+        array, shape_grid_scene, shape_grid_sensor = weights
+
+        # an instrument which varies along any other axis, such as time,
+        # is left to the named arrays
+        if set(array.shape) != {*axis_channel, axis_wavelength}:
+            return None
+
+        shape_channel = {ax: array.shape[ax] for ax in axis_channel}
+        shape_wavelength = {axis_wavelength: array.shape[axis_wavelength]}
+        shape_scene_xy = {
+            ax: shape_grid_scene[ax] for ax in shape_grid_scene if ax not in array.shape
+        }
+        shape_sensor = {
+            ax: shape_grid_sensor[ax]
+            for ax in shape_grid_sensor
+            if ax not in array.shape
+        }
+        shape_scene = shape_wavelength | shape_scene_xy
+        shape_voxels = shape_channel | shape_scene
+
+        factors = self._factors(
+            shape_channel=shape_channel,
+            shape_scene=shape_scene,
+            shape_sensor=shape_sensor,
+            dtype=dtype,
+        )
+
         # the vertices of the two grids that the weights were computed from
         position_scene = self._coordinates_input.position
         position_sensor = self._coordinates_output.position
@@ -814,18 +981,9 @@ class IdealInstrument(
             unit=unit_position,
         )
 
-        # a quantum yield which varies with wavelength or across the sensor
-        # cannot be applied after the sum over wavelength, and anything
-        # with other axes or units is left to the named arrays
-        arrays = (
-            scale,
-            scale_backproject,
-            gain,
-            read_noise,
-            vertices_scene,
-            vertices_sensor,
-        )
-        if any(a is None for a in arrays):
+        # an instrument whose factors or whose grids cannot be expressed as
+        # plain arrays is left to the named arrays
+        if any(a is None for a in (factors, vertices_scene, vertices_sensor)):
             return None
 
         # the matrix takes a scene for each channel, rather than one shared
@@ -845,24 +1003,14 @@ class IdealInstrument(
         vars(self).pop("weights", None)
         vars(self).pop("weights_transpose", None)
 
-        gain = gain.reshape(gain.shape + (1,) * len(shape_sensor))
-        variance_read = np.square(read_noise)
-
-        # every factor is given one more axis, which the frames are
-        # broadcast along, and the precision of the matrices
         return Operators(
             forward=forward,
             vertices_scene=vertices_scene,
             vertices_sensor=vertices_sensor,
-            scale=scale[..., np.newaxis].astype(dtype),
-            scale_backproject=scale_backproject[..., np.newaxis].astype(dtype),
-            gain=gain[..., np.newaxis].astype(dtype),
-            variance_read=variance_read[..., np.newaxis].astype(dtype),
             shape_channel=shape_channel,
             shape_scene=shape_scene,
             shape_sensor=shape_sensor,
-            unit_scene=unit_scene,
-            unit_images=unit_images,
+            **factors,
         )
 
     def image(
@@ -938,11 +1086,12 @@ class IdealInstrument(
 
         # every other axis of the scene is an axis of the frames, unless it
         # is one of those of the images, which the named arrays are left to
-        shape = na.shape(scene)
-        shape_frames = {
-            ax: shape[ax] for ax in shape if ax not in operators.shape_scene
-        }
-        if not shape_frames.keys().isdisjoint(shape_images):
+        shape_frames = frames(
+            shape=na.shape(scene),
+            shape_own=operators.shape_scene,
+            shape_other=shape_images,
+        )
+        if shape_frames is None:
             return None
 
         values = framed(
@@ -1001,6 +1150,15 @@ class IdealInstrument(
         This is the image of any instrument and any scene, and the only one
         which keeps the wavelengths separate.
 
+        The photons of a pixel are kept from being negative where they are
+        counted: once they are summed over wavelength, if the image is
+        integrated along it, as :meth:`_image_matrices` does, and for each
+        wavelength otherwise.
+        With noise, the photons of each wavelength are drawn on their own,
+        and a draw needs an expectation which is not negative, so there each
+        wavelength is kept from being negative before the sum.
+        The difference only shows for a scene which is negative somewhere.
+
         Parameters
         ----------
         scene
@@ -1016,12 +1174,17 @@ class IdealInstrument(
 
         scene = scene * self.area_effective * self.timedelta_exposure
 
+        axis = self.axis_wavelength
+
         # keep the wavelength axis so the uncertainty can be computed for each
         # wavelength before integrating.
-        result = super().image(
-            scene=scene,
-            noise=noise,
-        )
+        if integrate and not noise:
+            result = self._image_expected(scene)
+        else:
+            result = super().image(
+                scene=scene,
+                noise=noise,
+            )
 
         # convert the measured photons into electrons
         electrons = result.outputs * self.quantum_yield
@@ -1030,27 +1193,42 @@ class IdealInstrument(
         if uncertainty:
             # the shot-noise width uses the *expected* electrons; recompute the
             # noiseless image when `noise` replaced them with a realization.
-            if noise:
+            if not noise:
+                expected = electrons
+            elif integrate:
+                expected = self._image_expected(scene).outputs * self.quantum_yield
+            else:
                 expected = (
                     super().image(scene=scene, noise=False).outputs * self.quantum_yield
                 )
+
+            if integrate:
+                # the variance of each wavelength is given the sign of the
+                # electrons expected there, so that the variances are summed
+                # the way the electrons are, and kept from being negative
+                # afterward
+                variance = np.square(self._shot_noise(np.abs(expected)))
+                variance = (np.sign(expected) * variance).sum(axis)
+                variance = np.maximum(variance, 0)
+
+                # add read noise once, at the integrated readout
+                width = np.sqrt(variance + np.square(self.read_noise))
             else:
-                expected = electrons
-            width = self._shot_noise(expected)
-            electrons = na.NormalUncertainScalarArray(nominal=electrons, width=width)
+                width = self._shot_noise(expected)
 
         if integrate:
-            electrons, coordinates = self._integrate_wavelength(electrons, coordinates)
+            electrons = electrons.sum(axis)
+            coordinates = self._collapse_wavelength(coordinates)
 
-            # add read noise once, at the integrated readout
-            if isinstance(electrons, na.NormalUncertainScalarArray):
-                nominal = electrons.nominal
-                width = np.sqrt(np.square(electrons.width) + np.square(self.read_noise))
-                if noise:
-                    nominal = na.random.normal(loc=nominal, scale=self.read_noise)
-                electrons = na.NormalUncertainScalarArray(nominal=nominal, width=width)
-            elif noise:
+            if noise:
+                # add read noise once, at the integrated readout
                 electrons = na.random.normal(loc=electrons, scale=self.read_noise)
+            else:
+                # the electrons counted in a pixel cannot be negative
+                electrons = np.maximum(electrons, 0)
+
+        if uncertainty:
+            electrons = na.NormalUncertainScalarArray(nominal=electrons, width=width)
 
         return na.FunctionArray(
             inputs=coordinates,
@@ -1133,11 +1311,12 @@ class IdealInstrument(
 
         # every other axis of the image is an axis of the frames, unless it
         # is one of those of the scene, which the named arrays are left to
-        shape = na.shape(image)
-        shape_frames = {
-            ax: shape[ax] for ax in shape if ax not in operators.shape_images
-        }
-        if not shape_frames.keys().isdisjoint(shape_voxels):
+        shape_frames = frames(
+            shape=na.shape(image),
+            shape_own=operators.shape_images,
+            shape_other=shape_voxels,
+        )
+        if shape_frames is None:
             return None
 
         values = framed(

@@ -15,6 +15,7 @@ __all__ = [
     "Operators",
     "aligned",
     "framed",
+    "frames",
     "regridder",
     "vertices",
 ]
@@ -24,6 +25,7 @@ def aligned(
     a: Any,
     shape: dict[str, int],
     unit: u.UnitBase,
+    dtype: type = np.float64,
 ) -> None | np.ndarray:
     """
     The values of a named array as a plain array which broadcasts against
@@ -31,6 +33,8 @@ def aligned(
 
     The result has the axes of `shape`, in order, each with the length it has
     in `a`, or a length of one if `a` does not vary along it.
+    It shares the memory of `a` if `a` is already in `unit` and in `dtype`,
+    so it is not to be overwritten.
 
     It is :obj:`None` if `a` cannot be expressed this way: if it is not an
     array of scalars, if it has an axis which `shape` does not have or one of
@@ -46,6 +50,8 @@ def aligned(
         The axes of the result and the lengths `a` can have along them.
     unit
         The unit of the result.
+    dtype
+        The precision of the result.
     """
     a = na.as_named_array(a)
 
@@ -57,12 +63,17 @@ def aligned(
     if any(ax not in shape or n not in (1, shape[ax]) for ax, n in a.shape.items()):
         return None
 
+    # a view of the values, where the unit and the precision allow one
+    result = a.ndarray_aligned(tuple(shape))
+    if not isinstance(result, u.Quantity):
+        result = result << u.dimensionless_unscaled
+
     try:
-        result = u.Quantity(a.ndarray_aligned(tuple(shape))).to_value(unit)
+        result = result.to_value(unit)
     except u.UnitConversionError:
         return None
 
-    return np.asarray(result, dtype=float)
+    return np.asarray(result, dtype=dtype)
 
 
 def framed(
@@ -95,7 +106,7 @@ def framed(
     dtype
         The precision of the result.
     """
-    result = aligned(a, shape=shape | shape_frames, unit=unit)
+    result = aligned(a, shape=shape | shape_frames, unit=unit, dtype=dtype)
     if result is None:
         return None
 
@@ -104,6 +115,39 @@ def framed(
     result = np.ascontiguousarray(result, dtype=dtype)
 
     return result.reshape(shape_result + (math.prod(shape_frames.values()),))
+
+
+def frames(
+    shape: dict[str, int],
+    shape_own: dict[str, int],
+    shape_other: dict[str, int],
+) -> None | dict[str, int]:
+    """
+    The axes of the frames of a scene or of images, and their lengths: every
+    axis of the array beyond its own.
+
+    It is :obj:`None` if one of them is an axis of the other kind of array,
+    since a scene with an axis of the images, or images with an axis of a
+    scene, are not a stack of frames.
+    The caller is expected to fall back on the named arrays themselves.
+
+    Parameters
+    ----------
+    shape
+        The axes of the array and their lengths.
+    shape_own
+        The axes that one frame of the array has: those of a scene, or those
+        of the images.
+    shape_other
+        The axes of the other kind of array, which no axis of the frames can
+        be named after.
+    """
+    result = {ax: num for ax, num in shape.items() if ax not in shape_own}
+
+    if not result.keys().isdisjoint(shape_other):
+        return None
+
+    return result
 
 
 def vertices(
@@ -340,16 +384,6 @@ class Operators:
     channels, as many as :attr:`forward` takes, followed by those of a scene.
     """
 
-    _photons: None | np.ndarray = dataclasses.field(
-        default=None,
-        init=False,
-        repr=False,
-    )
-    """
-    The photons leaving every voxel in the last call of :meth:`image`, kept
-    so that the next call overwrites them instead of allocating them again.
-    """
-
     _backward: None | regridding.Regridder = dataclasses.field(
         default=None,
         init=False,
@@ -411,10 +445,18 @@ class Operators:
         """
         return np.dtype(self.forward.data.dtype)
 
-    def photons(self, scene: np.ndarray, keep: bool = False) -> np.ndarray:
+    def photons(
+        self,
+        scene: np.ndarray,
+        buffer: None | np.ndarray = None,
+    ) -> np.ndarray:
         """
         The photons expected in every pixel of the images of the scene of
         each frame, summed over wavelength, without noise.
+
+        The photons are summed over wavelength before those of a pixel are
+        kept from being negative, so that the forward model is linear up to
+        the point where the photons are counted.
 
         The result is a new array of shape :attr:`shape_images` followed by
         an axis for the frames, which the caller is free to overwrite.
@@ -424,50 +466,71 @@ class Operators:
         scene
             The scenes, of shape :attr:`shape_scene` followed by an axis for
             the frames.
-        keep
-            Whether to keep the photons leaving every voxel, an array the
-            size of a scene for each channel, so that the next call with
-            scenes of the same shape overwrites it instead of allocating it
-            again, which an iteration is faster for.
+        buffer
+            An array to overwrite with the photons leaving every voxel
+            toward each channel: a contiguous array of the shape that
+            :attr:`forward` takes followed by an axis for the frames, in the
+            precision of the matrices.
+            An iteration gives every call the same one, which is faster than
+            allocating it again.
+            If :obj:`None`, a new array is allocated.
         """
+        shape_scene = tuple(self.shape_scene.values())
+        if scene.shape[:~0] != shape_scene:
+            raise ValueError(
+                f"the scenes should have a shape of {shape_scene} followed by "
+                f"an axis for the frames, but their shape is {scene.shape}"
+            )
+
         num_frame = scene.shape[~0]
 
         # the photons which leave every voxel, written straight into an
         # array of the shape the matrix takes, which can have a scene for
         # each channel, rather than broadcast to it by the matrix afterward
         shape = self.forward.shape_input + (num_frame,)
-        photons = self._photons
-        if photons is None or photons.shape != shape:
-            photons = np.empty(shape, dtype=self.dtype)
-            if keep:
-                self._photons = photons
+        if buffer is None:
+            buffer = np.empty(shape, dtype=self.dtype)
+        elif (
+            buffer.shape != shape
+            or buffer.dtype != self.dtype
+            or not buffer.flags.c_contiguous
+        ):
+            raise ValueError(
+                f"the buffer should be a contiguous array of shape {shape} "
+                f"and type {self.dtype}, but it is one of shape {buffer.shape} "
+                f"and type {buffer.dtype}"
+            )
         _multiply(
             scene=scene,
             scale=self._scale,
-            result=photons.reshape(self._scale.shape + (num_frame,)),
+            result=buffer.reshape(self._scale.shape + (num_frame,)),
         )
 
-        photons = self._apply(self.forward, photons)
+        photons = self._apply(self.forward, buffer)
         photons = photons.reshape(tuple(self.shape_images.values()) + (num_frame,))
         np.maximum(photons, 0, out=photons)
 
         return photons
 
-    def image(self, scene: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    def image(
+        self,
+        scene: np.ndarray,
+        buffer: None | np.ndarray = None,
+    ) -> tuple[np.ndarray, np.ndarray]:
         """
         The images expected of the scene of each frame, without noise, and
         the variance of their noise.
-
-        The photons leaving every voxel are kept for the next call, see
-        :meth:`photons`.
 
         Parameters
         ----------
         scene
             The scenes, of shape :attr:`shape_scene` followed by an axis for
             the frames.
+        buffer
+            An array to overwrite with the photons leaving every voxel, see
+            :meth:`photons`.
         """
-        images = self.photons(scene, keep=True)
+        images = self.photons(scene, buffer=buffer)
         images *= self.gain
 
         # the variance of the shot noise of the photons, in units of the images
@@ -492,6 +555,8 @@ class Operators:
             The images, of shape :attr:`shape_images` followed by an axis for
             the frames.
         """
+        # images of another size cannot be given the shape the matrix takes,
+        # so they raise an error here
         num_frame = images.shape[~0]
         images = images.reshape(self.backward.shape_input + (num_frame,))
         return self._apply(self.backward, images)

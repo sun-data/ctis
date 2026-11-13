@@ -659,9 +659,9 @@ class TestIdealInstrument(
         a: ctis.instruments.IdealInstrument,
     ) -> None:
         """
-        The photons leaving every voxel are only kept if that is asked for,
-        as it is by the images of an iteration, and the array which is kept
-        is overwritten by every call with scenes of its shape.
+        The photons leaving every voxel are written into the buffer that a
+        call is given, which gives the photons that a call without one does,
+        and the operators keep no array of their own between calls.
         """
         a = dataclasses.replace(a)
         operators = a._operators()
@@ -671,28 +671,51 @@ class TestIdealInstrument(
 
         photons = operators.photons(scene)
 
-        assert operators._photons is None
+        buffer = np.zeros(operators.forward.shape_input + (2,))
+        photons_buffer = operators.photons(scene, buffer=buffer)
 
-        images, variance = operators.image(scene)
-        kept = operators._photons
+        assert np.array_equal(photons_buffer, photons)
+        assert np.all(buffer.reshape(operators._scale.shape + (2,)) > 0)
 
-        assert kept is not None
+        images, variance = operators.image(scene, buffer=buffer)
+
         assert np.array_equal(images, photons * operators.gain)
+        assert not any(
+            isinstance(value, np.ndarray) and value.size == buffer.size
+            for value in vars(operators).values()
+        )
 
-        photons_kept = operators.photons(scene)
+        # a buffer of another shape, of another precision or which is not
+        # contiguous would be read or written out of step
+        for wrong in (
+            np.zeros(operators.forward.shape_input + (1,)),
+            buffer.astype(np.float32),
+            np.zeros(operators.forward.shape_input + (4,))[..., ::2],
+        ):
+            with pytest.raises(ValueError, match="the buffer should be"):
+                operators.photons(scene, buffer=wrong)
 
-        assert operators._photons is kept
-        assert np.array_equal(photons_kept, photons)
+    def test__operators_shape(
+        self,
+        a: ctis.instruments.IdealInstrument,
+    ) -> None:
+        """
+        The operators refuse scenes and images of the wrong shape, which
+        their compiled code would otherwise read out of bounds.
+        """
+        operators = a._operators()
 
-        # scenes of another shape replace the array only if it is to be kept
-        scene = np.ascontiguousarray(scene[..., :1])
-        operators.photons(scene)
+        shape_scene = tuple(operators.shape_scene.values())
+        shape_images = tuple(operators.shape_images.values())
 
-        assert operators._photons is kept
+        with pytest.raises(ValueError, match="the scenes should have a shape of"):
+            operators.photons(np.ones(shape_scene[1:] + (1,)))
 
-        operators.image(scene)
+        with pytest.raises(ValueError, match="the scenes should have a shape of"):
+            operators.image(np.ones(shape_scene))
 
-        assert operators._photons is not kept
+        with pytest.raises(ValueError, match="cannot reshape array"):
+            operators.backproject(np.ones(shape_images[1:] + (1,)))
 
     @pytest.mark.parametrize(
         argnames="shape_frames",
@@ -994,6 +1017,216 @@ class TestIdealInstrument(
         assert a._operators(np.float32).dtype == np.float32
         assert released == [True]
 
+    @pytest.mark.parametrize(
+        argnames="name,value",
+        argvalues=[
+            ("area_effective", 3 * u.cm**2),
+            ("timedelta_exposure", 40 * u.s),
+            ("quantum_yield", 2.5 * u.electron / u.photon),
+            ("read_noise", 4 * u.electron),
+        ],
+        ids=["effective area", "exposure time", "quantum yield", "read noise"],
+    )
+    def test__operators_assigned(
+        self,
+        a: ctis.instruments.IdealInstrument,
+        name: str,
+        value: u.Quantity,
+    ) -> None:
+        """
+        A field which is assigned after the operators were assembled takes
+        effect: the factors around the matrices are computed again, on the
+        same matrices, and the images and the backprojections are those of
+        an instrument which had the value from the start.
+        """
+        a = dataclasses.replace(a)
+        scene = _scene_frames(a, shape_frames=dict())
+
+        operators = a._operators()
+        a.backproject(a.image(scene, noise=False))
+        backward = operators._backward
+
+        assert backward is not None
+        assert a._operators() is operators
+
+        setattr(a, name, value)
+
+        operators_new = a._operators()
+
+        assert operators_new is not operators
+        assert operators_new.forward is operators.forward
+        assert operators_new._backward is backward
+        assert a._operators() is operators_new
+        assert "weights" not in vars(a)
+
+        # the weights of an instrument which never had another value
+        expected = dataclasses.replace(a)
+        kwargs = dict(noise=False, uncertainty=True)
+
+        image = a.image(scene, **kwargs).outputs
+        image_expected = expected._image_weights(scene, integrate=True, **kwargs)
+        image_expected = image_expected.outputs
+
+        assert a._operators() is operators_new
+        _assert_close(image.nominal, image_expected.nominal)
+        _assert_close(image.width, image_expected.width)
+
+        _assert_close(
+            a.backproject(image.nominal).outputs,
+            expected._backproject_weights(image.nominal, integrate=True).outputs,
+        )
+
+    def test__operators_assigned_unsupported(
+        self,
+        a: ctis.instruments.IdealInstrument,
+    ) -> None:
+        """
+        An instrument stops providing its operators once a field is assigned
+        a value which they cannot express, and provides them again once it
+        is assigned one which they can.
+        """
+        a = dataclasses.replace(a)
+        quantum_yield = a.quantum_yield
+
+        assert a._operators() is not None
+
+        a.quantum_yield = (
+            na.ScalarArray(np.ones(20), axes="wavelength") * u.electron / u.photon
+        )
+
+        assert a._operators() is None
+        assert a._operators() is None
+
+        a.quantum_yield = quantum_yield
+
+        assert a._operators() is not None
+
+    def test__operators_subclass(
+        self,
+        a: ctis.instruments.IdealInstrument,
+    ) -> None:
+        """
+        A subclass which replaces a method that the operators stand in for
+        does not provide them, so that it is imaged and inverted with its own
+        methods, and a subclass which replaces none of them still does.
+        """
+
+        @dataclasses.dataclass
+        class Dimmed(ctis.instruments.IdealInstrument):
+            """An ideal instrument which measures half of the signal."""
+
+            def image(
+                self,
+                scene: na.AbstractScalar | na.AbstractFunctionArray,
+                integrate: bool = True,
+                noise: bool = True,
+                uncertainty: bool = False,
+            ) -> na.FunctionArray:
+                result = super().image(
+                    scene=scene,
+                    integrate=integrate,
+                    noise=noise,
+                    uncertainty=uncertainty,
+                )
+                return result.replace(outputs=result.outputs / 2)
+
+        @dataclasses.dataclass
+        class Renamed(ctis.instruments.IdealInstrument):
+            """An ideal instrument by another name."""
+
+        kwargs = {
+            field.name: getattr(a, field.name)
+            for field in dataclasses.fields(a)
+            if field.init
+        }
+        scene = _scene(a)
+        image = a.image(scene, noise=False).outputs
+
+        dimmed = Dimmed(**kwargs)
+
+        assert Dimmed._overridden()
+        assert dimmed._operators() is None
+        assert dimmed._operators(np.float32) is None
+        _assert_close(dimmed.image(scene, noise=False).outputs, image / 2)
+
+        renamed = Renamed(**kwargs)
+
+        assert not Renamed._overridden()
+        assert renamed._operators() is not None
+        _assert_close(renamed.image(scene, noise=False).outputs, image)
+
+    def test_num_channel_psf_sensor(
+        self,
+        a: ctis.instruments.IdealInstrument,
+    ) -> None:
+        """
+        The channels are counted, without computing the weights, on an
+        instrument whose point-spread function varies across the sensor,
+        along which the grids hold vertices where it holds cells.
+        """
+        axis_x, axis_y = a.axis_psf_xy
+        shape_sensor = a._operators().shape_sensor
+
+        psf = na.random.uniform(
+            low=0,
+            high=1,
+            shape_random=shape_sensor | {axis_x: 3, axis_y: 3},
+            seed=0,
+        )
+        a = dataclasses.replace(a, psf=psf / psf.sum((axis_x, axis_y)))
+
+        num_channel = a.num_channel
+
+        assert "weights" not in vars(a)
+        assert num_channel == a.weights[0].shape[a.axis_channel]
+        assert ctis.inverters.MartInverter(instrument=a).gamma == 2 / num_channel
+
+    def test_image_negative(
+        self,
+        a: ctis.instruments.IdealInstrument,
+    ) -> None:
+        """
+        The photons of a pixel are kept from being negative once they are
+        summed over wavelength, with the matrices and without them, so a
+        scene which is negative at some wavelengths has the same image and
+        the same uncertainty either way, which are not those of each
+        wavelength kept from being negative on its own.
+        """
+        axis = a.axis_wavelength
+        num_wavelength = a._operators().shape_scene[axis]
+
+        sign = np.where(np.arange(num_wavelength) < num_wavelength // 2, -3.0, 1.0)
+        scene = _scene(a).outputs * na.ScalarArray(sign, axes=axis)
+
+        kwargs = dict(noise=False, uncertainty=True)
+
+        assert a._image_matrices(scene, **kwargs) is not None
+
+        result = a.image(scene, **kwargs).outputs
+        expected = a._image_weights(scene, integrate=True, **kwargs).outputs
+
+        assert np.all(result.nominal >= 0)
+        assert result.nominal.sum() > 0
+        _assert_close(result.nominal, expected.nominal)
+        _assert_close(result.width, expected.width)
+
+        # without the sum, every wavelength is an image of its own
+        separate = a.image(scene, integrate=False, noise=False).outputs
+
+        assert np.all(separate >= 0)
+
+        difference = np.abs(separate.sum(axis) - expected.nominal)
+
+        assert difference.max() > 0.1 * expected.nominal.max()
+
+        # with noise, each wavelength is drawn on its own, from an
+        # expectation which is not negative, and the width is unchanged
+        noisy = a._image_weights(scene, integrate=True, noise=True, uncertainty=True)
+
+        assert np.all(np.isfinite(na.value(noisy.outputs.nominal)))
+        assert np.all(noisy.outputs.nominal >= 0)
+        _assert_close(noisy.outputs.width, expected.width)
+
     def test_psf(
         self,
         a: ctis.instruments.IdealInstrument,
@@ -1023,6 +1256,49 @@ class TestIdealInstrument(
 
         assert actual.sum() > 0
         assert np.allclose(actual, expected, rtol=1e-10, atol=1e-10 * expected.max())
+
+
+def test_num_channel_axes_shared() -> None:
+    """
+    The channels are counted, without computing the weights, on an
+    instrument whose scene and sensor have axes of the same names, along
+    which their grids have different lengths.
+    """
+    axis_xy = ("x", "y")
+
+    scene = na.DopplerPositionalVectorArray.from_velocity(
+        velocity=velocity,
+        wavelength_rest=wavelength_rest,
+        position=na.Cartesian2dVectorLinearSpace(
+            start=-20 * u.arcsec,
+            stop=20 * u.arcsec,
+            axis=na.Cartesian2dVectorArray(*axis_xy),
+            num=na.Cartesian2dVectorArray(24, 24),
+        ),
+    )
+    sensor = na.DopplerPositionalVectorArray.from_velocity(
+        velocity=velocity,
+        wavelength_rest=wavelength_rest,
+        position=na.Cartesian2dVectorArray(
+            x=na.arange(0, 49, axis="x") * u.pix,
+            y=na.arange(0, 33, axis="y") * u.pix,
+        ),
+    )
+    scene.wavelength = scene.wavelength.to(**AA)
+    sensor.wavelength = sensor.wavelength.to(**AA)
+
+    a = dataclasses.replace(
+        instrument_ideal,
+        coordinates_scene=scene,
+        coordinates_sensor=sensor,
+        axis_scene_xy=axis_xy,
+        axis_sensor_xy=axis_xy,
+    )
+
+    num_channel = a.num_channel
+
+    assert "weights" not in vars(a)
+    assert num_channel == a.weights[0].shape[a.axis_channel]
 
 
 def _instrument_optika() -> ctis.instruments.OptikaInstrument:

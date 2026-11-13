@@ -5,7 +5,7 @@ import numpy as np
 import astropy.units as u
 import named_arrays as na
 import ctis
-from ctis.instruments._operators import Operators, aligned, framed
+from ctis.instruments._operators import Operators, aligned, framed, frames
 from .. import AbstractIterativeInverter, IterativeInversionResult
 from . import _kernels
 
@@ -31,6 +31,9 @@ class MartInverter(
     and :meth:`~ctis.instruments.AbstractInstrument.backproject` methods of
     the instrument, which is slower.
     The two give the same result.
+    A subclass of this inverter which replaces :meth:`mean_chi_squared` or
+    :meth:`correlation_residual` runs on the methods of the instrument too,
+    since the iteration on the matrices computes the merit itself.
 
     The images can have axes beyond those of the channels and the sensor,
     which are those of independent frames, sets of images of the same
@@ -40,6 +43,12 @@ class MartInverter(
     the frames, see :class:`~ctis.inverters.IterativeInversionResult`.
     On the matrices, the frames are iterated on together and share each pass
     over them, which takes less time for each frame than a pass of its own.
+
+    An axis which the instrument itself varies along, such as a time that
+    its exposure varies along, is not an axis of frames, and neither is an
+    axis named after one of the scene.
+    The images are inverted along those in one iteration, which can only
+    stop all at once, so they can have no more than one element along them.
     """
 
     instrument: ctis.instruments.AbstractInstrument = dataclasses.MISSING
@@ -78,8 +87,9 @@ class MartInverter(
     Every sum is still accumulated in double precision, and the merit of
     each iteration is given in double precision.
 
-    Single precision is only available for an instrument which can be
-    expressed as a pair of sparse matrices.
+    Single precision is only available where the iteration runs on the
+    sparse matrices of the instrument, and an inversion which cannot run on
+    them raises an error rather than running in double precision.
     """
 
     def __post_init__(self):
@@ -113,6 +123,9 @@ class MartInverter(
             independent frames, sets of images of the same instrument.
             The scene of each frame is reconstructed on its own, and stops
             at its own iteration, exactly as it would alone.
+            An axis which the instrument itself varies along, or one named
+            after an axis of the scene, is not an axis of frames, and can
+            have no more than one element.
         guess
             The initial guess at the reconstructed scene, the same for every
             frame, or one for each frame.
@@ -131,21 +144,48 @@ class MartInverter(
                 "are not equal."
             )
 
-        shape_frames = self._shape_frames(images.outputs)
+        # the axes of the images beyond those of the channels and the sensor
+        shape_extra = self._shape_extra(images.outputs)
 
-        arrays = self._arrays(images.outputs, guess, shape_frames)
+        axis_iteration = self.axis_iteration
+        if axis_iteration in shape_extra:
+            raise ValueError(
+                f"the images have an axis named {axis_iteration!r}, "
+                f"which is the axis of the iterations in the result."
+            )
+
+        arrays = self._arrays(images.outputs, guess)
 
         if arrays is not None:
-            return self._call_arrays(images, guess, verbose, shape_frames, *arrays)
+            return self._call_arrays(images, guess, verbose, *arrays)
 
         # the methods of an instrument compute in the precision of its own
         # arrays, whatever precision is asked for here
         dtype = np.dtype(self.dtype)
-        if dtype != np.float64 and instrument._operators(dtype) is None:
+        if dtype != np.float64:
             raise ValueError(
-                f"`dtype` is {dtype}, but this instrument cannot be expressed as "
-                f"a pair of sparse matrices, so it is inverted through its "
-                f"`image` and `backproject` methods, in double precision."
+                f"`dtype` is {dtype}, which is only available on the sparse "
+                f"matrices of the instrument, and this inversion cannot run on "
+                f"them: the instrument, the images or the guess cannot be "
+                f"expressed as plain arrays, or the inverter replaces a merit "
+                f"function. It would run on the `image` and `backproject` "
+                f"methods of the instrument, in double precision."
+            )
+
+        shape_frames = self._shape_frames(images, shape_extra)
+
+        # the other axes are those of the instrument or of the scene, which
+        # the iteration below carries along, but cannot stop one at a time
+        shape_own = {
+            ax: num for ax, num in shape_extra.items() if ax not in shape_frames
+        }
+        if math.prod(shape_own.values()) > 1:
+            raise ValueError(
+                f"the images have the axes {shape_own}, which are also axes of "
+                f"the instrument or of the scene, so they are not those of "
+                f"independent frames, and an instrument which cannot be "
+                f"expressed as a pair of sparse matrices is inverted one "
+                f"element at a time along them."
             )
 
         if shape_frames:
@@ -153,10 +193,10 @@ class MartInverter(
 
         return self._call_named(images, guess, verbose)
 
-    def _shape_frames(self, images: na.AbstractScalar) -> dict[str, int]:
+    def _shape_extra(self, images: na.AbstractScalar) -> dict[str, int]:
         """
-        The axes of the frames and their lengths: the axes of the images
-        beyond those of the channels and the sensor.
+        The axes of the images beyond those of the channels and the sensor,
+        and their lengths.
 
         Parameters
         ----------
@@ -165,25 +205,55 @@ class MartInverter(
         """
         instrument = self.instrument
 
-        axis_channel = instrument.axis_channel
-        if isinstance(axis_channel, str):
-            axis_channel = (axis_channel,)
-        axis_images = (*axis_channel, *instrument.axis_sensor_xy)
+        axis_images = (*instrument._axis_channel, *instrument.axis_sensor_xy)
 
         shape = na.shape(images)
 
         return {ax: shape[ax] for ax in shape if ax not in axis_images}
 
+    def _shape_frames(
+        self,
+        images: na.FunctionArray[na.SpectralPositionalVectorArray, na.ScalarArray],
+        shape_extra: dict[str, int],
+    ) -> dict[str, int]:
+        """
+        The axes of the frames and their lengths, for an inversion which runs
+        on the methods of the instrument: the axes of the images beyond those
+        of the channels and the sensor, except those which the instrument
+        itself has, such as a time that its exposure varies along, and those
+        of the scene.
+
+        The instrument is asked through the backprojection of one frame,
+        which has every axis of the instrument and of the scene, and none of
+        the frames.
+
+        Parameters
+        ----------
+        images
+            The observed images.
+        shape_extra
+            The axes of the images beyond those of the channels and the
+            sensor, and their lengths.
+        """
+        if not shape_extra:
+            return shape_extra
+
+        frame = images[{ax: 0 for ax in shape_extra}]
+
+        shape = na.shape(self.instrument.backproject(frame).outputs)
+
+        return {ax: num for ax, num in shape_extra.items() if ax not in shape}
+
     def _arrays(
         self,
         images: na.AbstractScalar,
         guess: None | na.AbstractScalar,
-        shape_frames: dict[str, int],
-    ) -> None | tuple[Operators, np.ndarray, None | np.ndarray]:
+    ) -> None | tuple[dict[str, int], Operators, np.ndarray, None | np.ndarray]:
         """
-        The operators of the instrument, with the observed images and the
-        initial guess as the plain arrays that the operators act on, or
-        :obj:`None` if any of them cannot be expressed that way.
+        The axes of the frames, and the operators of the instrument with the
+        observed images and the initial guess as the plain arrays that the
+        operators act on, or :obj:`None` if any of them cannot be expressed
+        that way.
 
         Each array has the frames along one last axis.
         The guess is a copy, which the iteration is free to overwrite, or
@@ -195,11 +265,28 @@ class MartInverter(
             The values of the observed images.
         guess
             The initial guess at the reconstructed scene, if any.
-        shape_frames
-            The axes of the frames and their lengths.
         """
+        # an inverter which replaces a merit function is left to it, since
+        # the iteration on the operators computes the merit itself
+        cls = type(self)
+        if (
+            cls.mean_chi_squared is not MartInverter.mean_chi_squared
+            or cls.correlation_residual is not MartInverter.correlation_residual
+        ):
+            return None
+
         operators = self.instrument._operators(self.dtype)
         if operators is None:
+            return None
+
+        # every axis of the images beyond their own is an axis of the frames,
+        # unless it is one of those of the scene
+        shape_frames = frames(
+            shape=na.shape(images),
+            shape_own=operators.shape_images,
+            shape_other=operators.shape_scene,
+        )
+        if shape_frames is None:
             return None
 
         num_frame = math.prod(shape_frames.values())
@@ -222,6 +309,7 @@ class MartInverter(
                 a=guess,
                 shape=operators.shape_scene | shape_frames,
                 unit=operators.unit_scene,
+                dtype=operators.dtype,
             )
             # a guess without every axis of the scene is left to the named
             # arrays, which do not accept one
@@ -231,7 +319,7 @@ class MartInverter(
             scene = np.array(scene, dtype=operators.dtype, order="C")
             scene = scene.reshape(shape_scene + (num_frame,))
 
-        return operators, observed, scene
+        return shape_frames, operators, observed, scene
 
     def _call_arrays(
         self,
@@ -305,12 +393,16 @@ class MartInverter(
         num_iteration = np.full(num_frame, self.num_iteration)
         success = np.zeros(num_frame, dtype=bool)
 
-        # a frame has no merit once it has stopped
-        shape_merit = (self.num_iteration, num_frame, num_channel)
-        chi2 = np.full(shape_merit, np.nan)
-        correlation_residual = np.full(shape_merit, np.nan)
+        # the merit of each frame and each channel, for every iteration
+        # which has run
+        chi2 = []
+        correlation_residual = []
 
         intermediate = []
+
+        # the photons leaving every voxel of the frames which are still
+        # iterating, which every iteration overwrites
+        buffer = None
 
         for i in range(self.num_iteration):
 
@@ -322,8 +414,13 @@ class MartInverter(
             if verbose:  # pragma: nocover
                 print(f"{i=}")
 
+            if buffer is None or buffer.shape[~0] != active.size:
+                shape_buffer = operators.forward.shape_input + (active.size,)
+                buffer = np.empty(shape_buffer, dtype=dtype)
+
             predicted, variance = operators.image(
                 scene=scene.reshape(shape_scene + (active.size,)),
+                buffer=buffer,
             )
             predicted = predicted.reshape(num_channel, -1, active.size)
 
@@ -336,8 +433,12 @@ class MartInverter(
                 chi_squared=chi2_i,
                 correlation=correlation_residual_i,
             )
-            chi2[i, active] = chi2_i
-            correlation_residual[i, active] = correlation_residual_i
+
+            # a frame has no merit once it has stopped
+            chi2.append(np.full((num_frame, num_channel), np.nan))
+            chi2[~0][active] = chi2_i
+            correlation_residual.append(np.full((num_frame, num_channel), np.nan))
+            correlation_residual[~0][active] = correlation_residual_i
 
             merit = chi2_i.mean(axis=1)
 
@@ -389,13 +490,15 @@ class MartInverter(
         # the solution is in the units of the guess, if there is one
         solutions = solutions << operators.unit_scene
         if guess is not None:
-            solutions = solutions.to(guess.unit)
+            solutions = solutions.to(guess.unit, copy=False)
+
+        shape_merit = (len(chi2), num_frame, num_channel)
 
         return self._result(
             images=images,
             solutions=solutions,
-            mean_chi_squared=chi2,
-            correlation_residual=correlation_residual,
+            mean_chi_squared=np.array(chi2).reshape(shape_merit),
+            correlation_residual=np.array(correlation_residual).reshape(shape_merit),
             num_iteration=num_iteration,
             success=success,
             shape_scene=operators.shape_scene,

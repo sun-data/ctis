@@ -254,3 +254,62 @@ def test_framed_unsupported() -> None:
     a = na.ScalarArray(np.ones(3), axes="x") * u.s
 
     assert _operators.framed(a, shape=shape, shape_frames=dict(), unit=u.m) is None
+
+
+@pytest.mark.parametrize("dtype", [np.float64, np.float32])
+def test_framed_view(dtype: type) -> None:
+    """
+    Values which are already in the unit and the precision asked for, with
+    their axes in order, are not copied, and values in single precision are
+    not converted to double precision on the way.
+    """
+    values = np.arange(24, dtype=dtype).reshape(3, 2, 4)
+    a = na.ScalarArray(values << u.m, axes=("x", "y", "time"))
+
+    result = _operators.framed(
+        a=a,
+        shape=shape,
+        shape_frames=dict(time=4),
+        unit=u.m,
+        dtype=dtype,
+    )
+
+    assert result.dtype == dtype
+    assert np.array_equal(result, values)
+    assert np.shares_memory(result, values)
+
+    # another unit or another precision needs a copy
+    for kwargs in (dict(unit=u.cm, dtype=dtype), dict(unit=u.m, dtype=np.float16)):
+        copy = _operators.framed(a=a, shape=shape, shape_frames=dict(time=4), **kwargs)
+        assert not np.shares_memory(copy, values)
+
+
+def test_aligned_dtype() -> None:
+    """The values are given in the precision asked for, double by default."""
+    a = na.ScalarArray(np.arange(3, dtype=np.float32), axes="x") * u.m
+
+    assert _operators.aligned(a, shape=shape, unit=u.m).dtype == np.float64
+    assert _operators.aligned(a, shape=shape, unit=u.m, dtype=np.float32).dtype == (
+        np.float32
+    )
+
+
+def test_frames() -> None:
+    """
+    The axes of the frames are those of an array beyond its own, in the
+    order the array has them, and none of them can be an axis of the other
+    kind of array.
+    """
+    shape_own = dict(x=3, y=2)
+    shape_other = dict(channel=4, z=5)
+
+    assert _operators.frames(dict(y=2, x=3), shape_own, shape_other) == dict()
+    assert _operators.frames(dict(x=3), shape_own, shape_other) == dict()
+
+    result = _operators.frames(dict(time=6, x=3, y=2, repeat=7), shape_own, shape_other)
+
+    assert result == dict(time=6, repeat=7)
+    assert tuple(result) == ("time", "repeat")
+
+    assert _operators.frames(dict(x=3, y=2, z=5), shape_own, shape_other) is None
+    assert _operators.frames(dict(channel=4), shape_own, shape_other) is None
