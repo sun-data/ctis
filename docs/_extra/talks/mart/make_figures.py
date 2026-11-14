@@ -128,11 +128,9 @@ def main():
         axis_sensor_xy=("sensor_x", "sensor_y"),
     )
 
-    # `IdealInstrument.image()` draws unseeded shot noise for each wavelength
-    # before summing over wavelength.
-    # A sum of independent Poisson variables is itself Poisson,
-    # so drawing the noise after the sum has the same distribution
-    # and lets us fix the seed.
+    # `IdealInstrument.image()` draws its shot noise unseeded,
+    # from the photons expected in each pixel at all wavelengths together.
+    # Drawing the noise here, in the same way, lets us fix the seed.
     images = instrument.image(scene, noise=False)
     quantum_yield = instrument.quantum_yield
     images = na.FunctionArray(
