@@ -776,8 +776,10 @@ class IdealInstrument(
     wavelength at a time, with the shot noise drawn for each wavelength,
     which is slower.
     An instrument cannot be expressed as a pair of matrices if its
-    :attr:`quantum_yield` varies with wavelength or across the sensor, or if
-    it varies along an axis of its own, such as time.
+    :attr:`quantum_yield` varies along :attr:`axis_wavelength` or across the
+    sensor, or if it varies along an axis of its own, such as time.
+    The quantum yield can be different for each channel, and for each
+    spectral line of a scene which has several, :attr:`axis_line`.
     Neither can a subclass which replaces :meth:`image`, :meth:`backproject`
     or one of the methods they are built from, which is left to its own
     methods.
