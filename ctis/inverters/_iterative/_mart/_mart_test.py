@@ -1003,3 +1003,8 @@ def test__call__buffer_released(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert len(buffers) == result.num_iteration
     assert all(buffer() is None for buffer in buffers)
+
+
+def test_gamma_default() -> None:
+    """The learning rate is one unless told otherwise."""
+    assert ctis.inverters.MartInverter(instrument=instrument).gamma == 1

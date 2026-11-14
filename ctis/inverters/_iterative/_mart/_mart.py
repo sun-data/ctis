@@ -57,15 +57,24 @@ class MartInverter(
     scene to photons measured by the sensors.
     """
 
-    gamma: None | float = None
+    gamma: float = 1
     r"""
     Learning rate, :math:`\gamma`.
-    
-    At every iteration, the current correction, :math:`C`, is replaced by 
-    :math:`C^\gamma`.
-    
-    If :obj:`None`, :math:`\gamma = 2 / N`, where :math:`N` is the number of
-    channels.
+
+    At every iteration, the correction of each channel, :math:`C`, is replaced
+    by :math:`C^\gamma`, so the scene is multiplied by the geometric mean of
+    the corrections of the channels, raised to the power :math:`\gamma`.
+
+    With the default, 1, that is the geometric mean itself.
+    A smaller learning rate takes proportionally more iterations to reach
+    the same scene.
+
+    A larger one takes fewer, but it can overshoot.
+    Where one voxel alone lights the pixels it is imaged onto, its correction
+    is the ratio of the scene to the current guess, so every iteration
+    multiplies the error of its logarithm by :math:`1 - \gamma`.
+    With a learning rate of 1 that voxel is corrected in one iteration,
+    and with 2 it overshoots by as much as it was off, and never converges.
     """
 
     threshold_convergence: float = 1e-3
@@ -93,9 +102,6 @@ class MartInverter(
     """
 
     def __post_init__(self):
-
-        if self.gamma is None:
-            self.gamma = 2 / self.instrument.num_channel
 
         if np.dtype(self.dtype) not in (np.float32, np.float64):
             raise ValueError(
