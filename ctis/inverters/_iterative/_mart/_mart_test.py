@@ -6,6 +6,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import pytest
 import astropy.units as u
+import astropy.constants
 import named_arrays as na
 import optika
 import ctis
@@ -1158,3 +1159,105 @@ def test_dtype_optika() -> None:
         rtol=1e-5,
         atol=1e-5 * np.abs(value_expected.value).max(),
     )
+
+
+def _instrument_lines() -> ctis.instruments.IdealInstrument:
+    """
+    The instrument with a scene of two spectral lines, which overlap on its
+    sensors and each have a quantum yield of their own.
+    """
+    wavelength_lines = na.ScalarArray([171.0, 171.05] * u.AA, axes="line")
+    wavelength_lines = wavelength_lines * (1 + velocity / astropy.constants.c)
+    wavelength_lines = wavelength_lines.to(u.AA)
+
+    quantum_yield = na.ScalarArray(np.array([3.75, 2.99]), axes="line")
+
+    return dataclasses.replace(
+        instrument,
+        coordinates_scene=na.SpectralPositionalVectorArray(
+            wavelength=wavelength_lines,
+            position=position_scene,
+        ),
+        coordinates_sensor=na.SpectralPositionalVectorArray(
+            wavelength=wavelength_lines,
+            position=position_sensor,
+        ),
+        axis_line="line",
+        quantum_yield=quantum_yield * u.electron / u.photon,
+    )
+
+
+def _scene_lines() -> na.ScalarArray:
+    """A scene of two spectral lines, the second fainter than the first."""
+    return na.stack(
+        arrays=[
+            scene.outputs,
+            scene.outputs[dict(wavelength=slice(None, None, -1))] / 2,
+        ],
+        axis="line",
+    )
+
+
+def test__call__lines() -> None:
+    """
+    A scene of several spectral lines is reconstructed on the matrices, with
+    the result of the iteration on the methods of the instrument, and the
+    solution has the axis of the lines.
+    """
+    instrument_lines = _instrument_lines()
+    scene_lines = _scene_lines()
+    images_lines = instrument_lines.image(scene_lines, noise=False)
+
+    assert images_lines.outputs.shape == images.outputs.shape
+
+    a = ctis.inverters.MartInverter(
+        instrument=instrument_lines,
+        num_iteration=6,
+        threshold_convergence=-np.inf,
+    )
+
+    assert _uses_operators(a, images_lines)
+
+    with pytest.warns(UserWarning, match="Max number of iterations"):
+        result = a(images_lines)
+
+    with pytest.warns(UserWarning, match="Max number of iterations"):
+        expected = _reference(a, images_lines)
+
+    assert result.solution.outputs.shape == scene_lines.shape
+    assert result.num_iteration == 6
+    _assert_same(result, expected)
+
+
+def test__call__lines_frames() -> None:
+    """
+    Frames of a scene of several spectral lines are reconstructed together,
+    each as it would be alone, bit for bit, in single precision too.
+    """
+    instrument_lines = _instrument_lines()
+    scene_lines = _scene_lines() + _scene_lines().max() / 100
+    brightness = na.ScalarArray(np.array([0.5, 2.0]), axes="time")
+
+    values = instrument_lines.image(scene_lines * brightness, noise=False).outputs
+    rng = np.random.default_rng(0)
+    values = values.replace(ndarray=rng.poisson(values.ndarray.value) * u.electron)
+    images_frames = na.FunctionArray(inputs=images.inputs, outputs=values)
+
+    shape_frames = dict(time=2)
+
+    for dtype in (np.float64, np.float32):
+        a = ctis.inverters.MartInverter(
+            instrument=instrument_lines,
+            threshold_convergence=1e-2,
+            dtype=dtype,
+        )
+
+        assert _uses_operators(a, images_frames)
+
+        result = a(images_frames)
+
+        assert result.solution.outputs.shape == scene_lines.shape | shape_frames
+        assert result.solution.outputs.ndarray.dtype == dtype
+
+        for index in na.ndindex(shape_frames):
+            _assert_frame(result, index, a(images_frames[index]))

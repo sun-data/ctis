@@ -310,6 +310,7 @@ class AbstractTestAbstractInstrument(
             ctis.instruments.AbstractLinearInstrument._factors(
                 a,
                 shape_channel=operators.shape_channel,
+                shape_line=operators.shape_line,
                 shape_scene=operators.shape_scene,
                 shape_sensor=operators.shape_sensor,
                 dtype=operators.dtype,
@@ -505,13 +506,37 @@ instrument_ideal = ctis.instruments.IdealInstrument(
 )
 
 
+# two spectral lines which overlap on the sensors, each with a quantum yield
+# of its own
+wavelength_lines = na.ScalarArray([171.0, 171.3] * u.AA, axes="line")
+wavelength_lines = wavelength_lines * (1 + velocity / astropy.constants.c)
+wavelength_lines = wavelength_lines.to(u.AA)
+
+instrument_lines = dataclasses.replace(
+    instrument_ideal,
+    coordinates_scene=na.SpectralPositionalVectorArray(
+        wavelength=wavelength_lines,
+        position=position_scene,
+    ),
+    coordinates_sensor=na.SpectralPositionalVectorArray(
+        wavelength=wavelength_lines,
+        position=position_sensor,
+    ),
+    axis_line="line",
+    quantum_yield=na.ScalarArray(np.array([3.75, 2.99]), axes="line")
+    * u.electron
+    / u.photon,
+)
+
+
 @pytest.mark.parametrize(
     argnames="a",
     argvalues=[
         instrument_ideal,
         dataclasses.replace(instrument_ideal, psf=_psf(instrument_ideal)),
+        instrument_lines,
     ],
-    ids=["no psf", "psf"],
+    ids=["no psf", "psf", "two lines"],
 )
 class TestIdealInstrument(
     AbstractTestAbstractLinearInstrument,
@@ -691,7 +716,16 @@ class TestIdealInstrument(
 
         images, variance = operators.image(scene, buffer=buffer)
 
-        assert np.array_equal(images, photons * operators.gain)
+        # the lines, if the scene has several, are summed into the images,
+        # each with its own gain
+        shape_lines = operators.shape_channel | operators.shape_line
+        gain = operators._gain.reshape(tuple(shape_lines.values()) + (1, 1, 1))
+        expected = photons * gain
+        if operators.shape_line:
+            expected = expected.sum(axis=len(operators.shape_channel))
+
+        assert photons.shape[: len(shape_lines)] == tuple(shape_lines.values())
+        assert np.allclose(images, expected, rtol=1e-12, atol=0)
         assert not any(
             isinstance(value, np.ndarray) and value.size == buffer.size
             for value in vars(operators).values()
@@ -1252,7 +1286,7 @@ class TestIdealInstrument(
         a_none = dataclasses.replace(a, psf=None)
 
         scene = _scene(a)
-        axes = (a.axis_channel, a.axis_wavelength, *a.axis_sensor_xy)
+        axes = (a.axis_channel, *a._axis_spectral, *a.axis_sensor_xy)
         actual = a_psf.image(scene.outputs, integrate=False, noise=False).outputs
         image = a_none.image(scene.outputs, integrate=False, noise=False).outputs
 
@@ -1261,7 +1295,13 @@ class TestIdealInstrument(
         kernel = psf.ndarray_aligned((a.axis_channel, *a.axis_psf_xy))
         expected = np.stack(
             [
-                scipy.ndimage.convolve(image[c], kernel[c][np.newaxis], mode="constant")
+                scipy.ndimage.convolve(
+                    input=image[c],
+                    weights=kernel[c].reshape(
+                        (1,) * (image.ndim - 3) + kernel[c].shape
+                    ),
+                    mode="constant",
+                )
                 for c in range(a.num_channel)
             ]
         )
@@ -1613,3 +1653,77 @@ def test_optika_operators_unsupported() -> None:
     )
 
     assert a._operators() is None
+
+
+def test_image_lines() -> None:
+    """
+    The image of a scene of several spectral lines is the sum of the images
+    of its lines, which the instrument gives one at a time if it is not told
+    that they are lines.
+    The variances of the lines add, and the read noise is added once.
+    """
+    a = dataclasses.replace(instrument_lines, read_noise=5 * u.electron)
+    separate = dataclasses.replace(a, axis_line=None)
+
+    assert a._operators() is not None
+    assert separate._operators() is None
+
+    # a scene which is dim enough for its noise to be drawn
+    scene = _scene_frames(a, shape_frames=dict()).outputs
+    brightest = a.image(scene, noise=False).outputs.max()
+    scene = scene * (100 / brightest.ndarray.to_value(u.electron))
+    axis = ("line", "wavelength")
+
+    expected = separate.image(scene, integrate=False, noise=False, uncertainty=True)
+    expected = expected.outputs
+    nominal = expected.nominal.sum(axis)
+    variance = np.square(expected.width).sum(axis) + np.square(a.read_noise)
+
+    assert expected.nominal.shape["line"] == 2
+
+    kwargs = dict(noise=False, uncertainty=True)
+
+    for result in (
+        a.image(scene, **kwargs),
+        a._image_weights(scene, integrate=True, **kwargs),
+    ):
+        assert "line" not in result.outputs.shape
+        assert "line" not in result.inputs.wavelength.shape
+        _assert_close(result.outputs.nominal, nominal)
+        _assert_close(np.square(result.outputs.width), variance)
+
+    # with noise, each line is drawn on its own, and the width is unchanged
+    noisy = a.image(scene, noise=True, uncertainty=True).outputs
+
+    assert "line" not in noisy.shape
+    assert np.all(noisy.nominal != nominal)
+    _assert_close(np.square(noisy.width), variance)
+
+    # the wavelengths of an integrated image are the ends of the whole band
+    wavelength = a.coordinates_sensor.wavelength
+    edges = result.inputs.wavelength
+
+    assert np.all(edges.min() == wavelength.min())
+    assert np.all(edges.max() == wavelength.max())
+
+
+def test_backproject_lines() -> None:
+    """
+    The backprojection of an image is spread evenly over the wavelengths of
+    every spectral line, since any of them could have contributed to it, so
+    each line gets its share of what it would get alone, and the total of
+    the image is conserved.
+    """
+    a = instrument_lines
+    separate = dataclasses.replace(a, axis_line=None)
+
+    image = a.image(_scene_frames(a, shape_frames=dict()), noise=False).outputs
+
+    expected = separate.backproject(image).outputs / 2
+
+    for result in (
+        a.backproject(image),
+        a._backproject_weights(image, integrate=True),
+    ):
+        assert result.outputs.shape["line"] == 2
+        _assert_close(result.outputs, expected)

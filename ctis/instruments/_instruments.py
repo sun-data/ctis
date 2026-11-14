@@ -152,6 +152,22 @@ class AbstractInstrument(
 
     @property
     @abc.abstractmethod
+    def axis_line(self) -> None | str:
+        """
+        The logical axis of :attr:`coordinates_scene` which separates the
+        spectral lines of the scene, or :obj:`None` if the scene is one band
+        of wavelengths.
+
+        Each line has its own wavelengths along :attr:`axis_wavelength`, the
+        same number for every line, and all the lines are imaged onto the
+        same sensors.
+        An image which is integrated along wavelength is therefore summed
+        over the lines too, and the backprojection of one is spread over the
+        wavelengths of every line.
+        """
+
+    @property
+    @abc.abstractmethod
     def axis_scene_xy(self) -> tuple[str, str]:
         """
         The logical axes of :attr:`coordinates_scene` corresponding to
@@ -184,6 +200,18 @@ class AbstractInstrument(
         if isinstance(axis_channel, str):
             axis_channel = (axis_channel,)
         return tuple(axis_channel)
+
+    @property
+    def _axis_spectral(self) -> tuple[str, ...]:
+        """
+        The axes that an image which is integrated along wavelength is summed
+        over: :attr:`axis_line`, if the scene has several lines, and
+        :attr:`axis_wavelength`.
+        """
+        axis_line = self.axis_line
+        if axis_line is None:
+            return (self.axis_wavelength,)
+        return (axis_line, self.axis_wavelength)
 
     def _operators(self, dtype: type = np.float64) -> None | Operators:
         """
@@ -378,6 +406,7 @@ class AbstractLinearInstrument(
         """
         factors = self._factors(
             shape_channel=operators.shape_channel,
+            shape_line=operators.shape_line,
             shape_scene=operators.shape_scene,
             shape_sensor=operators.shape_sensor,
             dtype=operators.dtype,
@@ -395,6 +424,7 @@ class AbstractLinearInstrument(
     def _factors(
         self,
         shape_channel: dict[str, int],
+        shape_line: dict[str, int],
         shape_scene: dict[str, int],
         shape_sensor: dict[str, int],
         dtype: np.dtype,
@@ -415,6 +445,9 @@ class AbstractLinearInstrument(
         ----------
         shape_channel
             The axes of the channels and their lengths.
+        shape_line
+            The axis of the spectral lines and its length, if the scene has
+            several.
         shape_scene
             The axes of a scene and their lengths.
         shape_sensor
@@ -457,16 +490,18 @@ class AbstractLinearInstrument(
 
         axis_channel = self._axis_channel
         axis_wavelength = self.axis_wavelength
+        axis_line = self._axis_spectral[:~0]
 
         weights = self.weights
         array, shape_grid_scene, shape_grid_sensor = weights
 
         # an instrument which varies along any other axis, such as time,
         # is left to the named arrays
-        if set(array.shape) != {*axis_channel, axis_wavelength}:
+        if set(array.shape) != {*axis_channel, *axis_line, axis_wavelength}:
             return None
 
         shape_channel = {ax: array.shape[ax] for ax in axis_channel}
+        shape_line = {ax: array.shape[ax] for ax in axis_line}
         shape_wavelength = {axis_wavelength: array.shape[axis_wavelength]}
         shape_scene_xy = {
             ax: shape_grid_scene[ax] for ax in shape_grid_scene if ax not in array.shape
@@ -476,11 +511,12 @@ class AbstractLinearInstrument(
             for ax in shape_grid_sensor
             if ax not in array.shape
         }
-        shape_scene = shape_wavelength | shape_scene_xy
+        shape_scene = shape_line | shape_wavelength | shape_scene_xy
         shape_voxels = shape_channel | shape_scene
 
         factors = self._factors(
             shape_channel=shape_channel,
+            shape_line=shape_line,
             shape_scene=shape_scene,
             shape_sensor=shape_sensor,
             dtype=dtype,
@@ -494,6 +530,7 @@ class AbstractLinearInstrument(
         vertices_scene = vertices(
             coordinates=position_scene,
             shape=shape_channel
+            | shape_line
             | shape_wavelength
             | {ax: num + 1 for ax, num in shape_scene_xy.items()},
             unit=unit_position,
@@ -501,6 +538,7 @@ class AbstractLinearInstrument(
         vertices_sensor = vertices(
             coordinates=position_sensor,
             shape=shape_channel
+            | shape_line
             | shape_wavelength
             | {ax: num + 1 for ax, num in shape_sensor.items()},
             unit=unit_position,
@@ -520,11 +558,15 @@ class AbstractLinearInstrument(
 
         # the matrix takes a scene for each channel, rather than one shared
         # by the channels, so that its transpose gives a backprojection
-        # for each channel, and it sums the images over wavelength
+        # for each channel, and it sums the images over wavelength, but not
+        # over the lines, which can each have a response of their own
         forward = regridder(
             weights=weights,
             shape_input=shape_voxels,
-            shape_output=shape_channel | {axis_wavelength: 1} | shape_sensor,
+            shape_output=shape_channel
+            | shape_line
+            | {axis_wavelength: 1}
+            | shape_sensor,
             dtype=dtype,
         )
 
@@ -542,6 +584,7 @@ class AbstractLinearInstrument(
             shape_channel=shape_channel,
             shape_scene=shape_scene,
             shape_sensor=shape_sensor,
+            shape_line=shape_line,
             weights_scene=weights_scene,
             **factors,
         )
@@ -579,14 +622,14 @@ class AbstractLinearInstrument(
         """
         Collapse the wavelength coordinates of an image to the band edges,
         which are the coordinates of an image integrated along the wavelength
-        axis.
+        axis, and over the spectral lines if the scene has several.
 
         Parameters
         ----------
         coordinates
             The coordinates of the image before it is integrated.
         """
-        axis = self.axis_wavelength
+        axis = self._axis_spectral
 
         return coordinates.replace(
             wavelength=na.stack(
@@ -594,7 +637,7 @@ class AbstractLinearInstrument(
                     coordinates.wavelength.min(axis),
                     coordinates.wavelength.max(axis),
                 ],
-                axis=axis,
+                axis=self.axis_wavelength,
             )
         )
 
@@ -675,8 +718,12 @@ class AbstractLinearInstrument(
 
         coordinates = self.coordinates_scene
 
-        axis_wavelength = self.axis_wavelength
-        num_wavelength = coordinates.wavelength.shape[axis_wavelength] - 1
+        # an integrated image is spread evenly over the wavelengths of every
+        # line, so that the backprojection conserves its total
+        num_wavelength = coordinates.wavelength.shape[self.axis_wavelength] - 1
+        axis_line = self.axis_line
+        if axis_line is not None:
+            num_wavelength = num_wavelength * coordinates.wavelength.shape[axis_line]
 
         values_input = image
 
@@ -824,6 +871,22 @@ class IdealInstrument(
     """
     The logical axes of :attr:`coordinates_sensor` corresponding to
     changing position coordinate.
+    """
+
+    axis_line: None | str = None
+    """
+    The logical axis of :attr:`coordinates_scene` and
+    :attr:`coordinates_sensor` which separates the spectral lines of the
+    scene, or :obj:`None` (the default) if the scene is one band of
+    wavelengths.
+
+    Each line has its own wavelengths along :attr:`axis_wavelength`, the same
+    number for every line, and all the lines are imaged onto the same
+    sensors.
+    An image which is integrated along wavelength is therefore summed over
+    the lines too, and the backprojection of one is spread over the
+    wavelengths of every line.
+    The :attr:`quantum_yield` can be different for each line.
     """
 
     quantum_yield: u.Quantity | na.AbstractScalar = 1 * u.electron / u.photon
@@ -1020,6 +1083,7 @@ class IdealInstrument(
     def _factors(
         self,
         shape_channel: dict[str, int],
+        shape_line: dict[str, int],
         shape_scene: dict[str, int],
         shape_sensor: dict[str, int],
         dtype: np.dtype,
@@ -1035,6 +1099,9 @@ class IdealInstrument(
         ----------
         shape_channel
             The axes of the channels and their lengths.
+        shape_line
+            The axis of the spectral lines and its length, if the scene has
+            several.
         shape_scene
             The axes of a scene and their lengths.
         shape_sensor
@@ -1048,7 +1115,10 @@ class IdealInstrument(
         exposure = self.area_effective * self.timedelta_exposure
         volume = self._volume_scene
         energy = self._energy_per_photon
+
+        # an image is spread over the wavelengths of every line
         num_wavelength = shape_scene[self.axis_wavelength]
+        num_wavelength = num_wavelength * math.prod(shape_line.values())
 
         # the units that `image` and `backproject` give their results in
         unit_images = u.photon * na.unit_normalized(self.quantum_yield)
@@ -1068,7 +1138,7 @@ class IdealInstrument(
         )
         gain = aligned(
             a=self.quantum_yield,
-            shape=shape_channel,
+            shape=shape_channel | shape_line,
             unit=unit_images / u.photon,
         )
         read_noise = aligned(self.read_noise, shape=shape_pixels, unit=unit_images)
@@ -1079,19 +1149,17 @@ class IdealInstrument(
         if any(a is None for a in (scale, scale_backproject, gain, read_noise)):
             return None
 
-        gain = gain.reshape(gain.shape + (1,) * len(shape_sensor))
-        variance_read = np.square(read_noise)
-
-        # every factor is given one more axis, which the frames are
-        # broadcast along, and the precision of the matrices.
+        # the factors of the voxels are given one more axis, which the
+        # frames are broadcast along, and every factor the precision of the
+        # matrices.
         # The variance of the shot noise of the photons, in units of the
         # images, is their signal times the quantum yield
         return dict(
             scale=scale[..., np.newaxis].astype(dtype),
             scale_backproject=scale_backproject[..., np.newaxis].astype(dtype),
-            gain=gain[..., np.newaxis].astype(dtype),
-            vmr=gain[..., np.newaxis].astype(dtype),
-            variance_read=variance_read[..., np.newaxis].astype(dtype),
+            gain=gain.astype(dtype),
+            vmr=gain.astype(dtype),
+            variance_read=np.square(read_noise).astype(dtype),
             unit_scene=unit_scene,
             unit_images=unit_images,
         )
@@ -1194,30 +1262,55 @@ class IdealInstrument(
         if values is None:
             return None
 
-        # the photons expected in every pixel, at all wavelengths together
-        expected = operators.photons(values)
-        expected = expected.reshape(expected.shape[:~0] + tuple(shape_frames.values()))
-        expected = na.ScalarArray(
-            ndarray=expected << u.photon,
-            axes=(*shape_images, *shape_frames),
-        )
+        shape_line = operators.shape_line
+        shape_photons = operators.shape_channel | shape_line | operators.shape_sensor
+        dims_frames = tuple(shape_frames.values())
 
-        photons = expected
         if noise:
+            # the photons expected in every pixel at all the wavelengths of
+            # each line together, which are drawn for each line, since
+            # each line can have a quantum yield of its own
+            expected = operators.photons(values)
+            expected = expected.reshape(expected.shape[:~0] + dims_frames)
+            expected = na.ScalarArray(
+                ndarray=expected << u.photon,
+                axes=(*shape_photons, *shape_frames),
+            )
             photons = na.random.poisson(expected)
 
-        # convert the measured photons into electrons
-        electrons = photons * self.quantum_yield
+            # convert the measured photons into electrons
+            electrons = photons * self.quantum_yield
+            if shape_line:
+                electrons = electrons.sum(tuple(shape_line))
 
-        if uncertainty:
-            # the width of the shot noise is that of the photons expected,
-            # whatever the noise drawn above
-            width = self._shot_noise(expected * self.quantum_yield)
-            width = np.sqrt(np.square(width) + np.square(self.read_noise))
-
-        # add read noise once, at the readout
-        if noise:
+            # add read noise once, at the readout
             electrons = na.random.normal(loc=electrons, scale=self.read_noise)
+
+            if uncertainty:
+                # the width of the shot noise is that of the photons
+                # expected, whatever the noise drawn above
+                width = self._shot_noise(expected * self.quantum_yield)
+                variance = np.square(width)
+                if shape_line:
+                    variance = variance.sum(tuple(shape_line))
+                width = np.sqrt(variance + np.square(self.read_noise))
+
+        else:
+            # the images expected, and the variance of their noise
+            images, variance = operators.image(values)
+
+            images = images.reshape(images.shape[:~0] + dims_frames)
+            electrons = na.ScalarArray(
+                ndarray=images << operators.unit_images,
+                axes=(*shape_images, *shape_frames),
+            )
+
+            if uncertainty:
+                variance = variance.reshape(variance.shape[:~0] + dims_frames)
+                width = na.ScalarArray(
+                    ndarray=np.sqrt(variance) << operators.unit_images,
+                    axes=(*shape_images, *shape_frames),
+                )
 
         if uncertainty:
             electrons = na.NormalUncertainScalarArray(nominal=electrons, width=width)
@@ -1265,7 +1358,9 @@ class IdealInstrument(
 
         scene = scene * self.area_effective * self.timedelta_exposure
 
-        axis = self.axis_wavelength
+        # an integrated image is summed over wavelength, and over the lines
+        # of the scene if it has several
+        axis = self._axis_spectral
 
         # keep the wavelength axis so the uncertainty can be computed for each
         # wavelength before integrating.
@@ -1534,6 +1629,20 @@ class OptikaInstrument(
     position coordinate.
     """
 
+    axis_line: None | str = None
+    """
+    The logical axis of :attr:`coordinates_scene` which separates the
+    spectral lines of the scene, or :obj:`None` (the default) if the scene is
+    one band of wavelengths.
+
+    Each line has its own wavelengths along :attr:`axis_wavelength`, the same
+    number for every line, and all the lines are imaged onto the same
+    sensors.
+    An image which is integrated along wavelength is therefore summed over
+    the lines too, and the backprojection of one is spread over the
+    wavelengths of every line.
+    """
+
     @property
     def axis_sensor_xy(self) -> tuple[str, str]:
         axis_pixel = self.system.sensor.axis_pixel
@@ -1568,6 +1677,7 @@ class OptikaInstrument(
     def _factors(
         self,
         shape_channel: dict[str, int],
+        shape_line: dict[str, int],
         shape_scene: dict[str, int],
         shape_sensor: dict[str, int],
         dtype: np.dtype,
@@ -1594,6 +1704,9 @@ class OptikaInstrument(
         ----------
         shape_channel
             The axes of the channels and their lengths.
+        shape_line
+            The axis of the spectral lines and its length, if the scene has
+            several.
         shape_scene
             The axes of a scene and their lengths.
         shape_sensor
@@ -1614,7 +1727,8 @@ class OptikaInstrument(
 
         # one pixel, since the response of the sensor is that of any of them
         shape_pixel = {ax: 1 for ax in axis_pixel}
-        shape_response = shape_channel | {axis_wavelength: num_wavelength}
+        shape_response = shape_channel | shape_line
+        shape_response = shape_response | {axis_wavelength: num_wavelength}
 
         inputs = na.SpectralPositionalVectorArray(
             wavelength=self.coordinates_scene.spectral_positional.wavelength,
@@ -1662,8 +1776,11 @@ class OptikaInstrument(
 
         # the factors that `image` applies to the scene around its
         # resampling, and those that `backproject` applies around its own
+        # The sensor spreads an image over the wavelengths of one line, and
+        # the backprojection spreads it over those of every line
         scale = (1 * unit_scene) * volume * area * gain
         scale_backproject = absorbed / area / volume
+        scale_backproject = scale_backproject / math.prod(shape_line.values())
 
         scale = aligned(scale, shape=shape_voxels | shape_pixel, unit=unit_images)
         scale_backproject = aligned(
@@ -1678,9 +1795,9 @@ class OptikaInstrument(
         if any(a is None for a in (scale, scale_backproject, vmr, read_noise)):
             return None
 
-        # one ratio for all the wavelengths, the middle of its range, which
-        # is that of each of them to within the tolerance
-        axis = len(shape_channel)
+        # one ratio for all the wavelengths of a line, the middle of its
+        # range, which is that of each of them to within the tolerance
+        axis = len(shape_channel) + len(shape_line)
         middle = (vmr.max(axis, keepdims=True) + vmr.min(axis, keepdims=True)) / 2
         if not np.all(np.abs(vmr - middle) <= self._tolerance_vmr * middle):
             return None
@@ -1690,20 +1807,20 @@ class OptikaInstrument(
         scale_backproject = scale_backproject.reshape(
             scale_backproject.shape[:num_axes]
         )
-        vmr = middle.reshape(middle.shape[:axis] + (1,) * len(shape_sensor))
-        variance_read = np.square(read_noise)
+        vmr = middle.reshape(middle.shape[:axis])
 
         # the response of the sensor is in the factor of every voxel
-        gain = np.ones((1,) * len(shape_pixels))
+        gain = np.ones((1,) * axis)
 
-        # every factor is given one more axis, which the frames are
-        # broadcast along, and the precision of the matrices
+        # the factors of the voxels are given one more axis, which the
+        # frames are broadcast along, and every factor the precision of the
+        # matrices
         return dict(
             scale=scale[..., np.newaxis].astype(dtype),
             scale_backproject=scale_backproject[..., np.newaxis].astype(dtype),
-            gain=gain[..., np.newaxis].astype(dtype),
-            vmr=vmr[..., np.newaxis].astype(dtype),
-            variance_read=variance_read[..., np.newaxis].astype(dtype),
+            gain=gain.astype(dtype),
+            vmr=vmr.astype(dtype),
+            variance_read=np.square(read_noise).astype(dtype),
             unit_scene=unit_scene,
             unit_images=unit_images,
         )

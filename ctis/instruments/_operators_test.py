@@ -353,3 +353,39 @@ def test_frames() -> None:
 
     assert _operators.frames(dict(x=3, y=2, z=5), shape_own, shape_other) is None
     assert _operators.frames(dict(channel=4), shape_own, shape_other) is None
+
+
+@pytest.mark.parametrize(
+    argnames="combine",
+    argvalues=[_operators._combine, _operators._combine.py_func],
+    ids=["compiled", "python"],
+)
+def test__combine(combine: Callable) -> None:
+    """
+    The kernel sums the spectral lines into the signal of every pixel and
+    the variance of its shot noise, each kept from being negative once it is
+    summed, and adds the variance of the read noise.
+    """
+    rng = np.random.default_rng(0)
+    photons = rng.uniform(-2, 2, size=(3, 2, 5, 4))
+    gain = rng.uniform(1, 2, size=(3, 2))
+    gain_variance = rng.uniform(1, 2, size=(3, 2))
+    variance_read = rng.uniform(0, 1, size=(3, 5))
+
+    images = np.empty((3, 5, 4))
+    variance = np.empty((3, 5, 4))
+
+    combine(photons, gain, gain_variance, variance_read, images, variance)
+
+    signal = (photons * gain[..., np.newaxis, np.newaxis]).sum(axis=1)
+    shot = (photons * gain_variance[..., np.newaxis, np.newaxis]).sum(axis=1)
+
+    assert np.any(signal < 0)
+    assert np.any(signal > 0)
+    assert np.allclose(images, np.maximum(signal, 0), rtol=1e-14, atol=0)
+    assert np.allclose(
+        variance,
+        np.maximum(shot, 0) + variance_read[..., np.newaxis],
+        rtol=1e-14,
+        atol=0,
+    )
