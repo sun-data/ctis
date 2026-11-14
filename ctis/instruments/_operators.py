@@ -183,10 +183,15 @@ def regridder(
     shape_input: dict[str, int],
     shape_output: dict[str, int],
     dtype: type = np.float64,
-) -> regridding.Regridder:
+) -> None | regridding.Regridder:
     """
     Assemble weights computed by :func:`named_arrays.regridding.weights` into
     one sparse matrix, which acts on plain arrays.
+
+    It is :obj:`None` if the weights are in a unit which is not
+    dimensionless, such as an area, which a matrix that acts on plain arrays
+    cannot carry.
+    The caller is expected to fall back on the named arrays themselves.
 
     Parameters
     ----------
@@ -231,7 +236,7 @@ def regridder(
 
     array = array.ndarray_aligned(axis_orthogonal)
 
-    return regridding.Regridder.from_weights(
+    result = regridding.Regridder.from_weights(
         weights=(
             array,
             array.shape + tuple(shape_grid_input[ax] for ax in axis_input),
@@ -243,6 +248,23 @@ def regridder(
         shape_output=tuple(shape_output.values()),
         dtype=dtype,
     )
+
+    # weights with a dimensionless unit, as those weighted by a vignetting
+    # model have, are given none, so that the products of the matrix are
+    # the plain arrays which the compiled code takes
+    unit = result.unit
+    if unit is not None:
+        try:
+            factor = unit.to(u.dimensionless_unscaled)
+        except u.UnitConversionError:
+            return None
+
+        # only a unit such as a percentage changes the entries
+        if factor != 1:
+            result.data *= factor
+        result.unit = None
+
+    return result
 
 
 @numba.njit(cache=True, parallel=True)
@@ -282,6 +304,61 @@ def _multiply(
                     result[c, w, x, y, f] = scene[w, x, y, f] * factor
 
 
+@numba.njit(cache=True, parallel=True)
+def _combine(
+    photons: np.ndarray,
+    gain: np.ndarray,
+    gain_variance: np.ndarray,
+    variance_read: np.ndarray,
+    images: np.ndarray,
+    variance: np.ndarray,
+) -> None:
+    """
+    Sum what the forward matrix brings to every pixel from each spectral
+    line into the signal of the pixel and the variance of its noise.
+
+    This is one pass over the lines, shared between the threads, with every
+    sum accumulated in double precision.
+    The signal and the variance of the shot noise are kept from being
+    negative once they are summed over the lines.
+
+    Parameters
+    ----------
+    photons
+        What the matrix brings to every pixel, an array with an axis for the
+        channels, one for the lines, one for the pixels and one for the
+        frames.
+    gain
+        The signal for each unit of `photons`, for each channel and each
+        line.
+    gain_variance
+        The variance of the shot noise for each unit of `photons`, for each
+        channel and each line.
+    variance_read
+        The variance of the read noise, for each channel and each pixel.
+    images
+        The signal, an array with an axis for the channels, one for the
+        pixels and one for the frames, which is overwritten.
+    variance
+        The variance of the noise, an array like `images`, which is
+        overwritten.
+    """
+    num_channel, num_line, num_pixel, num_frame = photons.shape
+
+    for k in numba.prange(num_channel * num_pixel):
+        c = k // num_pixel
+        n = k % num_pixel
+        for f in range(num_frame):
+            signal = 0.0
+            shot = 0.0
+            for line in range(num_line):
+                p = photons[c, line, n, f]
+                signal += gain[c, line] * p
+                shot += gain_variance[c, line] * p
+            images[c, n, f] = max(signal, 0.0)
+            variance[c, n, f] = max(shot, 0.0) + variance_read[c, n]
+
+
 @dataclasses.dataclass(eq=False)
 class Operators:
     """
@@ -309,6 +386,11 @@ class Operators:
     The frames come last because that is how the matrices store them, so
     that no array is rearranged on its way in or out.
 
+    If the scene has several spectral lines, :attr:`shape_line`, the matrix
+    of the forward model keeps what each line brings to a pixel apart, so
+    that each line can have a gain and a variance-to-mean ratio of its own,
+    which are applied as the lines are summed into the images.
+
     The matrices, the factors around them and the arrays they act on are all
     in one precision, :attr:`dtype`.
     """
@@ -317,7 +399,7 @@ class Operators:
     """
     The matrix which takes the photons leaving every voxel of the scene
     toward each channel to the photons landing in every pixel of that
-    channel, summed over wavelength.
+    channel, summed over wavelength, for each spectral line.
     """
 
     vertices_scene: tuple[np.ndarray, ...]
@@ -350,14 +432,24 @@ class Operators:
 
     gain: np.ndarray
     """
-    The signal measured for each photon landing in a pixel, which broadcasts
-    against the images and the frames.
+    The signal measured for each unit of what :attr:`forward` brings to a
+    pixel, for each channel and each spectral line: an array with the axes
+    of the channels, followed by that of the lines if the scene has several,
+    each of length one if the gain does not vary along it.
+    """
+
+    vmr: np.ndarray
+    """
+    The variance of the shot noise of a pixel for each unit of its signal,
+    the variance-to-mean ratio, in units of :attr:`unit_images`, for each
+    channel and each spectral line: an array like :attr:`gain`.
     """
 
     variance_read: np.ndarray
     """
-    The variance of the read noise, in units of :attr:`unit_images` squared,
-    which broadcasts against the images and the frames.
+    The variance of the read noise, in units of :attr:`unit_images` squared:
+    an array with the axes of the images, each of length one if the read
+    noise does not vary along it.
     """
 
     shape_channel: dict[str, int]
@@ -365,8 +457,9 @@ class Operators:
 
     shape_scene: dict[str, int]
     """
-    The axes of a scene and their lengths: the wavelength axis, followed by
-    the two spatial axes.
+    The axes of a scene and their lengths: the axis of the spectral lines,
+    if the scene has several, followed by the wavelength axis and the two
+    spatial axes.
     """
 
     shape_sensor: dict[str, int]
@@ -378,11 +471,45 @@ class Operators:
     unit_images: u.UnitBase
     """The unit of the images."""
 
+    shape_line: dict[str, int] = dataclasses.field(default_factory=dict)
+    """
+    The axis of the spectral lines of a scene and its length, or an empty
+    dictionary if the scene is one band of wavelengths.
+    """
+
+    weights_scene: None | np.ndarray = None
+    """
+    The weight that :attr:`forward` gives every voxel of the scene, for each
+    channel, beyond the fraction of the voxel which lands in each pixel,
+    such as the effective area of the instrument there, or :obj:`None` if it
+    gives none.
+
+    It broadcasts against the channels and the scene: it has their axes,
+    each of length one if the weight does not vary along it.
+
+    The matrix of the backprojection inverts this weight, as
+    :func:`regridding.transpose_weights_conservative` does.
+    """
+
     _scale: np.ndarray = dataclasses.field(init=False, repr=False)
     """
     :attr:`scale` as :meth:`image` applies it: a view with one axis for the
-    channels, as many as :attr:`forward` takes, followed by those of a scene.
+    channels, one for the lines and the wavelengths, and two for the
+    positions.
     """
+
+    _gain: np.ndarray = dataclasses.field(init=False, repr=False)
+    """:attr:`gain` for each channel and each line, as the compiled code takes it."""
+
+    _gain_variance: np.ndarray = dataclasses.field(init=False, repr=False)
+    """
+    The variance of the shot noise for each unit of what :attr:`forward`
+    brings to a pixel, :attr:`gain` times :attr:`vmr`, for each channel and
+    each line.
+    """
+
+    _variance_read: np.ndarray = dataclasses.field(init=False, repr=False)
+    """:attr:`variance_read` for each channel and each pixel."""
 
     _backward: None | regridding.Regridder = dataclasses.field(
         default=None,
@@ -397,16 +524,39 @@ class Operators:
 
         num_axis_channel = len(self.shape_channel)
         shape_channel = self.forward.shape_input[:num_axis_channel]
-        shape_scene = self.forward.shape_input[num_axis_channel:]
+        shape_spectral = self.forward.shape_input[num_axis_channel:~1]
+        shape_xy = self.forward.shape_input[~1:]
 
-        # the axes of the channels are merged before the factor is broadcast
-        # along the scene, so that merging them copies as little as it can
+        # the channels are merged into one axis, and the lines and the
+        # wavelengths into another, before the factor is broadcast along
+        # the positions, so that merging them copies as little as it can
         scale = self.scale[..., 0]
-        shape_factor = scale.shape[num_axis_channel:]
-        scale = np.broadcast_to(scale, shape_channel + shape_factor)
-        scale = scale.reshape((math.prod(shape_channel),) + shape_factor)
+        shape_factor = scale.shape[~1:]
+        scale = np.broadcast_to(scale, shape_channel + shape_spectral + shape_factor)
+        scale = scale.reshape(
+            (math.prod(shape_channel), math.prod(shape_spectral)) + shape_factor
+        )
 
-        self._scale = np.broadcast_to(scale, scale.shape[:1] + shape_scene)
+        self._scale = np.broadcast_to(scale, scale.shape[:2] + shape_xy)
+
+        # the factors of each line, and the read noise of each pixel, as
+        # the arrays which the compiled code takes
+        shape_lines = shape_channel + shape_spectral[:~0]
+        gain = np.broadcast_to(self.gain, shape_lines)
+        gain = gain.reshape(self.num_channel, self.num_line)
+        vmr = np.broadcast_to(self.vmr, shape_lines)
+        vmr = vmr.reshape(self.num_channel, self.num_line)
+
+        self._gain = np.ascontiguousarray(gain, dtype=np.float64)
+        self._gain_variance = np.ascontiguousarray(gain * vmr, dtype=np.float64)
+
+        variance_read = np.broadcast_to(
+            self.variance_read,
+            tuple(self.shape_images.values()),
+        )
+        variance_read = np.ascontiguousarray(variance_read, dtype=np.float64)
+
+        self._variance_read = variance_read.reshape(self.num_channel, -1)
 
     @property
     def backward(self) -> regridding.Regridder:
@@ -421,6 +571,7 @@ class Operators:
             self._backward = self.forward.transpose_conservative(
                 coordinates_input=self.vertices_scene,
                 coordinates_output=self.vertices_sensor,
+                weights_input=self.weights_scene,
             )
         return self._backward
 
@@ -438,6 +589,11 @@ class Operators:
         return math.prod(self.shape_channel.values())
 
     @property
+    def num_line(self) -> int:
+        """The number of spectral lines of a scene, one if it is one band."""
+        return math.prod(self.shape_line.values())
+
+    @property
     def dtype(self) -> np.dtype:
         """
         The precision of the matrices, which the arrays they act on are
@@ -445,21 +601,19 @@ class Operators:
         """
         return np.dtype(self.forward.data.dtype)
 
-    def photons(
+    def _products(
         self,
         scene: np.ndarray,
         buffer: None | np.ndarray = None,
     ) -> np.ndarray:
         """
-        The photons expected in every pixel of the images of the scene of
-        each frame, summed over wavelength, without noise.
+        What :attr:`forward` brings to every pixel from each spectral line,
+        summed over wavelength, for the scene of each frame.
 
-        The photons are summed over wavelength before those of a pixel are
-        kept from being negative, so that the forward model is linear up to
-        the point where the photons are counted.
-
-        The result is a new array of shape :attr:`shape_images` followed by
-        an axis for the frames, which the caller is free to overwrite.
+        The result is a new array with an axis for the channels, one for the
+        lines, one for the pixels and one for the frames, which the caller is
+        free to overwrite, and which is negative wherever the scene makes it
+        so.
 
         Parameters
         ----------
@@ -467,13 +621,8 @@ class Operators:
             The scenes, of shape :attr:`shape_scene` followed by an axis for
             the frames.
         buffer
-            An array to overwrite with the photons leaving every voxel
-            toward each channel: a contiguous array of the shape that
-            :attr:`forward` takes followed by an axis for the frames, in the
-            precision of the matrices.
-            An iteration gives every call the same one, which is faster than
-            allocating it again.
-            If :obj:`None`, a new array is allocated.
+            An array to overwrite with the photons leaving every voxel, see
+            :meth:`photons`.
         """
         shape_scene = tuple(self.shape_scene.values())
         if scene.shape[:~0] != shape_scene:
@@ -501,16 +650,53 @@ class Operators:
                 f"and type {buffer.dtype}"
             )
         _multiply(
-            scene=scene,
+            scene=scene.reshape((-1,) + scene.shape[~2:]),
             scale=self._scale,
             result=buffer.reshape(self._scale.shape + (num_frame,)),
         )
 
-        photons = self._apply(self.forward, buffer)
-        photons = photons.reshape(tuple(self.shape_images.values()) + (num_frame,))
+        result = self._apply(self.forward, buffer)
+
+        return result.reshape(self.num_channel, self.num_line, -1, num_frame)
+
+    def photons(
+        self,
+        scene: np.ndarray,
+        buffer: None | np.ndarray = None,
+    ) -> np.ndarray:
+        """
+        The photons expected in every pixel of the images of the scene of
+        each frame, from each spectral line, summed over wavelength, without
+        noise.
+
+        The photons of a line are summed over wavelength before those of a
+        pixel are kept from being negative, so that the forward model is
+        linear up to the point where the photons are counted.
+
+        The result is a new array with the axes of the channels, that of the
+        lines if the scene has several, the two spatial axes of the images
+        and an axis for the frames, which the caller is free to overwrite.
+
+        Parameters
+        ----------
+        scene
+            The scenes, of shape :attr:`shape_scene` followed by an axis for
+            the frames.
+        buffer
+            An array to overwrite with the photons leaving every voxel
+            toward each channel: a contiguous array of the shape that
+            :attr:`forward` takes followed by an axis for the frames, in the
+            precision of the matrices.
+            An iteration gives every call the same one, which is faster than
+            allocating it again.
+            If :obj:`None`, a new array is allocated.
+        """
+        photons = self._products(scene, buffer=buffer)
         np.maximum(photons, 0, out=photons)
 
-        return photons
+        shape = self.shape_channel | self.shape_line | self.shape_sensor
+
+        return photons.reshape(tuple(shape.values()) + photons.shape[~0:])
 
     def image(
         self,
@@ -521,6 +707,10 @@ class Operators:
         The images expected of the scene of each frame, without noise, and
         the variance of their noise.
 
+        The signal of a pixel is summed over wavelength, and over the
+        spectral lines of the scene, before it is kept from being negative,
+        and so is the variance of its shot noise.
+
         Parameters
         ----------
         scene
@@ -530,19 +720,33 @@ class Operators:
             An array to overwrite with the photons leaving every voxel, see
             :meth:`photons`.
         """
-        images = self.photons(scene, buffer=buffer)
-        images *= self.gain
+        photons = self._products(scene, buffer=buffer)
 
-        # the variance of the shot noise of the photons, in units of the images
-        variance = images * self.gain
-        variance += self.variance_read
+        shape = (photons.shape[0],) + photons.shape[2:]
+        images = np.empty(shape, dtype=self.dtype)
+        variance = np.empty(shape, dtype=self.dtype)
 
-        return images, variance
+        _combine(
+            photons=photons,
+            gain=self._gain,
+            gain_variance=self._gain_variance,
+            variance_read=self._variance_read,
+            images=images,
+            variance=variance,
+        )
+
+        shape_images = tuple(self.shape_images.values()) + photons.shape[~0:]
+
+        return images.reshape(shape_images), variance.reshape(shape_images)
 
     def backproject(self, images: np.ndarray) -> np.ndarray:
         """
         Spread the images of each frame evenly over the voxels which could
         have contributed to them, giving a scene for each channel.
+
+        If the scene has several spectral lines, the images are spread over
+        the voxels of every line, since any of the lines could have
+        contributed to them.
 
         The result is the backprojection of the instrument divided, for each
         channel and each voxel, by :attr:`scale_backproject`.
@@ -555,10 +759,22 @@ class Operators:
             The images, of shape :attr:`shape_images` followed by an axis for
             the frames.
         """
+        shape_input = self.backward.shape_input
+        num_axis_channel = len(self.shape_channel)
+        num_frame = images.shape[~0]
+
         # images of another size cannot be given the shape the matrix takes,
         # so they raise an error here
-        num_frame = images.shape[~0]
-        images = images.reshape(self.backward.shape_input + (num_frame,))
+        shape = shape_input[:num_axis_channel]
+        shape = shape + (1,) * (len(shape_input) - num_axis_channel - 2)
+        shape = shape + shape_input[~1:]
+        images = images.reshape(shape + (num_frame,))
+
+        # the same images for every line
+        if shape != shape_input:
+            images = np.broadcast_to(images, shape_input + (num_frame,))
+            images = np.ascontiguousarray(images)
+
         return self._apply(self.backward, images)
 
     @staticmethod

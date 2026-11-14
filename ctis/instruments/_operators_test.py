@@ -119,10 +119,17 @@ def test__multiply(multiply: Callable, shape_scale: tuple[int, ...]) -> None:
     assert np.array_equal(result, scene * scale[..., np.newaxis])
 
 
-def _weights() -> tuple[na.AbstractScalarArray, dict[str, int], dict[str, int]]:
+def _weights(
+    weights_input: None | na.AbstractScalar = None,
+) -> tuple[na.AbstractScalarArray, dict[str, int], dict[str, int]]:
     """
     Conservative weights from a grid of 4 by 5 cells, which is shifted by a
     different amount in each of 3 channels, onto a grid of 6 by 4 cells.
+
+    Parameters
+    ----------
+    weights_input
+        The weight of each cell of the input grid, if it has one.
     """
     shift = na.linspace(0, 0.5, axis="channel", num=3)
     coordinates_input = na.Cartesian2dVectorArray(
@@ -138,8 +145,62 @@ def _weights() -> tuple[na.AbstractScalarArray, dict[str, int], dict[str, int]]:
         coordinates_output=coordinates_output,
         axis_input=("x", "y"),
         axis_output=("u", "v"),
+        weights_input=weights_input,
         method="conservative",
     )
+
+
+@pytest.mark.parametrize(
+    argnames="half",
+    argvalues=[50 * u.percent, 0.5 * u.dimensionless_unscaled],
+    ids=["percent", "dimensionless"],
+)
+def test_regridder_unit(half: u.Quantity) -> None:
+    """
+    Weights with a dimensionless unit are assembled into a matrix without
+    one, scaled by the unit, so that its products are plain arrays.
+    """
+    shape_input = dict(channel=3, x=4, y=5)
+    shape_output = dict(channel=3, u=6, v=4)
+
+    weights_input = na.ScalarArray(np.ones((4, 5)), axes=("x", "y")) * half
+
+    matrix = _operators.regridder(
+        weights=_weights(weights_input),
+        shape_input=shape_input,
+        shape_output=shape_output,
+    )
+    unweighted = _operators.regridder(
+        weights=_weights(),
+        shape_input=shape_input,
+        shape_output=shape_output,
+    )
+
+    rng = np.random.default_rng(0)
+    values = rng.uniform(size=tuple(shape_input.values()))
+
+    result = matrix(values)
+
+    assert matrix.unit is None
+    assert not isinstance(result, u.Quantity)
+    assert result.sum() > 0
+    assert np.allclose(result, unweighted(values) / 2, rtol=1e-12, atol=1e-12)
+
+
+def test_regridder_unit_unsupported() -> None:
+    """
+    Weights in a unit which is not dimensionless, which a matrix that acts
+    on plain arrays cannot carry, are not assembled into one.
+    """
+    weights_input = na.ScalarArray(np.ones((4, 5)), axes=("x", "y")) * u.cm**2
+
+    result = _operators.regridder(
+        weights=_weights(weights_input),
+        shape_input=dict(channel=3, x=4, y=5),
+        shape_output=dict(channel=3, u=6, v=4),
+    )
+
+    assert result is None
 
 
 @pytest.mark.parametrize(
@@ -313,3 +374,39 @@ def test_frames() -> None:
 
     assert _operators.frames(dict(x=3, y=2, z=5), shape_own, shape_other) is None
     assert _operators.frames(dict(channel=4), shape_own, shape_other) is None
+
+
+@pytest.mark.parametrize(
+    argnames="combine",
+    argvalues=[_operators._combine, _operators._combine.py_func],
+    ids=["compiled", "python"],
+)
+def test__combine(combine: Callable) -> None:
+    """
+    The kernel sums the spectral lines into the signal of every pixel and
+    the variance of its shot noise, each kept from being negative once it is
+    summed, and adds the variance of the read noise.
+    """
+    rng = np.random.default_rng(0)
+    photons = rng.uniform(-2, 2, size=(3, 2, 5, 4))
+    gain = rng.uniform(1, 2, size=(3, 2))
+    gain_variance = rng.uniform(1, 2, size=(3, 2))
+    variance_read = rng.uniform(0, 1, size=(3, 5))
+
+    images = np.empty((3, 5, 4))
+    variance = np.empty((3, 5, 4))
+
+    combine(photons, gain, gain_variance, variance_read, images, variance)
+
+    signal = (photons * gain[..., np.newaxis, np.newaxis]).sum(axis=1)
+    shot = (photons * gain_variance[..., np.newaxis, np.newaxis]).sum(axis=1)
+
+    assert np.any(signal < 0)
+    assert np.any(signal > 0)
+    assert np.allclose(images, np.maximum(signal, 0), rtol=1e-14, atol=0)
+    assert np.allclose(
+        variance,
+        np.maximum(shot, 0) + variance_read[..., np.newaxis],
+        rtol=1e-14,
+        atol=0,
+    )
