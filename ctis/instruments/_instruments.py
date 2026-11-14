@@ -873,22 +873,6 @@ class IdealInstrument(
     changing position coordinate.
     """
 
-    axis_line: None | str = None
-    """
-    The logical axis of :attr:`coordinates_scene` and
-    :attr:`coordinates_sensor` which separates the spectral lines of the
-    scene, or :obj:`None` (the default) if the scene is one band of
-    wavelengths.
-
-    Each line has its own wavelengths along :attr:`axis_wavelength`, the same
-    number for every line, and all the lines are imaged onto the same
-    sensors.
-    An image which is integrated along wavelength is therefore summed over
-    the lines too, and the backprojection of one is spread over the
-    wavelengths of every line.
-    The :attr:`quantum_yield` can be different for each line.
-    """
-
     quantum_yield: u.Quantity | na.AbstractScalar = 1 * u.electron / u.photon
     r"""
     The number of electrons generated in the sensor per incident photon, in
@@ -927,6 +911,22 @@ class IdealInstrument(
     axis_psf_xy: tuple[str, str] = ("psf_x", "psf_y")
     """
     The logical axes of :attr:`psf` which run along :attr:`axis_sensor_xy`.
+    """
+
+    axis_line: None | str = None
+    """
+    The logical axis of :attr:`coordinates_scene` and
+    :attr:`coordinates_sensor` which separates the spectral lines of the
+    scene, or :obj:`None` (the default) if the scene is one band of
+    wavelengths.
+
+    Each line has its own wavelengths along :attr:`axis_wavelength`, the same
+    number for every line, and all the lines are imaged onto the same
+    sensors.
+    An image which is integrated along wavelength is therefore summed over
+    the lines too, and the backprojection of one is spread over the
+    wavelengths of every line.
+    The :attr:`quantum_yield` can be different for each line.
     """
 
     @property
