@@ -1357,6 +1357,7 @@ def _instrument_optika(
     wavelength: u.Quantity = [530, 570] * u.nm,
     material: None | optika.sensors.materials.AbstractSensorMaterial = None,
     vignetted: bool = False,
+    lines: None | u.Quantity = None,
 ) -> ctis.instruments.OptikaInstrument:
     """
     A small instrument on a linear system of :mod:`optika`, with three
@@ -1371,21 +1372,29 @@ def _instrument_optika(
         responds to every wavelength in the same way.
     vignetted
         Whether to give the system a vignetting model and a field stop.
+    lines
+        The shift of each spectral line from the band, if the scene has
+        several: each line then covers a band as wide as `wavelength`,
+        shifted by its own amount.
     """
     wavelength_min, wavelength_max = wavelength
-    width = wavelength_max - wavelength_min
+
+    # the wavelengths of the scene, and the band which holds all of them
+    band = na.linspace(wavelength_min, wavelength_max, axis="wavelength", num=4)
+    axis_line = None
+    if lines is not None:
+        axis_line = "line"
+        band = band + na.ScalarArray(lines, axes=axis_line)
+    low = band.min().ndarray
+    high = band.max().ndarray
+    width = high - low
 
     axis_field = ("scene_x", "scene_y")
 
     kwargs_system = dict()
     if vignetted:
         cells = na.SpectralPositionalVectorArray(
-            wavelength=na.linspace(
-                start=wavelength_min,
-                stop=wavelength_max,
-                axis="wavelength",
-                num=3,
-            ),
+            wavelength=na.linspace(low, high, axis="wavelength", num=3),
             position=na.Cartesian2dVectorLinearSpace(
                 start=-25 * u.arcsec,
                 stop=+25 * u.arcsec,
@@ -1413,8 +1422,8 @@ def _instrument_optika(
     system = optika.systems.LinearSystem(
         area_effective=optika.radiometry.InterpolatedEffectiveAreaModel(
             wavelength=na.linspace(
-                start=wavelength_min - width,
-                stop=wavelength_max + width,
+                start=low - width,
+                stop=high + width,
                 axis="wavelength",
                 num=10,
             ),
@@ -1426,7 +1435,7 @@ def _instrument_optika(
             dispersion=3 * width / (32 * u.pix),
             angle=channel,
             reference=na.SpectralPositionalVectorArray(
-                wavelength=(wavelength_min + wavelength_max) / 2,
+                wavelength=(low + high) / 2,
                 position=na.Cartesian2dVectorArray(16, 16) * u.pix,
             ),
         ),
@@ -1442,12 +1451,7 @@ def _instrument_optika(
     # the scene grid spans the field of view so the backprojection of a
     # contained source is not clipped
     coordinates_scene = na.SpectralPositionalVectorArray(
-        wavelength=na.linspace(
-            start=wavelength_min,
-            stop=wavelength_max,
-            axis="wavelength",
-            num=4,
-        ),
+        wavelength=band,
         position=na.Cartesian2dVectorLinearSpace(
             start=-20 * u.arcsec,
             stop=+20 * u.arcsec,
@@ -1462,6 +1466,7 @@ def _instrument_optika(
         axis_channel="channel",
         axis_wavelength="wavelength",
         axis_scene_xy=axis_field,
+        axis_line=axis_line,
     )
 
 
@@ -1470,8 +1475,12 @@ def _instrument_optika(
     argvalues=[
         _instrument_optika(),
         _instrument_optika(material=optika.sensors.materials.e2v_ccd97()),
+        _instrument_optika(
+            material=optika.sensors.materials.e2v_ccd97(),
+            lines=[0, 60] * u.nm,
+        ),
     ],
-    ids=["ideal sensor", "sensor whose gain varies"],
+    ids=["ideal sensor", "sensor whose gain varies", "two lines"],
 )
 class TestOptikaInstrument(
     AbstractTestAbstractLinearInstrument,
@@ -1727,3 +1736,150 @@ def test_backproject_lines() -> None:
     ):
         assert result.outputs.shape["line"] == 2
         _assert_close(result.outputs, expected)
+
+
+def _instrument_optika_lines() -> ctis.instruments.OptikaInstrument:
+    """
+    An instrument on a linear system of :mod:`optika` with a scene of two
+    spectral lines in the extreme ultraviolet, which overlap on its sensors,
+    and a sensor which responds to each of them in its own way.
+    """
+    return _instrument_optika(
+        wavelength=[62.9, 63.1] * u.nm,
+        material=optika.sensors.materials.e2v_ccd97(),
+        lines=[0, -4.6] * u.nm,
+    )
+
+
+def test_optika_image_lines() -> None:
+    """
+    The image of a scene of several spectral lines is the sum of the images
+    of its lines, which the instrument gives one at a time if it is not told
+    that they are lines.
+    The variances of the lines add, and the read noise is added once.
+    """
+    a = _instrument_optika_lines()
+    sensor = dataclasses.replace(a.system.sensor, read_noise=5 * u.electron)
+    a = dataclasses.replace(
+        a,
+        system=dataclasses.replace(a.system, sensor=sensor),
+    )
+    separate = dataclasses.replace(a, axis_line=None)
+
+    operators = a._operators()
+
+    assert operators is not None
+    assert operators.shape_line == dict(line=2)
+    assert separate._operators() is None
+
+    # a scene which is dim enough for its noise to be drawn
+    scene = _scene_frames(a, shape_frames=dict()).outputs
+    brightest = a.image(scene, noise=False).outputs.max()
+    scene = scene * (100 / brightest.ndarray.to_value(u.electron))
+    axis = ("line", "wavelength")
+
+    expected = separate.image(scene, integrate=False, noise=False, uncertainty=True)
+    expected = expected.outputs
+    nominal = expected.nominal.sum(axis)
+    variance = np.square(expected.width).sum(axis) + np.square(sensor.read_noise)
+
+    assert expected.nominal.shape["line"] == 2
+
+    result = a.image(scene, noise=False, uncertainty=True)
+
+    assert "line" not in result.outputs.shape
+    assert "line" not in result.inputs.wavelength.shape
+    _assert_close(result.outputs.nominal, nominal)
+    _assert_close(np.square(result.outputs.width), variance)
+
+    # with noise, the read noise is drawn once, and the width is unchanged
+    noisy = a.image(scene, noise=True, uncertainty=True).outputs
+
+    assert "line" not in noisy.shape
+    assert np.all(noisy.nominal != nominal)
+    _assert_close(np.square(noisy.width), variance)
+
+    # and each line keeps its wavelengths if the image is not integrated
+    assert a.image(scene, integrate=False, noise=False).outputs.shape["line"] == 2
+
+
+def test_optika_backproject_lines() -> None:
+    """
+    The backprojection of an image is spread evenly over the wavelengths of
+    every spectral line, so each line gets its share of what it would get
+    alone.
+    """
+    a = _instrument_optika_lines()
+    separate = dataclasses.replace(a, axis_line=None)
+
+    image = a.image(_scene_frames(a, shape_frames=dict()), noise=False).outputs
+
+    result = a.backproject(image).outputs
+
+    assert result.shape["line"] == 2
+    _assert_close(result, separate.backproject(image).outputs / 2)
+
+
+def test_optika_operators_lines() -> None:
+    """
+    The operators of a scene of several spectral lines take one
+    variance-to-mean ratio of the sensor for each line: their images and
+    their backprojections are those of the instrument, and their variance is
+    within the tolerance of its own, where one ratio for both lines would be
+    several percent off.
+    """
+    a = _instrument_optika_lines()
+    operators = a._operators()
+
+    assert operators is not None
+    assert operators.vmr.shape[~0] == 2
+    assert np.ptp(operators.vmr) > 0.05 * operators.vmr.mean()
+
+    shape_scene = operators.shape_scene
+    shape_images = operators.shape_images
+    shape_voxels = operators.shape_channel | shape_scene
+
+    rng = np.random.default_rng(0)
+    scene = rng.uniform(1, 2, size=tuple(shape_scene.values()))
+
+    expected = a.image(
+        scene=na.ScalarArray(
+            ndarray=scene << operators.unit_scene,
+            axes=tuple(shape_scene),
+        ),
+        noise=False,
+        uncertainty=True,
+    ).outputs
+    nominal = expected.nominal.ndarray_aligned(tuple(shape_images))
+    nominal = nominal.to_value(operators.unit_images)
+    variance_expected = np.square(expected.width)
+    variance_expected = variance_expected.ndarray_aligned(tuple(shape_images))
+    variance_expected = variance_expected.to_value(operators.unit_images**2)
+
+    images, variance = operators.image(scene[..., np.newaxis])
+    images = images[..., 0]
+    variance = variance[..., 0]
+
+    assert images.sum() > 0
+    assert np.allclose(images, nominal, rtol=1e-10, atol=1e-10 * nominal.max())
+
+    lit = nominal > 1e-3 * nominal.max()
+    error = np.abs(variance[lit] / variance_expected[lit] - 1)
+
+    assert error.max() < a._tolerance_vmr
+    assert error.max() > 1e-6
+
+    expected = a.backproject(
+        image=na.ScalarArray(
+            ndarray=images << operators.unit_images,
+            axes=tuple(shape_images),
+        ),
+    ).outputs
+    expected = expected.ndarray_aligned(tuple(shape_voxels))
+    expected = expected.to_value(operators.unit_scene)
+
+    result = operators.backproject(images[..., np.newaxis])
+    result = (result * operators.scale_backproject)[..., 0]
+
+    assert result.sum() > 0
+    assert np.allclose(result, expected, rtol=1e-10, atol=1e-10 * expected.max())

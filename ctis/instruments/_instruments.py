@@ -1579,19 +1579,20 @@ class OptikaInstrument(
     assembles from :attr:`weights`, with the response of its sensor at each
     wavelength folded into them, so their images are those of :meth:`image`.
     The variance of the noise of those images is taken from one
-    variance-to-mean ratio of the sensor for all the wavelengths of the
-    scene, which suits a scene of one spectral line.
+    variance-to-mean ratio of the sensor for all the wavelengths of a
+    spectral line, so a scene of several lines names the axis which
+    separates them, :attr:`axis_line`.
     If the ratio varies by more than two parts in a thousand across the
-    wavelengths, the instrument does not provide the matrices, and the
-    inverters iterate on :meth:`image` and :meth:`backproject`, which is
-    slower.
+    wavelengths of a line, the instrument does not provide the matrices,
+    and the inverters iterate on :meth:`image` and :meth:`backproject`,
+    which is slower.
     """
 
     _tolerance_vmr: ClassVar[float] = 2e-3
     """
     The largest change of the variance-to-mean ratio of the sensor across
-    the wavelengths of the scene, relative to the middle of its range, for
-    which this instrument provides operators.
+    the wavelengths of a spectral line, relative to the middle of its range,
+    for which this instrument provides operators.
     """
 
     system: optika.systems.AbstractLinearSystem = dataclasses.MISSING
@@ -1695,10 +1696,11 @@ class OptikaInstrument(
         The electrons this gives at each wavelength are folded into the
         factor of every voxel, ahead of the sum over wavelength, so the
         images are those of :meth:`image`.
-        The variance of their noise is the images times one
-        variance-to-mean ratio for all the wavelengths, the middle of its
-        range, which is why an instrument whose ratio varies by more than
-        :attr:`_tolerance_vmr` does not provide operators.
+        The variance of their noise is the images of each spectral line
+        times one variance-to-mean ratio for all the wavelengths of the
+        line, the middle of its range, which is why an instrument whose
+        ratio varies by more than :attr:`_tolerance_vmr` across a line does
+        not provide operators.
 
         Parameters
         ----------
@@ -1872,17 +1874,50 @@ class OptikaInstrument(
         else:
             scene = na.FunctionArray(inputs=self.coordinates_scene, outputs=scene)
 
+        # optika integrates an image over the wavelengths of one line, and
+        # adds the read noise of the sensor to it, so the lines of a scene
+        # which has several are summed here instead, and the read noise is
+        # added once
+        summed = integrate and self.axis_line is not None
+
         # optika applies the effective area, vignetting, and sensor response
         # (including the integration over wavelength and read noise) using the
         # cached regridding weights.
-        return self.system.image_from_weights(
+        result = self.system.image_from_weights(
             self.weights,
             scene,
             axis_wavelength=self.axis_wavelength,
             axis_field=self.axis_scene_xy,
             noise=noise,
             uncertainty=uncertainty,
-            integrate=integrate,
+            integrate=integrate and not summed,
+        )
+
+        if not summed:
+            return result
+
+        axis = self._axis_spectral
+        read_noise = self.system.sensor.read_noise
+
+        electrons = result.outputs
+
+        if uncertainty:
+            # the variances of the wavelengths of every line add
+            variance = np.square(electrons.width).sum(axis)
+            width = np.sqrt(variance + np.square(read_noise))
+            electrons = electrons.nominal
+
+        electrons = electrons.sum(axis)
+
+        if noise:
+            electrons = na.random.normal(loc=electrons, scale=read_noise)
+
+        if uncertainty:
+            electrons = na.NormalUncertainScalarArray(nominal=electrons, width=width)
+
+        return na.FunctionArray(
+            inputs=self._collapse_wavelength(result.inputs),
+            outputs=electrons,
         )
 
     def backproject(
@@ -1910,7 +1945,7 @@ class OptikaInstrument(
         )
 
         # the energy/photon conversion is handled by optika's backproject.
-        return self.system.backproject_from_weights(
+        result = self.system.backproject_from_weights(
             self.weights_transpose,
             image,
             coordinates=self.coordinates_scene,
@@ -1919,3 +1954,13 @@ class OptikaInstrument(
             integrate=integrate,
             unit=unit,
         )
+
+        # optika spreads an integrated image over the wavelengths of one
+        # line, and the backprojection spreads it over those of every line,
+        # so that it conserves the total of the image
+        axis_line = self.axis_line
+        if integrate and axis_line is not None:
+            num_line = self.coordinates_scene.wavelength.shape[axis_line]
+            result = result.replace(outputs=result.outputs / num_line)
+
+        return result

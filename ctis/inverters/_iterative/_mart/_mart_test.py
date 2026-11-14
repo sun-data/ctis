@@ -11,7 +11,10 @@ import named_arrays as na
 import optika
 import ctis
 from ctis.instruments._operators import Operators
-from ctis.instruments._instruments_test import _instrument_optika
+from ctis.instruments._instruments_test import (
+    _instrument_optika,
+    _instrument_optika_lines,
+)
 from .._iterative_test import AbstractTestAbstractIterativeInverter
 
 velocity = na.linspace(-500, 500, axis="wavelength", num=21) * u.km / u.s
@@ -1261,3 +1264,39 @@ def test__call__lines_frames() -> None:
 
         for index in na.ndindex(shape_frames):
             _assert_frame(result, index, a(images_frames[index]))
+
+
+def test__call__optika_lines() -> None:
+    """
+    A scene of two spectral lines, each of which the sensor responds to in
+    its own way, is reconstructed on the matrices of an instrument on a
+    linear system of :mod:`optika`: the solution after a given number of
+    iterations is that of the iteration on the methods of the instrument,
+    it has the axis of the lines, and the merit is within the tolerance of
+    its own.
+    """
+    instrument_lines = _instrument_optika_lines()
+    a = ctis.inverters.MartInverter(
+        instrument=instrument_lines,
+        num_iteration=4,
+        threshold_convergence=-np.inf,
+    )
+    images_lines = _images_optika(instrument_lines)
+
+    assert _uses_operators(a, images_lines)
+
+    with pytest.warns(UserWarning, match="Max number of iterations"):
+        result = a(images_lines)
+
+    with pytest.warns(UserWarning, match="Max number of iterations"):
+        expected = _reference(a, images_lines)
+
+    assert result.solution.outputs.shape["line"] == 2
+    assert result.num_iteration == expected.num_iteration == 4
+    _assert_close(result.solution.outputs, expected.solution.outputs)
+
+    ratio = result.mean_chi_squared / expected.mean_chi_squared
+    error = np.abs(na.value(ratio).ndarray - 1)
+
+    assert error.max() < instrument_lines._tolerance_vmr
+    assert error.max() > 1e-8
