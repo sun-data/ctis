@@ -8,9 +8,11 @@ and ``regridding.Regridder`` joins most of them:
 one sparse CSR operator with both of its transposes,
 assembled and applied on the host or on a GPU.
 :class:`~ctis.inverters.MartInverter` now runs on it on the host,
-for an :class:`~ctis.instruments.IdealInstrument`.
+for an :class:`~ctis.instruments.IdealInstrument`
+and for an :class:`~ctis.instruments.OptikaInstrument`,
+the model of an optical system and its sensor,
+with the spectral lines of a scene kept apart.
 What remains is the same loop on a GPU and, for the ESIS Level-4 product,
-the model of the flight instrument on the operator,
 a streaming build for weights too large to hold at once
 and the tied model of ESIS, which today lives in scripts.
 The host comes first.
@@ -69,6 +71,13 @@ Where things stand
         for an :class:`~ctis.instruments.IdealInstrument`:
         frames solved together, float32 as an option,
         and the reference path kept for the instruments without matrices
+    * - :class:`~ctis.instruments.OptikaInstrument` on the ``Regridder``
+      - ctis main
+      - Unreleased
+      - The model of an optical system and its sensor on the same matrices:
+        the gain of each wavelength folded into them,
+        one variance-to-mean ratio for each spectral line,
+        and the lines of a scene along an axis the instrument names, ``axis_line``
     * - ``torch`` ``Regridder``
       - ctis ``feature/parametric-inverter``, ``feature/elastic-net-inverter``
       - Unmerged
@@ -193,6 +202,26 @@ On the host alone it is 2.1 to 8 times faster than ctis.
   A second product, which a ratio for each wavelength needs,
   took from a quarter longer on the tutorial
   to between a half and two thirds longer on the PSF tutorial.
+- **The flight model of ESIS runs on the matrices.**
+  With two spectral lines, Mg X 625 Å and O V 630 Å,
+  on a grid coarse enough for the reference path, 6″ cells and 6 velocity bins,
+  the matrices of :class:`~ctis.instruments.OptikaInstrument` gave the images
+  and the backprojection of its own methods to 2e-14 of their peaks,
+  and after four iterations of MART the solution of the reference path,
+  to 1.3e-14 of its peak in float64 and 1.2e-7 in float32.
+  Their variance was within 6e-4 of that of the reference.
+  With one ratio for both lines it would have been off by 5e-3:
+  the two lines are 5 Å apart, and their ratios already differ by 1%.
+  The four iterations took 1.0 s on the matrices and 17.7 s on the reference path.
+- **At production, a spectral line of ESIS costs about a second an iteration on the host.**
+  On the matrices of :class:`~ctis.instruments.OptikaInstrument` in float32,
+  one line of the flight model, 483 million weights,
+  took 1.0 s an iteration for one frame and 2.5 s for four frames at once,
+  and two lines, 992 million weights, took 1.9 s for one frame.
+  The matrices of one line were built in 34 s and take 12.3 GB,
+  and those of two in 79 s and 24.8 GB, with a peak of 38.4 GB.
+  A third of those weights are exact zeros, which the field stop leaves behind
+  and the streamed build of M6 drops.
 - **Building the weights was the expensive step at production scale.**
   Tempest needed about 1.3 TB of cached CPU weights and 1.2 TB jobs per frame.
   Built on the GPU, the 148M weights of the PSF tutorial and their transpose
@@ -349,6 +378,8 @@ which every gate compares against.
   The gain folds into the forward values, so the image is that of the reference path.
   The ratio changes by 14% across the lines of ESIS but by 0.2% within one,
   so one ratio serves a line, to about 0.1%.
+  An instrument whose ratio strays from the middle of its range by more than 0.2%
+  within a line provides no matrices, and is inverted on the reference path.
   The forward matrix keeps the lines apart, as described below,
   and the variance of an image is the sum of the images of its lines,
   each times its ratio:
@@ -410,15 +441,21 @@ which every gate compares against.
   by up to 1.1e-4, 0.11% of a nearest-neighbor value,
   which moves 2.3e-4 of the charge,
   and within the ±210 km/s window of one line it moves under 3e-6.
-  So the scene of ESIS keeps each line on its own axis,
+  So the scene of ESIS keeps its lines along an axis of their own,
+  which the instrument names with ``axis_line``,
   and the forward matrix sums only within a line.
+  Each line has its own wavelengths along the wavelength axis,
+  the same number for every line.
+  An image integrated over wavelength is summed over the lines too,
+  and a backprojection is spread over the wavelengths of every line,
+  so it conserves the total of the image as it does for one band.
   What depends on the line is applied to its image before the lines are summed:
   from M7 its variance-to-mean ratio, which gives the variance without a second product,
   and from M9 one kernel per channel and line, which blurs it.
   The shape rules of the ``Regridder`` need nothing new for this.
   The gain of each wavelength folds into the forward values,
   and its inverse into the conservative ones,
-  so the image matches the per-wavelength model of :mod:`optika` to a few parts in a million,
+  so the image is that of the per-wavelength model of :mod:`optika` to rounding,
   and its variance to about 0.1%.
   At production this costs about 0.5 GB of row pointers and 0.25 GB of intermediate images.
 - **Not chosen: a single-launch scatter, or a second matrix of transposed weights.**
@@ -444,6 +481,10 @@ on the host first and then on a GPU.
 M5 is the first one users can run, and its host half is done:
 :class:`~ctis.inverters.MartInverter` runs on the ``Regridder`` on the host,
 and the ``device`` option, for a GPU, remains.
+The host half of M7 is done too, ahead of M6:
+:class:`~ctis.instruments.OptikaInstrument` provides its matrices,
+assembled from the weights of the whole scene at once,
+which two spectral lines of ESIS at production fit and seven do not.
 M1 shipped in regridding 3.5.1 and M3 in regridding 3.7.0, which M5 and M6 need.
 M2 and M4 can start now, and the host needs neither.
 
@@ -455,7 +496,7 @@ M2 and M4 can start now, and the host needs neither.
     Arrows point from a milestone to the ones that need it.
     Each is one pull request, except M8, which is several.
 
-The path of the host is M3, M5, M6, M7 and M8.
+The path of the host is M3, M5, M6, M7 and M8, of which M6 and M8 remain.
 M4 only speeds up the build of the weights on a GPU,
 so M5 needs it for its GPU gate alone.
 M2 is off the path of MART, since the loop uses CSR products
@@ -553,9 +594,15 @@ At ESIS scale, where it cannot run, the standard is the product of tempest.
         within 1e-10 in float64,
         and within the tolerance of M5 in float32.
         Its variance agrees with that of the reference to 2e-3,
-        since it takes one variance-to-mean ratio for each line
+        since it takes one variance-to-mean ratio for each line.
+        The host passes:
+        on two lines of the flight model, with 6″ cells and 6 velocity bins,
+        the images agree to 9e-15 of their peak and the variance to 6e-4,
+        and after four iterations the solution agrees
+        to 1.3e-14 in float64 and to 1.2e-7 in float32
       - The weights of one spectral line of ESIS at production
-        in under 20 s on the host and under 10 s on a GPU
+        in under 20 s on the host and under 10 s on a GPU.
+        The host takes 14.9 s
     * - M8
       - Frame 15 on a coarse grid, on one model of the instrument
         and at a fixed iteration count,
@@ -668,6 +715,16 @@ Keeping the spectral lines on their own axis,
 for the noise of the sensor from M7 and its blur from M9,
 adds about 0.75 GB at production.
 
+The matrices of M7 are measured at production for one spectral line and for two:
+12.3 GB and 24.8 GB once built,
+with a peak of 38.4 GB while those of two lines are assembled.
+That is twice what the table allows a line,
+since they keep the exact zeros of the field stop, a third of their entries,
+and the grids which their conservative transpose was scaled from.
+Seven lines built that way would take about 86 GB,
+and about 134 GB at the peak of their assembly, which the host does not have to spare,
+so all seven wait for the streamed build of M6.
+
 Regenerate or cache
 -------------------
 
@@ -771,12 +828,16 @@ The rest are questions to settle before the milestone that needs them.
   and the production cube against the FITS files,
   with the differences reported beside these changes.
   The first needs the script of tempest to run on today's versions, which is unchecked.
-- **The time of MART on the host is extrapolated (M5, M8).**
-  The products at production are scaled from a synthetic operator 14 times smaller:
-  about 2.3 s an iteration,
-  so about 25 minutes for the 30 frames one at a time,
-  and about 12 in batches of four.
-  Neither has been run.
+- **The time of MART on the host is measured for two lines of seven (M8).**
+  On the matrices of M7 at production, an iteration takes 1.0 s for one spectral line
+  and 1.9 s for two, so about 6.5 s for the seven lines of ESIS:
+  nearly three times the 2.3 s scaled before from a synthetic operator 14 times smaller.
+  A third of the entries of those matrices are exact zeros, which M6 drops,
+  and four frames at once take 0.6 of the time of the four one at a time.
+  At the iteration counts assumed before,
+  the 30 frames would take about 70 minutes one at a time
+  and about 45 in batches of four, against the hour of the gate of M8.
+  All seven lines have not been run, since their matrices wait for M6.
 - **A** ``device`` **option or a separate inverter (M5).**
   The design assumes the fast path goes inside :class:`~ctis.inverters.MartInverter`,
   on a GPU behind a ``device`` option, rather than in a separate inverter.
@@ -858,15 +919,23 @@ The rest are questions to settle before the milestone that needs them.
   so with the lines on their own axis one ratio for each channel and line
   multiplies the image of that line, after the one product.
   See `Design`_.
-- **How an instrument names its spectral lines (M7).**
-  Keeping the lines apart needs the instrument to say
-  which wavelengths belong to which line.
-  The reference :class:`~ctis.instruments.OptikaInstrument` has one wavelength axis,
-  and so does :class:`~ctis.instruments.IdealInstrument`,
-  where the fast path supports one line,
-  with a quantum yield which does not vary with wavelength.
-  An axis for the lines in the coordinates of the scene, named explicitly,
-  is the leading option, and it is new public API to agree before M7 starts.
+- **How an instrument names its spectral lines (resolved).**
+  With an axis of the coordinates of the scene, which the instrument names:
+  ``axis_line``, on :class:`~ctis.instruments.IdealInstrument`
+  and :class:`~ctis.instruments.OptikaInstrument` alike.
+  Each line has its own wavelengths along the wavelength axis,
+  the same number for every line.
+  Without the name nothing changes:
+  a second axis of the wavelengths is still an axis of the instrument,
+  which gives one image for each of its elements.
+  The quantum yield of an :class:`~ctis.instruments.IdealInstrument`
+  can differ from line to line and stay on the matrices.
+  Lines whose windows differ in length, and lines tied in one window, are left to M8.
+- **A scene in units of energy leaves the fast path (M8).**
+  The matrices of :class:`~ctis.instruments.OptikaInstrument` take a scene in photons,
+  the unit its backprojection returns by default.
+  A first guess in units of energy is inverted on the reference path instead,
+  which cannot run at production.
 - **Charge diffusion changes Level-4 (M9).**
   From optika 4.0, the noise-free model of a sensor includes charge diffusion,
   so MART will also undo the diffusion blur,
