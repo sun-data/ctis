@@ -1179,7 +1179,6 @@ class TestIdealInstrument(
 
         assert "weights" not in vars(a)
         assert num_channel == a.weights[0].shape[a.axis_channel]
-        assert ctis.inverters.MartInverter(instrument=a).gamma == 2 / num_channel
 
     def test_image_negative(
         self,

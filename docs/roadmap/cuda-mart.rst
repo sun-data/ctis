@@ -241,8 +241,9 @@ On the host alone it is 2.1 to 8 times faster than ctis.
   The PSF tutorial stops at the first :math:`\langle \chi^2 \rangle \leq 1`;
   tempest stops when :math:`\langle \chi^2 \rangle` improves by less than 1e-2;
   ctis stops when it improves by less than 1e-3.
-  ctis raises each correction to :math:`\gamma = 2 / N` for :math:`N` channels
-  unless told otherwise, where tempest uses :math:`\gamma = 1`.
+  When these were timed, ctis raised each correction to
+  :math:`\gamma = 2 / N` for :math:`N` channels unless told otherwise,
+  where tempest uses :math:`\gamma = 1`, which is now the default of ctis too.
   ctis starts from a constant scene,
   and tempest from a Gaussian line profile inside the field stop,
   scaled to the observed images.

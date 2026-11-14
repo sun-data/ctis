@@ -42,7 +42,8 @@ the convergence criterion is reached:
   which spreads the intensity gathered by each CTIS channel evenly along
   the projection direction.
 - Generate an effective correction factor for each channel,
-  :math:`C_i' = C_i^\gamma`, where :math:`0<\gamma<1` is the learning rate.
+  :math:`C_i' = C_i^\gamma`, where :math:`0<\gamma<2` is the learning rate,
+  which is 1 unless told otherwise.
 - Find the total correction factor,
   :math:`\overline{C}_i` by taking the geometric average of each channel's
   correction factor.
