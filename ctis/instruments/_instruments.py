@@ -202,16 +202,37 @@ class AbstractInstrument(
         return tuple(axis_channel)
 
     @property
+    def _shape_line(self) -> dict[str, int]:
+        """
+        The axis of the spectral lines of the scene and its length, or an
+        empty dictionary if the scene is one band of wavelengths.
+
+        Every method which treats the lines of a scene reads this, so an
+        instrument whose :attr:`axis_line` is not an axis of the wavelengths
+        of its scene raises the same error from each of them.
+        """
+        axis_line = self.axis_line
+        if axis_line is None:
+            return dict()
+
+        shape = na.shape(self.coordinates_scene.wavelength)
+        if axis_line not in shape:
+            raise ValueError(
+                f"`axis_line` is {axis_line!r}, which is not an axis of the "
+                f"wavelengths of `coordinates_scene`, whose axes are "
+                f"{tuple(shape)}."
+            )
+
+        return {axis_line: shape[axis_line]}
+
+    @property
     def _axis_spectral(self) -> tuple[str, ...]:
         """
         The axes that an image which is integrated along wavelength is summed
         over: :attr:`axis_line`, if the scene has several lines, and
         :attr:`axis_wavelength`.
         """
-        axis_line = self.axis_line
-        if axis_line is None:
-            return (self.axis_wavelength,)
-        return (axis_line, self.axis_wavelength)
+        return (*self._shape_line, self.axis_wavelength)
 
     def _operators(self, dtype: type = np.float64) -> None | Operators:
         """
@@ -294,11 +315,10 @@ class AbstractLinearInstrument(
     def _fields_factors(self) -> tuple:
         """
         The fields of this instrument which the factors around the matrices
-        of its operators are computed from, and which the matrices do not
-        depend on.
+        of its operators are computed from.
 
         If any of them is assigned, the factors are computed again, on the
-        same matrices.
+        same matrices, which are kept even if they depend on it too.
         """
         return ()
 
@@ -544,7 +564,15 @@ class AbstractLinearInstrument(
             unit=unit_position,
         )
 
-        # the weight of every cell of the scene, if the weights have one
+        # grids which cannot be expressed as plain arrays of positions on the
+        # sensor, such as those with an axis of their own, are left to the
+        # named arrays
+        if vertices_scene is None or vertices_sensor is None:
+            return None
+
+        # the weight of every cell of the scene, if the weights have one,
+        # kept as it broadcasts against the voxels, which is all that the
+        # matrix of the backprojection needs of it
         weights_scene = self._weights_input()
         if weights_scene is not None:
             weights_scene = aligned(
@@ -552,9 +580,10 @@ class AbstractLinearInstrument(
                 shape=shape_voxels,
                 unit=u.dimensionless_unscaled,
             )
-            weights_scene = np.ascontiguousarray(
-                np.broadcast_to(weights_scene, tuple(shape_voxels.values())),
-            )
+
+            # and so is a weight which cannot be expressed as a plain array
+            if weights_scene is None:
+                return None
 
         # the matrix takes a scene for each channel, rather than one shared
         # by the channels, so that its transpose gives a backprojection
@@ -569,6 +598,11 @@ class AbstractLinearInstrument(
             | shape_sensor,
             dtype=dtype,
         )
+
+        # and so are weights in a unit of their own, which a matrix that
+        # acts on plain arrays cannot carry
+        if forward is None:
+            return None
 
         # the weights are released, so that the matrix of the backprojection,
         # which is derived from the one above when it is first needed,
@@ -721,9 +755,7 @@ class AbstractLinearInstrument(
         # an integrated image is spread evenly over the wavelengths of every
         # line, so that the backprojection conserves its total
         num_wavelength = coordinates.wavelength.shape[self.axis_wavelength] - 1
-        axis_line = self.axis_line
-        if axis_line is not None:
-            num_wavelength = num_wavelength * coordinates.wavelength.shape[axis_line]
+        num_wavelength = num_wavelength * math.prod(self._shape_line.values())
 
         values_input = image
 
@@ -1579,22 +1611,60 @@ class OptikaInstrument(
 
     The inverters iterate on a pair of sparse matrices which this instrument
     assembles from :attr:`weights`, with the response of its sensor at each
-    wavelength folded into them, so their images are those of :meth:`image`.
+    wavelength folded into them, so their images are those of :meth:`image`
+    for a scene which is nowhere negative.
+    The matrices keep the signal of a pixel from being negative once it is
+    summed over wavelength, where :meth:`image` keeps the light of each
+    wavelength from being negative before it is summed, so the two differ
+    for a scene which is negative somewhere.
     The variance of the noise of those images is taken from one
     variance-to-mean ratio of the sensor for all the wavelengths of a
-    spectral line, so a scene of several lines names the axis which
-    separates them, :attr:`axis_line`.
-    If the ratio varies by more than two parts in a thousand across the
-    wavelengths of a line, the instrument does not provide the matrices,
-    and the inverters iterate on :meth:`image` and :meth:`backproject`,
-    which is slower.
+    spectral line, the middle of its range, so a scene of several lines
+    names the axis which separates them, :attr:`axis_line`.
+    If the ratio strays from the middle of its range by more than two parts
+    in a thousand within a line, if the sensor does not respond to one of
+    the wavelengths, or if its signal or the variance of its noise is not
+    proportional to the light, the instrument does not provide the
+    matrices, and the inverters iterate on :meth:`image` and
+    :meth:`backproject`, which is slower.
+
+    The matrices follow the sensor: if :attr:`system`, or the sensor of the
+    system, is assigned after they were assembled, the response of the
+    sensor is folded into them again.
+    The rest of the system is kept in them for as long as it is kept in
+    :attr:`weights`, which is not computed again if the system is assigned.
+
+    Assembling the matrices releases :attr:`weights`, which holds the same
+    numbers in another form.
+    :meth:`image` and :meth:`backproject` are computed from :attr:`weights`
+    and :attr:`weights_transpose`, not from the matrices, so calling either
+    once the matrices are assembled computes the weights again, and keeps
+    them beside the matrices.
     """
 
     _tolerance_vmr: ClassVar[float] = 2e-3
     """
-    The largest change of the variance-to-mean ratio of the sensor across
-    the wavelengths of a spectral line, relative to the middle of its range,
-    for which this instrument provides operators.
+    The furthest that the variance-to-mean ratio of the sensor can stray
+    from the middle of its range, within the wavelengths of a spectral line
+    and as a fraction of that middle, for this instrument to provide
+    operators.
+
+    The operators take the middle of the range for every wavelength of the
+    line, so this is the largest relative error of the variance they give,
+    and a ratio which changes by up to twice as much across a line is within
+    it.
+    """
+
+    _tolerance_response: ClassVar[float] = 1e-10
+    """
+    The furthest that the signal of the sensor for each photon, and the
+    variance-to-mean ratio of that signal, can change with the brightness of
+    the light, as a fraction of themselves, for this instrument to provide
+    operators.
+
+    The operators take both to be the same whatever the light, which they
+    are, to within rounding, for a sensor whose signal and the variance of
+    its noise are proportional to the light.
     """
 
     system: optika.systems.AbstractLinearSystem = dataclasses.MISSING
@@ -1645,6 +1715,21 @@ class OptikaInstrument(
     the lines too, and the backprojection of one is spread over the
     wavelengths of every line.
     """
+
+    @property
+    def _fields_factors(self) -> tuple:
+        """
+        The system of this instrument and the sensor of the system, which
+        the factors around the matrices of its operators are computed from.
+
+        The matrices depend on the system as well, as :attr:`weights` does,
+        and like :attr:`weights` they are kept if the system is assigned:
+        only the response of the sensor is computed again.
+        A sensor which is modified in place, rather than assigned, is not
+        noticed.
+        """
+        system = self.system
+        return (system, system.sensor)
 
     @property
     def axis_sensor_xy(self) -> tuple[str, str]:
@@ -1701,8 +1786,17 @@ class OptikaInstrument(
         The variance of their noise is the images of each spectral line
         times one variance-to-mean ratio for all the wavelengths of the
         line, the middle of its range, which is why an instrument whose
-        ratio varies by more than :attr:`_tolerance_vmr` across a line does
-        not provide operators.
+        ratio strays from that middle by more than :attr:`_tolerance_vmr`
+        does not provide operators.
+
+        Neither does one whose sensor does not respond to one of the
+        wavelengths, which has no inverse there, nor one whose sensor gives
+        another signal for each photon, or another ratio, once the pixel is
+        exposed to a thousand photons a second: the factors only express a
+        signal, and a variance of its noise, which are proportional to the
+        light.
+        A response which only bends for light brighter than that is not
+        noticed.
 
         Parameters
         ----------
@@ -1744,18 +1838,43 @@ class OptikaInstrument(
         )
 
         # the signal, and the width of its noise, which one photon a second
-        # at each wavelength gives
+        # at each wavelength gives, and which a thousand give
         rate = 1 * u.photon / u.s
-        exposed = sensor.expose(
-            image=na.FunctionArray(inputs=inputs, outputs=ones * rate),
-            direction=direction,
-            axis_wavelength=axis_wavelength,
-            noise=False,
-            integrate=False,
-            uncertainty=True,
-        ).outputs
+        rate_bright = 1000 * rate
+        exposed, exposed_bright = (
+            sensor.expose(
+                image=na.FunctionArray(inputs=inputs, outputs=ones * r),
+                direction=direction,
+                axis_wavelength=axis_wavelength,
+                noise=False,
+                integrate=False,
+                uncertainty=True,
+            ).outputs
+            for r in (rate, rate_bright)
+        )
+
+        # a sensor which does not respond to one of the wavelengths, or
+        # which was not exposed, has neither a ratio nor an inverse there,
+        # and is left to the named arrays
+        if not np.all(exposed.nominal > 0):
+            return None
+
         gain = exposed.nominal / rate
         vmr = np.square(exposed.width) / exposed.nominal
+
+        # the factors only express a signal, and a variance of its noise,
+        # which are proportional to the light, so a sensor which gives
+        # another gain or another ratio for the brighter light is left to
+        # the named arrays too
+        tolerance = self._tolerance_response
+
+        gain_bright = exposed_bright.nominal / rate_bright
+        if not np.all(np.abs(gain_bright - gain) <= tolerance * gain):
+            return None
+
+        vmr_bright = np.square(exposed_bright.width) / exposed_bright.nominal
+        if not np.all(np.abs(vmr_bright - vmr) <= tolerance * vmr):
+            return None
 
         unit_images = na.unit_normalized(exposed.nominal)
 
@@ -1880,7 +1999,8 @@ class OptikaInstrument(
         # adds the read noise of the sensor to it, so the lines of a scene
         # which has several are summed here instead, and the read noise is
         # added once
-        summed = integrate and self.axis_line is not None
+        shape_line = self._shape_line
+        summed = integrate and bool(shape_line)
 
         # optika applies the effective area, vignetting, and sensor response
         # (including the integration over wavelength and read noise) using the
@@ -1938,6 +2058,10 @@ class OptikaInstrument(
         else:
             values = image
 
+        # read ahead of the backprojection, so that an instrument whose
+        # `axis_line` is not an axis of its scene says so before the work
+        shape_line = self._shape_line
+
         # rebuild the detector image over the full sensor wavelength grid; optika
         # spreads the integrated readout back over wavelength and inverts the
         # sensor response with the cached transpose weights.
@@ -1960,9 +2084,8 @@ class OptikaInstrument(
         # optika spreads an integrated image over the wavelengths of one
         # line, and the backprojection spreads it over those of every line,
         # so that it conserves the total of the image
-        axis_line = self.axis_line
-        if integrate and axis_line is not None:
-            num_line = self.coordinates_scene.wavelength.shape[axis_line]
+        if integrate and shape_line:
+            num_line = math.prod(shape_line.values())
             result = result.replace(outputs=result.outputs / num_line)
 
         return result

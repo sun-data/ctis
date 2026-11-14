@@ -150,7 +150,12 @@ def _weights(
     )
 
 
-def test_regridder_unit() -> None:
+@pytest.mark.parametrize(
+    argnames="half",
+    argvalues=[50 * u.percent, 0.5 * u.dimensionless_unscaled],
+    ids=["percent", "dimensionless"],
+)
+def test_regridder_unit(half: u.Quantity) -> None:
     """
     Weights with a dimensionless unit are assembled into a matrix without
     one, scaled by the unit, so that its products are plain arrays.
@@ -158,7 +163,7 @@ def test_regridder_unit() -> None:
     shape_input = dict(channel=3, x=4, y=5)
     shape_output = dict(channel=3, u=6, v=4)
 
-    weights_input = na.ScalarArray(np.full((4, 5), 50.0), axes=("x", "y")) * u.percent
+    weights_input = na.ScalarArray(np.ones((4, 5)), axes=("x", "y")) * half
 
     matrix = _operators.regridder(
         weights=_weights(weights_input),
@@ -180,6 +185,22 @@ def test_regridder_unit() -> None:
     assert not isinstance(result, u.Quantity)
     assert result.sum() > 0
     assert np.allclose(result, unweighted(values) / 2, rtol=1e-12, atol=1e-12)
+
+
+def test_regridder_unit_unsupported() -> None:
+    """
+    Weights in a unit which is not dimensionless, which a matrix that acts
+    on plain arrays cannot carry, are not assembled into one.
+    """
+    weights_input = na.ScalarArray(np.ones((4, 5)), axes=("x", "y")) * u.cm**2
+
+    result = _operators.regridder(
+        weights=_weights(weights_input),
+        shape_input=dict(channel=3, x=4, y=5),
+        shape_output=dict(channel=3, u=6, v=4),
+    )
+
+    assert result is None
 
 
 @pytest.mark.parametrize(

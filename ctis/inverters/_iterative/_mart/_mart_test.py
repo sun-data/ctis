@@ -1128,6 +1128,46 @@ def test__call__optika_line() -> None:
     assert error.max() > 1e-8
 
 
+def test__call__optika_assigned() -> None:
+    """
+    An instrument whose system is assigned after an inversion is inverted on
+    its matrices again, with the response of its new sensor folded into
+    them: the result is that of the iteration on its methods, which read the
+    system every time they are called.
+    """
+    instrument_optika = _instrument_optika(vignetted=True)
+    a = ctis.inverters.MartInverter(
+        instrument=instrument_optika,
+        num_iteration=4,
+        threshold_convergence=-np.inf,
+    )
+
+    with pytest.warns(UserWarning, match="Max number of iterations"):
+        first = a(_images_optika(instrument_optika))
+
+    system = instrument_optika.system
+    sensor = dataclasses.replace(
+        system.sensor,
+        timedelta_exposure=10 * u.s,
+        read_noise=7 * u.electron,
+    )
+    instrument_optika.system = dataclasses.replace(system, sensor=sensor)
+
+    images_optika = _images_optika(instrument_optika)
+
+    assert _uses_operators(a, images_optika)
+
+    with pytest.warns(UserWarning, match="Max number of iterations"):
+        result = a(images_optika)
+
+    with pytest.warns(UserWarning, match="Max number of iterations"):
+        expected = _reference(a, images_optika)
+
+    assert result.num_iteration == 4
+    assert np.all(result.mean_chi_squared != first.mean_chi_squared)
+    _assert_same(result, expected)
+
+
 def test_dtype_optika() -> None:
     """
     An instrument on a linear system of :mod:`optika` is inverted in single

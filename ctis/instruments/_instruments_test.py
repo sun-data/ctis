@@ -1,7 +1,10 @@
+from typing import Any
 import pytest
 import abc
 import math
 import weakref
+import warnings
+import functools
 import dataclasses
 import numpy as np
 import scipy.ndimage
@@ -318,6 +321,7 @@ class AbstractTestAbstractInstrument(
             is None
         )
         assert ctis.instruments.AbstractLinearInstrument._weights_input(a) is None
+        assert ctis.instruments.AbstractLinearInstrument._fields_factors.fget(a) == ()
 
         shape_scene = operators.shape_scene
         shape_images = operators.shape_images
@@ -1201,6 +1205,71 @@ class TestIdealInstrument(
         assert renamed._operators() is not None
         _assert_close(renamed.image(scene, noise=False).outputs, image)
 
+    def test__operators_subclass_unsupported(
+        self,
+        a: ctis.instruments.IdealInstrument,
+    ) -> None:
+        """
+        A subclass whose grids, or whose weight of the scene, cannot be
+        expressed as plain arrays does not provide operators, which leaves
+        its images and its backprojections to its weights.
+        """
+
+        @dataclasses.dataclass
+        class Scene(ctis.instruments.IdealInstrument):
+            """An instrument whose scene is not in units of the sensor."""
+
+            def _grids_weights(
+                self,
+            ) -> tuple[
+                na.AbstractCartesian2dVectorArray,
+                na.AbstractCartesian2dVectorArray,
+            ]:
+                scene, sensor = super()._grids_weights()
+                return scene.value * u.s, sensor
+
+        @dataclasses.dataclass
+        class Sensor(ctis.instruments.IdealInstrument):
+            """An instrument whose sensor has an axis of its own."""
+
+            def _grids_weights(
+                self,
+            ) -> tuple[
+                na.AbstractCartesian2dVectorArray,
+                na.AbstractCartesian2dVectorArray,
+            ]:
+                scene, sensor = super()._grids_weights()
+                return scene, sensor + na.ScalarArray(np.zeros(2), axes="time") * u.pix
+
+        @dataclasses.dataclass
+        class Weight(ctis.instruments.IdealInstrument):
+            """An instrument whose weight of the scene has an axis of its own."""
+
+            def _weights_input(self) -> na.AbstractScalar:
+                return na.ScalarArray(np.ones(2), axes="time")
+
+        kwargs = {
+            field.name: getattr(a, field.name)
+            for field in dataclasses.fields(a)
+            if field.init
+        }
+        scene = _scene(a)
+        image = a.image(scene, noise=False)
+        backprojected = a.backproject(image).outputs
+
+        for cls in (Scene, Sensor, Weight):
+            b = cls(**kwargs)
+
+            assert not cls._overridden()
+            assert b._operators() is None
+            assert b._operators(np.float32) is None
+            assert "weights" in vars(b)
+
+            assert b._image_matrices(scene, noise=False, uncertainty=False) is None
+            assert b._backproject_matrices(image) is None
+            _assert_close(b.image(scene, noise=False).outputs, image.outputs)
+            _assert_close(b.backproject(image).outputs, backprojected)
+
     def test_num_channel_psf_sensor(
         self,
         a: ctis.instruments.IdealInstrument,
@@ -1351,6 +1420,50 @@ def test_num_channel_axes_shared() -> None:
 
     assert "weights" not in vars(a)
     assert num_channel == a.weights[0].shape[a.axis_channel]
+
+
+def test_operators_weights_unit() -> None:
+    """
+    An instrument whose weights are in a unit of their own, which a matrix
+    that acts on plain arrays cannot carry, does not provide operators, and
+    keeps its weights, which its images are left to.
+    """
+
+    @dataclasses.dataclass
+    class Area(ctis.instruments.IdealInstrument):
+        """An instrument whose weights are in units of area."""
+
+        @functools.cached_property
+        def weights(
+            self,
+        ) -> tuple[na.AbstractScalar, dict[str, int], dict[str, int]]:
+            return na.regridding.weights(
+                coordinates_input=self._coordinates_input.position,
+                coordinates_output=self._coordinates_output.position,
+                axis_input=self.axis_scene_xy,
+                axis_output=self.axis_sensor_xy,
+                weights_input=na.ScalarArray(2 * u.cm**2),
+                method="conservative",
+            )
+
+    a = instrument_ideal
+    kwargs = {
+        field.name: getattr(a, field.name)
+        for field in dataclasses.fields(a)
+        if field.init
+    }
+    scene = _scene(a)
+
+    b = Area(**kwargs)
+
+    assert not Area._overridden()
+    assert b._operators() is None
+    assert "weights" in vars(b)
+    assert b._image_matrices(scene, noise=False, uncertainty=False) is None
+    _assert_close(
+        b.image(scene, noise=False).outputs,
+        a.image(scene, noise=False).outputs * (2 * u.cm**2),
+    )
 
 
 def _instrument_optika(
@@ -1526,8 +1639,10 @@ def test_optika_operators_vignetted() -> None:
 def test_optika_operators_line() -> None:
     """
     Across one spectral line in the extreme ultraviolet, the
-    variance-to-mean ratio of a real sensor changes by about a part in a
-    thousand, and the operators take one value for it: their images are
+    variance-to-mean ratio of a real sensor changes by about three parts in
+    a thousand, more than the tolerance, but strays from the middle of its
+    range by half of that, which is within it.
+    The operators take the middle for the whole line: their images are
     those of the instrument, and their variance is within the tolerance of
     its own.
     """
@@ -1544,15 +1659,23 @@ def test_optika_operators_line() -> None:
 
     rng = np.random.default_rng(0)
     scene = rng.uniform(1, 2, size=tuple(shape_scene.values()))
+    scene_named = na.ScalarArray(
+        ndarray=scene << operators.unit_scene,
+        axes=tuple(shape_scene),
+    )
 
-    expected = a.image(
-        scene=na.ScalarArray(
-            ndarray=scene << operators.unit_scene,
-            axes=tuple(shape_scene),
-        ),
-        noise=False,
-        uncertainty=True,
-    ).outputs
+    # the ratio of each wavelength, from the images which keep them apart
+    kwargs = dict(noise=False, uncertainty=True)
+    separate = a.image(scene_named, integrate=False, **kwargs).outputs
+    ratio = np.square(separate.width).sum(tuple(shape_images))
+    ratio = (ratio / separate.nominal.sum(tuple(shape_images))).ndarray.value
+    middle = (ratio.max() + ratio.min()) / 2
+
+    assert ratio.shape == (shape_scene["wavelength"],)
+    assert np.ptp(ratio) > a._tolerance_vmr * middle
+    assert np.abs(ratio - middle).max() < a._tolerance_vmr * middle
+
+    expected = a.image(scene_named, **kwargs).outputs
     nominal = expected.nominal.ndarray_aligned(tuple(shape_images))
     nominal = nominal.to_value(operators.unit_images)
     variance_expected = np.square(expected.width)
@@ -1662,6 +1785,214 @@ def test_optika_operators_unsupported() -> None:
     )
 
     assert a._operators() is None
+
+
+@pytest.mark.parametrize(
+    argnames="kwargs",
+    argvalues=[
+        dict(),
+        dict(
+            wavelength=[62.9, 63.1] * u.nm,
+            material=optika.sensors.materials.e2v_ccd97(),
+        ),
+    ],
+    ids=["ideal sensor", "real sensor"],
+)
+def test_optika_operators_unexposed(kwargs: dict) -> None:
+    """
+    An instrument whose sensor does not respond to the light, here one with
+    no exposure time, which is the default of :mod:`optika`, provides no
+    operators, and says nothing: such a sensor has neither a
+    variance-to-mean ratio nor an inverse.
+    """
+    a = _instrument_optika(**kwargs)
+
+    assert a._operators() is not None
+
+    sensor = dataclasses.replace(a.system.sensor, timedelta_exposure=0 * u.s)
+    a = dataclasses.replace(
+        a,
+        system=dataclasses.replace(a.system, sensor=sensor),
+    )
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        assert a._operators() is None
+
+
+class _MaterialOffset(
+    optika.sensors.materials.IdealSensorMaterial,
+):
+    """A sensor material which measures a few electrons where there is no light."""
+
+    def signal(
+        self,
+        photons: u.Quantity | na.AbstractScalar,
+        **kwargs: Any,
+    ) -> na.AbstractScalar:
+        return super().signal(photons, **kwargs) + 5 * u.electron
+
+
+class _MaterialFloor(
+    optika.sensors.materials.IdealSensorMaterial,
+):
+    """A sensor material whose noise has a part which the signal does not set."""
+
+    def uncertainty(
+        self,
+        electrons: u.Quantity | na.AbstractScalar,
+        **kwargs: Any,
+    ) -> na.AbstractScalar:
+        variance = np.square(super().uncertainty(electrons, **kwargs))
+        return np.sqrt(variance + np.square(3 * u.electron))
+
+
+@pytest.mark.parametrize(
+    argnames="material",
+    argvalues=[_MaterialOffset(), _MaterialFloor()],
+    ids=["signal with an offset", "noise with a floor"],
+)
+def test_optika_operators_proportional(
+    material: optika.sensors.materials.AbstractSensorMaterial,
+) -> None:
+    """
+    An instrument whose sensor gives a signal, or a variance of its noise,
+    which is not proportional to the light provides no operators, since
+    their factors would only hold for the light they were measured with.
+    """
+    a = _instrument_optika(material=material)
+
+    assert a._operators() is None
+    assert a.image(_scene(a), noise=False).outputs.sum() > 0
+
+
+@pytest.mark.parametrize(
+    argnames="nested",
+    argvalues=[False, True],
+    ids=["system", "sensor of the system"],
+)
+def test_optika_operators_assigned(nested: bool) -> None:
+    """
+    A system which is assigned after the operators were assembled takes
+    effect, and so does a sensor which the system is assigned: the response
+    of the sensor is folded into the same matrices again, and the operators
+    are those of the instrument as it is now.
+    """
+    a = _instrument_optika()
+
+    operators = a._operators()
+    backward = operators.backward
+
+    assert a._operators() is operators
+
+    sensor = dataclasses.replace(
+        a.system.sensor,
+        timedelta_exposure=10 * u.s,
+        read_noise=7 * u.electron,
+        material=optika.sensors.materials.e2v_ccd97(),
+    )
+    if nested:
+        a.system.sensor = sensor
+    else:
+        a.system = dataclasses.replace(a.system, sensor=sensor)
+
+    operators_new = a._operators()
+
+    assert operators_new is not operators
+    assert operators_new.forward is operators.forward
+    assert operators_new._backward is backward
+    assert a._operators() is operators_new
+    assert "weights" not in vars(a)
+
+    assert np.all(operators_new.scale != operators.scale)
+    assert np.all(operators_new.variance_read == 49)
+
+    TestOptikaInstrument().test__operators(a)
+
+    assert a._operators() is operators_new
+
+
+def test_optika_operators_assigned_unsupported() -> None:
+    """
+    An instrument stops providing its operators once it is assigned a system
+    whose sensor they cannot express, and provides them again once it is
+    assigned one whose sensor they can.
+    """
+    a = _instrument_optika()
+    system = a.system
+
+    assert a._operators() is not None
+
+    sensor = dataclasses.replace(system.sensor, read_noise=0)
+    a.system = dataclasses.replace(system, sensor=sensor)
+
+    assert a._operators() is None
+    assert a._operators() is None
+
+    a.system = system
+
+    assert a._operators() is not None
+    TestOptikaInstrument().test__operators(a)
+
+
+@pytest.mark.parametrize("vignetted", [False, True])
+def test_optika_operators_weights_scene(vignetted: bool) -> None:
+    """
+    The weight of the scene is kept as it broadcasts against the voxels,
+    with a length of one along the axes it does not vary along, and gives
+    the matrix of the backprojection which a weight for every voxel gives.
+    """
+    a = _instrument_optika(vignetted=vignetted)
+    operators = a._operators()
+    weight = operators.weights_scene
+
+    shape = tuple((operators.shape_channel | operators.shape_scene).values())
+
+    if vignetted:
+        assert weight.shape == (1,) + shape[1:]
+    else:
+        assert weight.shape == (1, shape[1], 1, 1)
+
+    expected = operators.forward.transpose_conservative(
+        coordinates_input=operators.vertices_scene,
+        coordinates_output=operators.vertices_sensor,
+        weights_input=np.ascontiguousarray(np.broadcast_to(weight, shape)),
+    )
+    backward = operators.backward
+
+    assert backward.data.sum() > 0
+    assert np.array_equal(backward.data, expected.data)
+    assert np.array_equal(backward.indices, expected.indices)
+    assert np.array_equal(backward.indptr, expected.indptr)
+
+
+@pytest.mark.parametrize(
+    argnames="a",
+    argvalues=[instrument_ideal, _instrument_optika()],
+    ids=["ideal", "optika"],
+)
+@pytest.mark.parametrize("integrate", [True, False])
+def test_axis_line_unknown(
+    a: ctis.instruments.AbstractLinearInstrument,
+    integrate: bool,
+) -> None:
+    """
+    An instrument whose `axis_line` is not an axis of the wavelengths of its
+    scene says so, whichever of its methods is called.
+    """
+    scene = _scene(a)
+    image = a.image(scene, integrate=integrate, noise=False)
+
+    a = dataclasses.replace(a, axis_line="line")
+
+    with pytest.raises(ValueError, match="`axis_line` is 'line'"):
+        a.image(scene, integrate=integrate, noise=False)
+
+    with pytest.raises(ValueError, match="`axis_line` is 'line'"):
+        a.backproject(image, integrate=integrate)
+
+    with pytest.raises(ValueError, match="`axis_line` is 'line'"):
+        a._operators()
 
 
 def test_image_lines() -> None:

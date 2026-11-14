@@ -183,10 +183,15 @@ def regridder(
     shape_input: dict[str, int],
     shape_output: dict[str, int],
     dtype: type = np.float64,
-) -> regridding.Regridder:
+) -> None | regridding.Regridder:
     """
     Assemble weights computed by :func:`named_arrays.regridding.weights` into
     one sparse matrix, which acts on plain arrays.
+
+    It is :obj:`None` if the weights are in a unit which is not
+    dimensionless, such as an area, which a matrix that acts on plain arrays
+    cannot carry.
+    The caller is expected to fall back on the named arrays themselves.
 
     Parameters
     ----------
@@ -247,8 +252,16 @@ def regridder(
     # weights with a dimensionless unit, as those weighted by a vignetting
     # model have, are given none, so that the products of the matrix are
     # the plain arrays which the compiled code takes
-    if result.unit is not None:
-        result.data *= u.Quantity(1, result.unit).to_value(u.dimensionless_unscaled)
+    unit = result.unit
+    if unit is not None:
+        try:
+            factor = unit.to(u.dimensionless_unscaled)
+        except u.UnitConversionError:
+            return None
+
+        # only a unit such as a percentage changes the entries
+        if factor != 1:
+            result.data *= factor
         result.unit = None
 
     return result
@@ -470,6 +483,9 @@ class Operators:
     channel, beyond the fraction of the voxel which lands in each pixel,
     such as the effective area of the instrument there, or :obj:`None` if it
     gives none.
+
+    It broadcasts against the channels and the scene: it has their axes,
+    each of length one if the weight does not vary along it.
 
     The matrix of the backprojection inverts this weight, as
     :func:`regridding.transpose_weights_conservative` does.

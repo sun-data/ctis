@@ -380,6 +380,9 @@ which every gate compares against.
   so one ratio serves a line, to about 0.1%.
   An instrument whose ratio strays from the middle of its range by more than 0.2%
   within a line provides no matrices, and is inverted on the reference path.
+  So is one whose sensor does not respond to a wavelength,
+  or whose gain or ratio changes with the brightness of the light,
+  which the instrument checks at one photon a second and at a thousand.
   The forward matrix keeps the lines apart, as described below,
   and the variance of an image is the sum of the images of its lines,
   each times its ratio:
@@ -936,6 +939,10 @@ The rest are questions to settle before the milestone that needs them.
   the unit its backprojection returns by default.
   A first guess in units of energy is inverted on the reference path instead,
   which cannot run at production.
+  The matrices are assembled before the guess is looked at, and release the weights,
+  so that inversion computes the weights a second time and holds them beside the matrices.
+  So does imaging a solution with the instrument afterward,
+  since its ``image`` is computed from the weights and not from the matrices.
 - **Charge diffusion changes Level-4 (M9).**
   From optika 4.0, the noise-free model of a sensor includes charge diffusion,
   so MART will also undo the diffusion blur,
