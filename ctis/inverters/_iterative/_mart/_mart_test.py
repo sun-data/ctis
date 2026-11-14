@@ -7,8 +7,10 @@ import matplotlib.pyplot as plt
 import pytest
 import astropy.units as u
 import named_arrays as na
+import optika
 import ctis
 from ctis.instruments._operators import Operators
+from ctis.instruments._instruments_test import _instrument_optika
 from .._iterative_test import AbstractTestAbstractIterativeInverter
 
 velocity = na.linspace(-500, 500, axis="wavelength", num=21) * u.km / u.s
@@ -99,6 +101,20 @@ class _IdealInstrumentWeights(
         return None
 
 
+@dataclasses.dataclass
+class _OptikaInstrumentNamed(
+    ctis.instruments.OptikaInstrument,
+):
+    """
+    An instrument on a linear system of :mod:`optika` which does not provide
+    its matrices, so that it is inverted through its methods, as named
+    arrays.
+    """
+
+    def _operators(self, dtype: type = np.float64) -> None:
+        return None
+
+
 def _reference(
     a: ctis.inverters.MartInverter,
     images: na.FunctionArray[na.SpectralPositionalVectorArray, na.ScalarArray],
@@ -117,9 +133,13 @@ def _reference(
         for field in dataclasses.fields(instrument)
         if field.init
     }
+    cls = _IdealInstrumentWeights
+    if isinstance(instrument, ctis.instruments.OptikaInstrument):
+        cls = _OptikaInstrumentNamed
+
     reference = dataclasses.replace(
         a,
-        instrument=_IdealInstrumentWeights(**kwargs),
+        instrument=cls(**kwargs),
     )
 
     assert not _uses_operators(reference, images, guess)
@@ -1003,3 +1023,138 @@ def test__call__buffer_released(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert len(buffers) == result.num_iteration
     assert all(buffer() is None for buffer in buffers)
+
+
+def _images_optika(
+    a: ctis.instruments.OptikaInstrument,
+) -> na.FunctionArray[na.SpectralPositionalVectorArray, na.ScalarArray]:
+    """
+    The images, without noise, of a scene which fills the field of view of
+    an instrument on a linear system of :mod:`optika`.
+    """
+    operators = a._operators()
+    scene = na.random.uniform(
+        low=1,
+        high=2,
+        shape_random=operators.shape_scene,
+        seed=0,
+    )
+    return a.image(scene * 1e3 * operators.unit_scene, noise=False)
+
+
+@pytest.mark.parametrize(
+    argnames="vignetted,guessed",
+    argvalues=[(True, False), (False, True)],
+    ids=["vignetted, without a guess", "plain, with a guess"],
+)
+def test__call__optika(vignetted: bool, guessed: bool) -> None:
+    """
+    An instrument on a linear system of :mod:`optika` is inverted on its
+    matrices, with the result of the iteration on its methods: with
+    vignetting and a field stop, from the first guess of the inverter, and
+    without them, from a guess.
+
+    Without vignetting, the first guess of the inverter fills the sensor
+    evenly, and the correlation of even images with anything is rounding
+    error, which the two iterations do not share.
+    """
+    a = ctis.inverters.MartInverter(
+        instrument=_instrument_optika(vignetted=vignetted),
+        num_iteration=6,
+        threshold_convergence=-np.inf,
+    )
+    images_optika = _images_optika(a.instrument)
+
+    guess = None
+    if guessed:
+        operators = a.instrument._operators()
+        guess = na.random.uniform(
+            low=1,
+            high=2,
+            shape_random=operators.shape_scene,
+            seed=1,
+        )
+        guess = guess * 1e3 * operators.unit_scene
+
+    assert _uses_operators(a, images_optika, guess)
+
+    with pytest.warns(UserWarning, match="Max number of iterations"):
+        result = a(images_optika, guess=guess)
+
+    with pytest.warns(UserWarning, match="Max number of iterations"):
+        expected = _reference(a, images_optika, guess)
+
+    assert result.num_iteration == 6
+    _assert_same(result, expected)
+
+
+def test__call__optika_line() -> None:
+    """
+    Across one spectral line, where the operators take one variance-to-mean
+    ratio for the sensor, the solution after a given number of iterations is
+    that of the iteration on the methods of the instrument, and the merit is
+    within the tolerance of its own.
+    """
+    instrument_line = _instrument_optika(
+        wavelength=[62.9, 63.1] * u.nm,
+        material=optika.sensors.materials.e2v_ccd97(),
+    )
+    a = ctis.inverters.MartInverter(
+        instrument=instrument_line,
+        num_iteration=4,
+        threshold_convergence=-np.inf,
+    )
+    images_line = _images_optika(instrument_line)
+
+    assert _uses_operators(a, images_line)
+
+    with pytest.warns(UserWarning, match="Max number of iterations"):
+        result = a(images_line)
+
+    with pytest.warns(UserWarning, match="Max number of iterations"):
+        expected = _reference(a, images_line)
+
+    assert result.num_iteration == expected.num_iteration == 4
+    _assert_close(result.solution.outputs, expected.solution.outputs)
+
+    ratio = result.mean_chi_squared / expected.mean_chi_squared
+    error = np.abs(na.value(ratio).ndarray - 1)
+
+    assert error.max() < instrument_line._tolerance_vmr
+    assert error.max() > 1e-8
+
+
+def test_dtype_optika() -> None:
+    """
+    An instrument on a linear system of :mod:`optika` is inverted in single
+    precision too, to the solution of double precision to within the
+    precision.
+    """
+    instrument_optika = _instrument_optika()
+    images_optika = _images_optika(instrument_optika)
+
+    kwargs = dict(
+        instrument=instrument_optika,
+        num_iteration=6,
+        threshold_convergence=-np.inf,
+    )
+
+    with pytest.warns(UserWarning, match="Max number of iterations"):
+        result = ctis.inverters.MartInverter(dtype=np.float32, **kwargs)(images_optika)
+
+    with pytest.warns(UserWarning, match="Max number of iterations"):
+        expected = ctis.inverters.MartInverter(**kwargs)(images_optika)
+
+    assert result.solution.outputs.ndarray.dtype == np.float32
+    assert result.num_iteration == expected.num_iteration
+
+    value = result.solution.outputs.ndarray_aligned(expected.solution.outputs.axes)
+    value_expected = expected.solution.outputs.ndarray
+
+    assert value.unit == value_expected.unit
+    assert np.allclose(
+        value.value,
+        value_expected.value,
+        rtol=1e-5,
+        atol=1e-5 * np.abs(value_expected.value).max(),
+    )

@@ -1,5 +1,5 @@
 import numpy as np
-from typing import Callable
+from typing import Callable, ClassVar
 import abc
 import math
 import functools
@@ -211,6 +211,20 @@ class AbstractLinearInstrument(
     matrix multiplication.
     """
 
+    _operators_kept: None | tuple[np.dtype, tuple, None | Operators] = (
+        dataclasses.field(
+            default=None,
+            init=False,
+            repr=False,
+            compare=False,
+        )
+    )
+    """
+    The operators of this instrument as :meth:`_operators` last assembled
+    them, with the precision they are in and the fields of this instrument
+    that their factors were computed from.
+    """
+
     @property
     @abc.abstractmethod
     def weights(
@@ -234,6 +248,12 @@ class AbstractLinearInstrument(
     @property
     def num_channel(self) -> int:
 
+        # operators which have been assembled hold the count, and have
+        # released the weights, which counting on them would compute again
+        kept = self._operators_kept
+        if kept is not None and kept[2] is not None:
+            return kept[2].num_channel
+
         shape = self.weights[0].shape
 
         num_channels = 1
@@ -241,6 +261,290 @@ class AbstractLinearInstrument(
             num_channels = num_channels * shape[ax]
 
         return num_channels
+
+    @property
+    def _fields_factors(self) -> tuple:
+        """
+        The fields of this instrument which the factors around the matrices
+        of its operators are computed from, and which the matrices do not
+        depend on.
+
+        If any of them is assigned, the factors are computed again, on the
+        same matrices.
+        """
+        return ()
+
+    @classmethod
+    def _overridden(cls) -> bool:
+        """
+        Whether this class replaces any of the methods which its operators
+        stand in for.
+
+        The operators are the forward model, the noise model and the
+        backprojection of the class which defines their factors,
+        :meth:`_factors`, so a subclass of that class which defines any of
+        those otherwise does not provide them, and is imaged, backprojected
+        and inverted with its own methods.
+        """
+        owner = next(c for c in cls.__mro__ if "_factors" in vars(c))
+        names = (
+            "image",
+            "backproject",
+            "_image_expected",
+            "_image_matrices",
+            "_image_weights",
+            "_backproject_matrices",
+            "_backproject_weights",
+            "_shot_noise",
+            "weights_transpose",
+        )
+        return any(
+            getattr(cls, name, None) is not getattr(owner, name, None) for name in names
+        )
+
+    def _operators(self, dtype: type = np.float64) -> None | Operators:
+        """
+        This instrument as a pair of sparse matrices which act on plain
+        arrays, or :obj:`None` if it cannot be expressed as one.
+
+        The matrices are kept, in the precision they were last asked for in,
+        so they are assembled once for any number of inversions in that
+        precision, and again if another is asked for.
+
+        The matrices hold what :attr:`weights` and :attr:`weights_transpose`
+        hold, in another form, and an instrument large enough for it to
+        matter cannot afford both.
+        Assembling the matrices therefore releases the weights,
+        which are computed again if they are needed.
+
+        The factors around the matrices follow the fields of this instrument
+        that they are computed from, :attr:`_fields_factors`: if any of
+        those has been assigned since the operators were assembled, the
+        factors are computed again, on the same matrices.
+        The matrices themselves are kept for as long as :attr:`weights` would
+        be.
+
+        A subclass which replaces a method that the operators stand in for
+        does not provide them, see :meth:`_overridden`.
+
+        Parameters
+        ----------
+        dtype
+            The precision of the matrices and of the arrays they act on,
+            :obj:`numpy.float64` or :obj:`numpy.float32`.
+        """
+        dtype = np.dtype(dtype)
+
+        if self._overridden():
+            return None
+
+        fields = self._fields_factors
+
+        kept = self._operators_kept
+        if kept is not None and kept[0] == dtype:
+            _, fields_kept, operators = kept
+
+            if all(a is b for a, b in zip(fields, fields_kept)):
+                return operators
+
+            # only the factors depend on those fields, so the matrices,
+            # which are the expensive part, are kept
+            if operators is not None:
+                operators = self._operators_refreshed(operators)
+                self._operators_kept = (dtype, fields, operators)
+                return operators
+
+        # matrices kept in another precision are released first, so that the
+        # two never have to fit in memory together
+        del kept
+        self._operators_kept = None
+
+        operators = self._operators_new(dtype)
+
+        self._operators_kept = (dtype, fields, operators)
+
+        return operators
+
+    def _operators_refreshed(self, operators: Operators) -> None | Operators:
+        """
+        Operators on the same matrices, with the factors around them computed
+        again from the fields of this instrument, or :obj:`None` if the
+        fields can no longer be expressed as those factors.
+
+        Parameters
+        ----------
+        operators
+            The operators whose matrices to keep.
+        """
+        factors = self._factors(
+            shape_channel=operators.shape_channel,
+            shape_scene=operators.shape_scene,
+            shape_sensor=operators.shape_sensor,
+            dtype=operators.dtype,
+        )
+        if factors is None:
+            return None
+
+        result = dataclasses.replace(operators, **factors)
+
+        # the matrix of the backprojection does not depend on the factors
+        result._backward = operators._backward
+
+        return result
+
+    def _factors(
+        self,
+        shape_channel: dict[str, int],
+        shape_scene: dict[str, int],
+        shape_sensor: dict[str, int],
+        dtype: np.dtype,
+    ) -> None | dict[str, np.ndarray | u.UnitBase]:
+        """
+        The factors around the matrices of the operators of this instrument,
+        and the units of the arrays they act on, as the fields of
+        :class:`~ctis.instruments._operators.Operators` of the same names,
+        or :obj:`None` if this instrument cannot be expressed as those
+        factors.
+
+        An instrument provides operators by defining this method,
+        :meth:`_grids_weights` and, if :attr:`weights` weighs the cells of
+        the scene, :meth:`_weights_input`.
+        By default it provides none.
+
+        Parameters
+        ----------
+        shape_channel
+            The axes of the channels and their lengths.
+        shape_scene
+            The axes of a scene and their lengths.
+        shape_sensor
+            The two spatial axes of an image and their lengths.
+        dtype
+            The precision of the factors.
+        """
+        return None
+
+    def _grids_weights(
+        self,
+    ) -> tuple[na.AbstractCartesian2dVectorArray, na.AbstractCartesian2dVectorArray]:
+        """
+        The vertices of the cells of the scene and of the pixels of the
+        sensor which :attr:`weights` was computed from, both on the plane of
+        the sensor.
+        """
+        raise NotImplementedError
+
+    def _weights_input(self) -> None | na.AbstractScalar:
+        """
+        The weight which :attr:`weights` gives every cell of the scene, for
+        each channel and each wavelength, beyond the fraction of the cell
+        which lands in each pixel, or :obj:`None` if it gives none.
+
+        The backprojection inverts this weight, as
+        :func:`regridding.transpose_weights_conservative` does.
+        """
+        return None
+
+    def _operators_new(self, dtype: np.dtype) -> None | Operators:
+        """
+        Assemble the operators of this instrument, see :meth:`_operators`.
+
+        Parameters
+        ----------
+        dtype
+            The precision of the matrices and of the arrays they act on.
+        """
+
+        axis_channel = self._axis_channel
+        axis_wavelength = self.axis_wavelength
+
+        weights = self.weights
+        array, shape_grid_scene, shape_grid_sensor = weights
+
+        # an instrument which varies along any other axis, such as time,
+        # is left to the named arrays
+        if set(array.shape) != {*axis_channel, axis_wavelength}:
+            return None
+
+        shape_channel = {ax: array.shape[ax] for ax in axis_channel}
+        shape_wavelength = {axis_wavelength: array.shape[axis_wavelength]}
+        shape_scene_xy = {
+            ax: shape_grid_scene[ax] for ax in shape_grid_scene if ax not in array.shape
+        }
+        shape_sensor = {
+            ax: shape_grid_sensor[ax]
+            for ax in shape_grid_sensor
+            if ax not in array.shape
+        }
+        shape_scene = shape_wavelength | shape_scene_xy
+        shape_voxels = shape_channel | shape_scene
+
+        factors = self._factors(
+            shape_channel=shape_channel,
+            shape_scene=shape_scene,
+            shape_sensor=shape_sensor,
+            dtype=dtype,
+        )
+        if factors is None:
+            return None
+
+        # the vertices of the two grids that the weights were computed from
+        position_scene, position_sensor = self._grids_weights()
+        unit_position = na.unit_normalized(position_sensor.x)
+        vertices_scene = vertices(
+            coordinates=position_scene,
+            shape=shape_channel
+            | shape_wavelength
+            | {ax: num + 1 for ax, num in shape_scene_xy.items()},
+            unit=unit_position,
+        )
+        vertices_sensor = vertices(
+            coordinates=position_sensor,
+            shape=shape_channel
+            | shape_wavelength
+            | {ax: num + 1 for ax, num in shape_sensor.items()},
+            unit=unit_position,
+        )
+
+        # the weight of every cell of the scene, if the weights have one
+        weights_scene = self._weights_input()
+        if weights_scene is not None:
+            weights_scene = aligned(
+                a=weights_scene,
+                shape=shape_voxels,
+                unit=u.dimensionless_unscaled,
+            )
+            weights_scene = np.ascontiguousarray(
+                np.broadcast_to(weights_scene, tuple(shape_voxels.values())),
+            )
+
+        # the matrix takes a scene for each channel, rather than one shared
+        # by the channels, so that its transpose gives a backprojection
+        # for each channel, and it sums the images over wavelength
+        forward = regridder(
+            weights=weights,
+            shape_input=shape_voxels,
+            shape_output=shape_channel | {axis_wavelength: 1} | shape_sensor,
+            dtype=dtype,
+        )
+
+        # the weights are released, so that the matrix of the backprojection,
+        # which is derived from the one above when it is first needed,
+        # does not have to fit in memory beside them
+        del weights, array
+        vars(self).pop("weights", None)
+        vars(self).pop("weights_transpose", None)
+
+        return Operators(
+            forward=forward,
+            vertices_scene=vertices_scene,
+            vertices_sensor=vertices_sensor,
+            shape_channel=shape_channel,
+            shape_scene=shape_scene,
+            shape_sensor=shape_sensor,
+            weights_scene=weights_scene,
+            **factors,
+        )
 
     @property
     def _volume_scene(self) -> na.AbstractScalar:
@@ -562,20 +866,6 @@ class IdealInstrument(
     The logical axes of :attr:`psf` which run along :attr:`axis_sensor_xy`.
     """
 
-    _operators_kept: None | tuple[np.dtype, tuple, None | Operators] = (
-        dataclasses.field(
-            default=None,
-            init=False,
-            repr=False,
-            compare=False,
-        )
-    )
-    """
-    The operators of this instrument as :meth:`_operators` last assembled
-    them, with the precision they are in and the fields of this instrument
-    that their factors were computed from.
-    """
-
     @property
     def _fields_factors(self) -> tuple:
         """
@@ -588,32 +878,6 @@ class IdealInstrument(
             self.timedelta_exposure,
             self.quantum_yield,
             self.read_noise,
-        )
-
-    @classmethod
-    def _overridden(cls) -> bool:
-        """
-        Whether this class replaces any of the methods of
-        :class:`IdealInstrument` which its operators stand in for.
-
-        The operators are the forward model, the noise model and the
-        backprojection of :class:`IdealInstrument` itself, so a subclass
-        which defines any of those otherwise does not provide them, and is
-        imaged, backprojected and inverted with its own methods.
-        """
-        names = (
-            "image",
-            "backproject",
-            "_image_expected",
-            "_image_matrices",
-            "_image_weights",
-            "_backproject_matrices",
-            "_backproject_weights",
-            "_shot_noise",
-            "weights_transpose",
-        )
-        return any(
-            getattr(cls, name) is not getattr(IdealInstrument, name) for name in names
         )
 
     def _shot_noise(self, image: na.ScalarArray) -> na.ScalarArray:
@@ -753,98 +1017,6 @@ class IdealInstrument(
 
         return math.prod(shape[ax] for ax in self._axis_channel)
 
-    def _operators(self, dtype: type = np.float64) -> None | Operators:
-        """
-        This instrument as a pair of sparse matrices which act on plain
-        arrays, or :obj:`None` if it cannot be expressed as one.
-
-        The matrices are kept, in the precision they were last asked for in,
-        so they are assembled once for any number of inversions in that
-        precision, and again if another is asked for.
-
-        The matrices hold what :attr:`weights` and :attr:`weights_transpose`
-        hold, in another form, and an instrument large enough for it to
-        matter cannot afford both.
-        Assembling the matrices therefore releases the weights,
-        which are computed again if they are needed,
-        as they are by :meth:`image` and :meth:`backproject` if `integrate`
-        is :obj:`False`.
-
-        The factors around the matrices follow the effective area, the
-        exposure time, the quantum yield and the read noise of this
-        instrument: if any of those has been assigned since the operators
-        were assembled, the factors are computed again, on the same matrices.
-        The matrices themselves are kept for as long as :attr:`weights` would
-        be.
-
-        A subclass which replaces a method that the operators stand in for
-        does not provide them, see :meth:`_overridden`.
-
-        Parameters
-        ----------
-        dtype
-            The precision of the matrices and of the arrays they act on,
-            :obj:`numpy.float64` or :obj:`numpy.float32`.
-        """
-        dtype = np.dtype(dtype)
-
-        if self._overridden():
-            return None
-
-        fields = self._fields_factors
-
-        kept = self._operators_kept
-        if kept is not None and kept[0] == dtype:
-            _, fields_kept, operators = kept
-
-            if all(a is b for a, b in zip(fields, fields_kept)):
-                return operators
-
-            # only the factors depend on those fields, so the matrices,
-            # which are the expensive part, are kept
-            if operators is not None:
-                operators = self._operators_refreshed(operators)
-                self._operators_kept = (dtype, fields, operators)
-                return operators
-
-        # matrices kept in another precision are released first, so that the
-        # two never have to fit in memory together
-        del kept
-        self._operators_kept = None
-
-        operators = self._operators_new(dtype)
-
-        self._operators_kept = (dtype, fields, operators)
-
-        return operators
-
-    def _operators_refreshed(self, operators: Operators) -> None | Operators:
-        """
-        Operators on the same matrices, with the factors around them computed
-        again from the fields of this instrument, or :obj:`None` if the
-        fields can no longer be expressed as those factors.
-
-        Parameters
-        ----------
-        operators
-            The operators whose matrices to keep.
-        """
-        factors = self._factors(
-            shape_channel=operators.shape_channel,
-            shape_scene=operators.shape_scene,
-            shape_sensor=operators.shape_sensor,
-            dtype=operators.dtype,
-        )
-        if factors is None:
-            return None
-
-        result = dataclasses.replace(operators, **factors)
-
-        # the matrix of the backprojection does not depend on the factors
-        result._backward = operators._backward
-
-        return result
-
     def _factors(
         self,
         shape_channel: dict[str, int],
@@ -911,106 +1083,25 @@ class IdealInstrument(
         variance_read = np.square(read_noise)
 
         # every factor is given one more axis, which the frames are
-        # broadcast along, and the precision of the matrices
+        # broadcast along, and the precision of the matrices.
+        # The variance of the shot noise of the photons, in units of the
+        # images, is their signal times the quantum yield
         return dict(
             scale=scale[..., np.newaxis].astype(dtype),
             scale_backproject=scale_backproject[..., np.newaxis].astype(dtype),
             gain=gain[..., np.newaxis].astype(dtype),
+            vmr=gain[..., np.newaxis].astype(dtype),
             variance_read=variance_read[..., np.newaxis].astype(dtype),
             unit_scene=unit_scene,
             unit_images=unit_images,
         )
 
-    def _operators_new(self, dtype: np.dtype) -> None | Operators:
-        """
-        Assemble the operators of this instrument, see :meth:`_operators`.
-
-        Parameters
-        ----------
-        dtype
-            The precision of the matrices and of the arrays they act on.
-        """
-
-        axis_channel = self._axis_channel
-        axis_wavelength = self.axis_wavelength
-
-        weights = self.weights
-        array, shape_grid_scene, shape_grid_sensor = weights
-
-        # an instrument which varies along any other axis, such as time,
-        # is left to the named arrays
-        if set(array.shape) != {*axis_channel, axis_wavelength}:
-            return None
-
-        shape_channel = {ax: array.shape[ax] for ax in axis_channel}
-        shape_wavelength = {axis_wavelength: array.shape[axis_wavelength]}
-        shape_scene_xy = {
-            ax: shape_grid_scene[ax] for ax in shape_grid_scene if ax not in array.shape
-        }
-        shape_sensor = {
-            ax: shape_grid_sensor[ax]
-            for ax in shape_grid_sensor
-            if ax not in array.shape
-        }
-        shape_scene = shape_wavelength | shape_scene_xy
-        shape_voxels = shape_channel | shape_scene
-
-        factors = self._factors(
-            shape_channel=shape_channel,
-            shape_scene=shape_scene,
-            shape_sensor=shape_sensor,
-            dtype=dtype,
-        )
-
-        # the vertices of the two grids that the weights were computed from
-        position_scene = self._coordinates_input.position
-        position_sensor = self._coordinates_output.position
-        unit_position = na.unit_normalized(position_sensor.x)
-        vertices_scene = vertices(
-            coordinates=position_scene,
-            shape=shape_channel
-            | shape_wavelength
-            | {ax: num + 1 for ax, num in shape_scene_xy.items()},
-            unit=unit_position,
-        )
-        vertices_sensor = vertices(
-            coordinates=position_sensor,
-            shape=shape_channel
-            | shape_wavelength
-            | {ax: num + 1 for ax, num in shape_sensor.items()},
-            unit=unit_position,
-        )
-
-        # an instrument whose factors or whose grids cannot be expressed as
-        # plain arrays is left to the named arrays
-        if any(a is None for a in (factors, vertices_scene, vertices_sensor)):
-            return None
-
-        # the matrix takes a scene for each channel, rather than one shared
-        # by the channels, so that its transpose gives a backprojection
-        # for each channel, and it sums the images over wavelength
-        forward = regridder(
-            weights=weights,
-            shape_input=shape_voxels,
-            shape_output=shape_channel | {axis_wavelength: 1} | shape_sensor,
-            dtype=dtype,
-        )
-
-        # the weights are released, so that the matrix of the backprojection,
-        # which is derived from the one above when it is first needed,
-        # does not have to fit in memory beside them
-        del weights, array
-        vars(self).pop("weights", None)
-        vars(self).pop("weights_transpose", None)
-
-        return Operators(
-            forward=forward,
-            vertices_scene=vertices_scene,
-            vertices_sensor=vertices_sensor,
-            shape_channel=shape_channel,
-            shape_scene=shape_scene,
-            shape_sensor=shape_sensor,
-            **factors,
+    def _grids_weights(
+        self,
+    ) -> tuple[na.AbstractCartesian2dVectorArray, na.AbstractCartesian2dVectorArray]:
+        return (
+            self._coordinates_input.position,
+            self._coordinates_output.position,
         )
 
     def image(
@@ -1388,6 +1479,24 @@ class OptikaInstrument(
     (:meth:`backproject`) used during inversion. The system may be
     *channel-aware*: its component models can vary along :attr:`axis_channel`
     to represent the different CTIS projections.
+
+    The inverters iterate on a pair of sparse matrices which this instrument
+    assembles from :attr:`weights`, with the response of its sensor at each
+    wavelength folded into them, so their images are those of :meth:`image`.
+    The variance of the noise of those images is taken from one
+    variance-to-mean ratio of the sensor for all the wavelengths of the
+    scene, which suits a scene of one spectral line.
+    If the ratio varies by more than two parts in a thousand across the
+    wavelengths, the instrument does not provide the matrices, and the
+    inverters iterate on :meth:`image` and :meth:`backproject`, which is
+    slower.
+    """
+
+    _tolerance_vmr: ClassVar[float] = 2e-3
+    """
+    The largest change of the variance-to-mean ratio of the sensor across
+    the wavelengths of the scene, relative to the middle of its range, for
+    which this instrument provides operators.
     """
 
     system: optika.systems.AbstractLinearSystem = dataclasses.MISSING
@@ -1455,6 +1564,180 @@ class OptikaInstrument(
             axis_wavelength=self.axis_wavelength,
             axis_field=self.axis_scene_xy,
         )
+
+    def _factors(
+        self,
+        shape_channel: dict[str, int],
+        shape_scene: dict[str, int],
+        shape_sensor: dict[str, int],
+        dtype: np.dtype,
+    ) -> None | dict[str, np.ndarray | u.UnitBase]:
+        """
+        The factors around the matrices of the operators of this instrument,
+        and the units of the arrays they act on, as the fields of
+        :class:`~ctis.instruments._operators.Operators` of the same names,
+        or :obj:`None` if this instrument cannot be expressed as those
+        factors.
+
+        The response of the sensor is not derived here: the sensor is asked
+        for it, by exposing one pixel to one photon a second at each
+        wavelength, without noise.
+        The electrons this gives at each wavelength are folded into the
+        factor of every voxel, ahead of the sum over wavelength, so the
+        images are those of :meth:`image`.
+        The variance of their noise is the images times one
+        variance-to-mean ratio for all the wavelengths, the middle of its
+        range, which is why an instrument whose ratio varies by more than
+        :attr:`_tolerance_vmr` does not provide operators.
+
+        Parameters
+        ----------
+        shape_channel
+            The axes of the channels and their lengths.
+        shape_scene
+            The axes of a scene and their lengths.
+        shape_sensor
+            The two spatial axes of an image and their lengths.
+        dtype
+            The precision of the factors.
+        """
+        system = self.system
+        sensor = system.sensor
+        direction = system.direction
+
+        axis_wavelength = self.axis_wavelength
+        axis_pixel = self.axis_sensor_xy
+        num_wavelength = shape_scene[axis_wavelength]
+
+        shape_voxels = shape_channel | shape_scene
+        shape_pixels = shape_channel | shape_sensor
+
+        # one pixel, since the response of the sensor is that of any of them
+        shape_pixel = {ax: 1 for ax in axis_pixel}
+        shape_response = shape_channel | {axis_wavelength: num_wavelength}
+
+        inputs = na.SpectralPositionalVectorArray(
+            wavelength=self.coordinates_scene.spectral_positional.wavelength,
+            position=na.Cartesian2dVectorArray(0, 0) * u.pix,
+        )
+        ones = na.ScalarArray(
+            ndarray=np.ones((num_wavelength, 1, 1)),
+            axes=(axis_wavelength, *axis_pixel),
+        )
+
+        # the signal, and the width of its noise, which one photon a second
+        # at each wavelength gives
+        rate = 1 * u.photon / u.s
+        exposed = sensor.expose(
+            image=na.FunctionArray(inputs=inputs, outputs=ones * rate),
+            direction=direction,
+            axis_wavelength=axis_wavelength,
+            noise=False,
+            integrate=False,
+            uncertainty=True,
+        ).outputs
+        gain = exposed.nominal / rate
+        vmr = np.square(exposed.width) / exposed.nominal
+
+        unit_images = na.unit_normalized(exposed.nominal)
+
+        # the photons a second, at each wavelength, which one unit of signal
+        # in a pixel is taken for
+        absorbed = sensor.photons_absorbed(
+            image=na.FunctionArray(
+                inputs=inputs,
+                outputs=ones[{axis_wavelength: 0}] * unit_images,
+            ),
+            direction=direction,
+            axis_wavelength=axis_wavelength,
+            integrate=True,
+        ).outputs
+
+        volume = self._volume_scene
+        area = 1 * system.weights_unit
+
+        # the unit that `backproject` gives its result in
+        unit_scene = u.photon / u.s / system.weights_unit
+        unit_scene = unit_scene / na.unit_normalized(volume)
+
+        # the factors that `image` applies to the scene around its
+        # resampling, and those that `backproject` applies around its own
+        scale = (1 * unit_scene) * volume * area * gain
+        scale_backproject = absorbed / area / volume
+
+        scale = aligned(scale, shape=shape_voxels | shape_pixel, unit=unit_images)
+        scale_backproject = aligned(
+            a=scale_backproject,
+            shape=shape_voxels | shape_pixel,
+            unit=unit_scene,
+        )
+        vmr = aligned(vmr, shape=shape_response | shape_pixel, unit=unit_images)
+        read_noise = aligned(sensor.read_noise, shape=shape_pixels, unit=unit_images)
+
+        # anything with other axes or units is left to the named arrays
+        if any(a is None for a in (scale, scale_backproject, vmr, read_noise)):
+            return None
+
+        # one ratio for all the wavelengths, the middle of its range, which
+        # is that of each of them to within the tolerance
+        axis = len(shape_channel)
+        middle = (vmr.max(axis, keepdims=True) + vmr.min(axis, keepdims=True)) / 2
+        if not np.all(np.abs(vmr - middle) <= self._tolerance_vmr * middle):
+            return None
+
+        num_axes = len(shape_voxels)
+        scale = scale.reshape(scale.shape[:num_axes])
+        scale_backproject = scale_backproject.reshape(
+            scale_backproject.shape[:num_axes]
+        )
+        vmr = middle.reshape(middle.shape[:axis] + (1,) * len(shape_sensor))
+        variance_read = np.square(read_noise)
+
+        # the response of the sensor is in the factor of every voxel
+        gain = np.ones((1,) * len(shape_pixels))
+
+        # every factor is given one more axis, which the frames are
+        # broadcast along, and the precision of the matrices
+        return dict(
+            scale=scale[..., np.newaxis].astype(dtype),
+            scale_backproject=scale_backproject[..., np.newaxis].astype(dtype),
+            gain=gain[..., np.newaxis].astype(dtype),
+            vmr=vmr[..., np.newaxis].astype(dtype),
+            variance_read=variance_read[..., np.newaxis].astype(dtype),
+            unit_scene=unit_scene,
+            unit_images=unit_images,
+        )
+
+    def _grids_weights(
+        self,
+    ) -> tuple[na.AbstractCartesian2dVectorArray, na.AbstractCartesian2dVectorArray]:
+        system = self.system
+
+        coordinates = self.coordinates_scene.spectral_positional
+        coordinates = coordinates.cell_centers(self.axis_wavelength)
+
+        return (
+            system.distortion.distort(coordinates).position,
+            system.coordinates_sensor,
+        )
+
+    def _weights_input(self) -> na.AbstractScalar:
+        system = self.system
+
+        coordinates = self.coordinates_scene.spectral_positional
+        coordinates = coordinates.cell_centers(self.axis_wavelength)
+        coordinates = coordinates.cell_centers(self.axis_scene_xy)
+
+        # the effective area and the vignetting of every cell are what the
+        # transposed weights of optika invert, and its field stop is not
+        result = system.area_effective(coordinates.wavelength)
+        result = result.to_value(system.weights_unit)
+
+        vignetting = system.vignetting
+        if vignetting is not None:
+            result = result * vignetting(coordinates)
+
+        return result
 
     def image(
         self,

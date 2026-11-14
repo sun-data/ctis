@@ -119,10 +119,17 @@ def test__multiply(multiply: Callable, shape_scale: tuple[int, ...]) -> None:
     assert np.array_equal(result, scene * scale[..., np.newaxis])
 
 
-def _weights() -> tuple[na.AbstractScalarArray, dict[str, int], dict[str, int]]:
+def _weights(
+    weights_input: None | na.AbstractScalar = None,
+) -> tuple[na.AbstractScalarArray, dict[str, int], dict[str, int]]:
     """
     Conservative weights from a grid of 4 by 5 cells, which is shifted by a
     different amount in each of 3 channels, onto a grid of 6 by 4 cells.
+
+    Parameters
+    ----------
+    weights_input
+        The weight of each cell of the input grid, if it has one.
     """
     shift = na.linspace(0, 0.5, axis="channel", num=3)
     coordinates_input = na.Cartesian2dVectorArray(
@@ -138,8 +145,41 @@ def _weights() -> tuple[na.AbstractScalarArray, dict[str, int], dict[str, int]]:
         coordinates_output=coordinates_output,
         axis_input=("x", "y"),
         axis_output=("u", "v"),
+        weights_input=weights_input,
         method="conservative",
     )
+
+
+def test_regridder_unit() -> None:
+    """
+    Weights with a dimensionless unit are assembled into a matrix without
+    one, scaled by the unit, so that its products are plain arrays.
+    """
+    shape_input = dict(channel=3, x=4, y=5)
+    shape_output = dict(channel=3, u=6, v=4)
+
+    weights_input = na.ScalarArray(np.full((4, 5), 50.0), axes=("x", "y")) * u.percent
+
+    matrix = _operators.regridder(
+        weights=_weights(weights_input),
+        shape_input=shape_input,
+        shape_output=shape_output,
+    )
+    unweighted = _operators.regridder(
+        weights=_weights(),
+        shape_input=shape_input,
+        shape_output=shape_output,
+    )
+
+    rng = np.random.default_rng(0)
+    values = rng.uniform(size=tuple(shape_input.values()))
+
+    result = matrix(values)
+
+    assert matrix.unit is None
+    assert not isinstance(result, u.Quantity)
+    assert result.sum() > 0
+    assert np.allclose(result, unweighted(values) / 2, rtol=1e-12, atol=1e-12)
 
 
 @pytest.mark.parametrize(

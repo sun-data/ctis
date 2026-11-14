@@ -231,7 +231,7 @@ def regridder(
 
     array = array.ndarray_aligned(axis_orthogonal)
 
-    return regridding.Regridder.from_weights(
+    result = regridding.Regridder.from_weights(
         weights=(
             array,
             array.shape + tuple(shape_grid_input[ax] for ax in axis_input),
@@ -243,6 +243,15 @@ def regridder(
         shape_output=tuple(shape_output.values()),
         dtype=dtype,
     )
+
+    # weights with a dimensionless unit, as those weighted by a vignetting
+    # model have, are given none, so that the products of the matrix are
+    # the plain arrays which the compiled code takes
+    if result.unit is not None:
+        result.data *= u.Quantity(1, result.unit).to_value(u.dimensionless_unscaled)
+        result.unit = None
+
+    return result
 
 
 @numba.njit(cache=True, parallel=True)
@@ -350,8 +359,15 @@ class Operators:
 
     gain: np.ndarray
     """
-    The signal measured for each photon landing in a pixel, which broadcasts
-    against the images and the frames.
+    The signal measured for each unit of what :attr:`forward` brings to a
+    pixel, which broadcasts against the images and the frames.
+    """
+
+    vmr: np.ndarray
+    """
+    The variance of the shot noise of a pixel for each unit of its signal,
+    the variance-to-mean ratio, in units of :attr:`unit_images`, which
+    broadcasts against the images and the frames.
     """
 
     variance_read: np.ndarray
@@ -377,6 +393,17 @@ class Operators:
 
     unit_images: u.UnitBase
     """The unit of the images."""
+
+    weights_scene: None | np.ndarray = None
+    """
+    The weight that :attr:`forward` gives every voxel of the scene, for each
+    channel, beyond the fraction of the voxel which lands in each pixel,
+    such as the effective area of the instrument there, or :obj:`None` if it
+    gives none.
+
+    The matrix of the backprojection inverts this weight, as
+    :func:`regridding.transpose_weights_conservative` does.
+    """
 
     _scale: np.ndarray = dataclasses.field(init=False, repr=False)
     """
@@ -421,6 +448,7 @@ class Operators:
             self._backward = self.forward.transpose_conservative(
                 coordinates_input=self.vertices_scene,
                 coordinates_output=self.vertices_sensor,
+                weights_input=self.weights_scene,
             )
         return self._backward
 
@@ -533,8 +561,8 @@ class Operators:
         images = self.photons(scene, buffer=buffer)
         images *= self.gain
 
-        # the variance of the shot noise of the photons, in units of the images
-        variance = images * self.gain
+        # the variance of the shot noise, which grows with the signal
+        variance = images * self.vmr
         variance += self.variance_read
 
         return images, variance
