@@ -154,9 +154,9 @@ class AbstractInstrument(
     @abc.abstractmethod
     def axis_line(self) -> None | str:
         """
-        The logical axis of :attr:`coordinates_scene` which separates the
-        spectral lines of the scene, or :obj:`None` if the scene is one band
-        of wavelengths.
+        The logical axis of :attr:`coordinates_scene` and
+        :attr:`coordinates_sensor` which separates the spectral lines of the
+        scene, or :obj:`None` if the scene is one band of wavelengths.
 
         Each line has its own wavelengths along :attr:`axis_wavelength`, the
         same number for every line, and all the lines are imaged onto the
@@ -209,19 +209,25 @@ class AbstractInstrument(
 
         Every method which treats the lines of a scene reads this, so an
         instrument whose :attr:`axis_line` is not an axis of the wavelengths
-        of its scene raises the same error from each of them.
+        of its scene, or of those of its sensor, raises the same error from
+        each of them.
         """
         axis_line = self.axis_line
         if axis_line is None:
             return dict()
 
         shape = na.shape(self.coordinates_scene.wavelength)
-        if axis_line not in shape:
-            raise ValueError(
-                f"`axis_line` is {axis_line!r}, which is not an axis of the "
-                f"wavelengths of `coordinates_scene`, whose axes are "
-                f"{tuple(shape)}."
-            )
+        shape_sensor = na.shape(self.coordinates_sensor.wavelength)
+
+        for name, axes in (
+            ("coordinates_scene", shape),
+            ("coordinates_sensor", shape_sensor),
+        ):
+            if axis_line not in axes:
+                raise ValueError(
+                    f"`axis_line` is {axis_line!r}, which is not an axis of the "
+                    f"wavelengths of `{name}`, whose axes are {tuple(axes)}."
+                )
 
         return {axis_line: shape[axis_line]}
 

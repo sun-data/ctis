@@ -1967,23 +1967,32 @@ def test_optika_operators_weights_scene(vignetted: bool) -> None:
 
 
 @pytest.mark.parametrize(
-    argnames="a",
-    argvalues=[instrument_ideal, _instrument_optika()],
-    ids=["ideal", "optika"],
+    argnames="a,kwargs",
+    argvalues=[
+        (instrument_ideal, dict(axis_line="line")),
+        (_instrument_optika(), dict(axis_line="line")),
+        (
+            instrument_lines,
+            dict(coordinates_sensor=instrument_ideal.coordinates_sensor),
+        ),
+    ],
+    ids=["ideal, scene", "optika, scene", "ideal, sensor"],
 )
 @pytest.mark.parametrize("integrate", [True, False])
 def test_axis_line_unknown(
     a: ctis.instruments.AbstractLinearInstrument,
+    kwargs: dict,
     integrate: bool,
 ) -> None:
     """
     An instrument whose `axis_line` is not an axis of the wavelengths of its
-    scene says so, whichever of its methods is called.
+    scene, or of those of its sensor, says so, whichever of its methods is
+    called.
     """
     scene = _scene(a)
     image = a.image(scene, integrate=integrate, noise=False)
 
-    a = dataclasses.replace(a, axis_line="line")
+    a = dataclasses.replace(a, **kwargs)
 
     with pytest.raises(ValueError, match="`axis_line` is 'line'"):
         a.image(scene, integrate=integrate, noise=False)
