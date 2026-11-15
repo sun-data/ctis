@@ -1634,6 +1634,13 @@ class OptikaInstrument(
     pixel, the instrument does not provide the matrices, and the inverters
     iterate on :meth:`image` and :meth:`backproject`, which is slower.
 
+    The matrices take a scene in photons, the unit that :meth:`backproject`
+    gives by default.
+    A first guess in units of energy, which :meth:`image` takes as well, is
+    inverted on them too: it is divided by the energy of a photon at each
+    wavelength, as the sensor divides a scene in units of energy, and the
+    solution is given in the units of the guess.
+
     The matrices follow the sensor: if :attr:`system`, or the sensor of the
     system, is assigned after they were assembled, the response of the
     sensor is folded into them again.
@@ -1812,6 +1819,13 @@ class OptikaInstrument(
         so the axes of the one pixel are dropped from its response before
         the response meets the scene.
 
+        The scene of the factors is in photons, the unit that
+        :meth:`backproject` gives by default.
+        :meth:`image` takes a scene in units of energy as well, which the
+        sensor divides by the energy of a photon at each wavelength, so the
+        factors include that energy, for such a scene to be given to the
+        operators the same way.
+
         Parameters
         ----------
         shape_channel
@@ -1932,6 +1946,11 @@ class OptikaInstrument(
         scale_backproject = absorbed / area / volume
         scale_backproject = scale_backproject / math.prod(shape_line.values())
 
+        # the energy of the photons of each voxel, which a scene in units of
+        # energy is divided by, as the sensor divides the light of one at
+        # each wavelength
+        energy = self._energy_per_photon
+
         scale = aligned(scale, shape=shape_voxels, unit=unit_images)
         scale_backproject = aligned(
             a=scale_backproject,
@@ -1940,9 +1959,11 @@ class OptikaInstrument(
         )
         vmr = aligned(vmr, shape=shape_response, unit=unit_images)
         read_noise = aligned(sensor.read_noise, shape=shape_pixels, unit=unit_images)
+        energy = aligned(energy, shape=shape_scene, unit=Operators.unit_energy)
 
         # anything with other axes or units is left to the named arrays
-        if any(a is None for a in (scale, scale_backproject, vmr, read_noise)):
+        factors = (scale, scale_backproject, vmr, read_noise, energy)
+        if any(a is None for a in factors):
             return None
 
         # one ratio for all the wavelengths of a line, the middle of its
@@ -1966,6 +1987,7 @@ class OptikaInstrument(
             gain=gain.astype(dtype),
             vmr=vmr.astype(dtype),
             variance_read=np.square(read_noise).astype(dtype),
+            energy=energy[..., np.newaxis].astype(dtype),
             unit_scene=unit_scene,
             unit_images=unit_images,
         )

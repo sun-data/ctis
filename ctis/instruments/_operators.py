@@ -2,7 +2,7 @@
 An instrument as a pair of sparse matrices which act on plain arrays.
 """
 
-from typing import Any
+from typing import Any, ClassVar
 import dataclasses
 import math
 import numpy as np
@@ -490,6 +490,24 @@ class Operators:
     The matrix of the backprojection inverts this weight, as
     :func:`regridding.transpose_weights_conservative` does.
     """
+
+    energy: None | np.ndarray = None
+    """
+    The energy of one photon of each voxel, in units of :attr:`unit_energy`,
+    for an instrument which takes a scene in units of energy as well as in
+    :attr:`unit_scene`, which is then in photons, or :obj:`None` if the
+    instrument takes a scene in :attr:`unit_scene` alone.
+
+    A scene in units of energy is divided by it before it is given to these
+    operators, and a scene they give back is multiplied by it.
+
+    It broadcasts against the scene and the frames: it has the axes of the
+    scene, each of length one if the energy does not vary along it, followed
+    by one for the frames.
+    """
+
+    unit_energy: ClassVar[u.UnitBase] = u.erg / u.photon
+    """The unit of :attr:`energy`."""
 
     _scale: np.ndarray = dataclasses.field(init=False, repr=False)
     """

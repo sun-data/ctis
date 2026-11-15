@@ -555,6 +555,20 @@ class TestIdealInstrument(
         assert a._operators() is not None
         super().test__operators(a)
 
+    def test__operators_energy(
+        self,
+        a: ctis.instruments.IdealInstrument,
+    ) -> None:
+        """
+        The operators take a scene in units of energy, the only unit that
+        the instrument takes one in, so they hold no energy of a photon to
+        convert a scene by.
+        """
+        operators = a._operators()
+
+        assert operators.unit_scene.is_equivalent(_scene(a).outputs.unit)
+        assert operators.energy is None
+
     @pytest.mark.parametrize(
         argnames="kwargs",
         argvalues=[
@@ -1623,6 +1637,52 @@ class TestOptikaInstrument(
     ) -> None:
         assert a._operators() is not None
         super().test__operators(a)
+
+    def test__operators_energy(
+        self,
+        a: ctis.instruments.OptikaInstrument,
+    ) -> None:
+        """
+        The operators take a scene in photons, and hold the energy of a
+        photon of each voxel, which a scene in units of energy is divided
+        by: the images of the quotient are those which the instrument
+        itself gives of the scene in units of energy.
+        """
+        operators = a._operators()
+        energy = operators.energy
+
+        shape_scene = operators.shape_scene
+        shape_images = operators.shape_images
+        dims_scene = tuple(shape_scene.values())
+
+        # one energy for each wavelength of each line, which broadcasts
+        # against the scene and the frames
+        dims_energy = tuple(
+            num if ax in a._axis_spectral else 1 for ax, num in shape_scene.items()
+        )
+
+        assert energy.shape == dims_energy + (1,)
+        assert energy.dtype == operators.dtype
+        assert np.ptp(energy) > 0
+
+        rng = np.random.default_rng(0)
+        scene = rng.uniform(1, 2, size=dims_scene)
+
+        expected = a.image(
+            scene=na.ScalarArray(
+                ndarray=scene << operators.unit_scene * operators.unit_energy,
+                axes=tuple(shape_scene),
+            ),
+            noise=False,
+        ).outputs
+        expected = expected.ndarray_aligned(tuple(shape_images))
+        expected = expected.to_value(operators.unit_images)
+
+        images, _ = operators.image(scene[..., np.newaxis] / energy)
+        images = images[..., 0]
+
+        assert images.sum() > 0
+        assert np.allclose(images, expected, rtol=1e-10, atol=1e-10 * expected.max())
 
     def _with_read_noise(self, a, read_noise):
         sensor = dataclasses.replace(a.system.sensor, read_noise=read_noise)

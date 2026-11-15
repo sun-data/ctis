@@ -49,6 +49,14 @@ class MartInverter(
     axis named after one of the scene.
     The images are inverted along those in one iteration, which can only
     stop all at once, so they can have no more than one element along them.
+
+    A first guess can be in any unit that the
+    :meth:`~ctis.instruments.AbstractInstrument.image` method of the
+    instrument takes a scene in, and the solution is given in the unit of
+    the guess.
+    Without a guess, the solution is in the unit that the
+    :meth:`~ctis.instruments.AbstractInstrument.backproject` method of the
+    instrument gives.
     """
 
     instrument: ctis.instruments.AbstractInstrument = dataclasses.MISSING
@@ -138,6 +146,10 @@ class MartInverter(
             Must be evaluated on the same coordinates as
             :attr:`~ctis.instruments.AbstractInstrument.coordinates_scene`
             attribute of :attr:`instrument`.
+            It can be in any unit that the
+            :meth:`~ctis.instruments.AbstractInstrument.image` method of
+            :attr:`instrument` takes a scene in, and the solution is given
+            in the unit of the guess.
         """
 
         instrument = self.instrument
@@ -265,6 +277,11 @@ class MartInverter(
         The guess is a copy, which the iteration is free to overwrite, or
         :obj:`None` if there is none.
 
+        A guess in units of energy, for operators which take a scene in
+        photons, is divided by the energy of the photons of each voxel, if
+        the operators have it, which is how the instrument itself takes
+        such a scene.
+
         Parameters
         ----------
         images
@@ -311,12 +328,28 @@ class MartInverter(
 
         scene = None
         if guess is not None:
+            shape_guess = operators.shape_scene | shape_frames
+
             scene = aligned(
                 a=guess,
-                shape=operators.shape_scene | shape_frames,
+                shape=shape_guess,
                 unit=operators.unit_scene,
                 dtype=operators.dtype,
             )
+
+            # a guess in units of energy, for operators which take a scene
+            # in photons, is divided by the energy of the photons of each
+            # voxel below
+            energy = None
+            if scene is None and operators.energy is not None:
+                energy = operators.energy
+                scene = aligned(
+                    a=guess,
+                    shape=shape_guess,
+                    unit=operators.unit_scene * operators.unit_energy,
+                    dtype=operators.dtype,
+                )
+
             # a guess without every axis of the scene is left to the named
             # arrays, which do not accept one
             if scene is None or scene.shape[: len(shape_scene)] != shape_scene:
@@ -324,6 +357,9 @@ class MartInverter(
             scene = np.broadcast_to(scene, shape_scene + tuple(shape_frames.values()))
             scene = np.array(scene, dtype=operators.dtype, order="C")
             scene = scene.reshape(shape_scene + (num_frame,))
+
+            if energy is not None:
+                scene /= energy
 
         return shape_frames, operators, observed, scene
 
@@ -493,8 +529,15 @@ class MartInverter(
             (solutions.shape[0],) + shape_scene + (num_frame,)
         )
 
-        # the solution is in the units of the guess, if there is one
-        solutions = solutions << operators.unit_scene
+        # the solution is in the units of the guess, if there is one, so the
+        # solution of a guess in units of energy, which was divided by the
+        # energy of the photons of each voxel, is multiplied by it again
+        unit = operators.unit_scene
+        if guess is not None and not unit.is_equivalent(na.unit_normalized(guess)):
+            solutions *= operators.energy
+            unit = unit * operators.unit_energy
+
+        solutions = solutions << unit
         if guess is not None:
             solutions = solutions.to(guess.unit, copy=False)
 
