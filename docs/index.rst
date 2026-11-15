@@ -50,6 +50,9 @@ Features
   which maps the spectral radiance of a scene to the electrons measured by the sensor,
   optionally with the uncertainty of each pixel,
   and its transpose, :meth:`~ctis.instruments.AbstractInstrument.backproject`.
+- :meth:`~ctis.instruments.AbstractInstrument.snr`,
+  the signal-to-noise ratio of the line profile in every pixel of a scene,
+  as if that pixel were alone in the scene.
 - :class:`~ctis.inverters.MartInverter`,
   an implementation of the multiplicative algebraic reconstruction technique (MART)
   :cite:p:`Gordon1970`,

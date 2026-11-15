@@ -6,8 +6,7 @@ import pytest
 import astropy.units as u
 import named_arrays as na
 import ctis
-from ctis.instruments._instruments_test import _instrument_optika, _scene_frames
-from ._iterative._mart._mart_test import _IdealInstrumentWeights, instrument, scene
+from ._iterative._mart._mart_test import instrument, scene
 
 # read noise, so that the signal-to-noise ratio of a pixel depends on it
 instrument = dataclasses.replace(instrument, read_noise=2 * u.electron)
@@ -16,163 +15,6 @@ inversion = ctis.inverters.MartInverter(
     instrument=instrument,
     threshold_convergence=1e-2,
 )(instrument.image(scene))
-
-
-def _result(
-    a: ctis.instruments.AbstractInstrument,
-    solution: na.FunctionArray[
-        na.AbstractSpectralPositionalVectorArray, na.ScalarArray
-    ],
-) -> ctis.inverters.InversionResult:
-    """
-    The result of an inversion with a given instrument, as if the inversion
-    had found a given scene.
-    """
-    return ctis.inverters.InversionResult(
-        solution=solution,
-        success=True,
-        images=a.image(solution, noise=False),
-        inverter=ctis.inverters.MartInverter(instrument=a),
-        message="",
-    )
-
-
-def test__snr() -> None:
-    """
-    The signal-to-noise ratio of a pixel of the reconstructed scene is that
-    of its voxels alone, summed in quadrature over the channels and the
-    wavelengths, as computed from the fields of an ideal instrument.
-    """
-    result = inversion._snr()
-
-    solution = inversion.solution.outputs
-
-    photons = solution * instrument._volume_scene / instrument._energy_per_photon
-    photons = photons * instrument.area_effective * instrument.timedelta_exposure
-    photons = photons.to(u.photon).value
-
-    quantum_yield = instrument.quantum_yield.to_value(u.electron / u.photon)
-    variance_read = instrument.read_noise.to_value(u.electron) ** 2
-
-    signal = photons * quantum_yield
-    variance = signal * quantum_yield + variance_read
-
-    expected = np.square(signal) / variance
-    expected = np.sqrt(instrument.num_channel * expected.sum("wavelength"))
-
-    assert result.shape == expected.shape
-    assert na.unit(result) is None
-    assert result.max() > 5
-    assert np.allclose(
-        result.ndarray_aligned(expected.axes),
-        expected.ndarray,
-        rtol=1e-10,
-    )
-
-
-def test__snr_no_operators() -> None:
-    """
-    The signal-to-noise ratio is computed from the operators of the
-    instrument, so an instrument which does not provide them has none, and
-    says so.
-    """
-    a = _IdealInstrumentWeights(
-        **{
-            f.name: getattr(instrument, f.name)
-            for f in dataclasses.fields(instrument)
-            if f.init
-        }
-    )
-
-    with pytest.raises(ValueError, match="pair of sparse matrices"):
-        _result(a, inversion.solution)._snr()
-
-
-def test__snr_empty() -> None:
-    """
-    A pixel which emits nothing has a signal-to-noise ratio of zero, whether
-    the sensor has read noise or not, and computing it does not warn.
-    """
-    solution = inversion.solution
-    index = dict(scene_x=slice(None, 8))
-    outputs = solution.outputs.copy()
-    outputs[index] = 0
-    solution = na.FunctionArray(inputs=solution.inputs, outputs=outputs)
-
-    for read_noise in (0, 2) * u.electron:
-        a = dataclasses.replace(instrument, read_noise=read_noise)
-
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", RuntimeWarning)
-            result = _result(a, solution)._snr()
-
-        assert np.all(result[index] == 0)
-        assert np.all(np.isfinite(result))
-        assert result.max() > 0
-
-
-@pytest.mark.parametrize(
-    argnames="axis_field",
-    argvalues=[
-        ("scene_x", "scene_y"),
-        ("sensor_x", "sensor_y"),
-    ],
-    ids=[
-        "scene named apart from the pixels",
-        "scene named like the pixels",
-    ],
-)
-@pytest.mark.parametrize(
-    argnames="energy",
-    argvalues=[False, True],
-    ids=["scene in photons", "scene in units of energy"],
-)
-def test__snr_optika(axis_field: tuple[str, str], energy: bool) -> None:
-    """
-    The signal-to-noise ratio of a pixel is that of the images of that pixel
-    alone, for an instrument on a linear system of :mod:`optika`: if the
-    sensor has no read noise, the square of the ratio is the signal of the
-    images over the variance-to-mean ratio of their shot noise.
-
-    This holds for a scene in units of energy, and for one whose spatial
-    axes are named like the pixels of the sensor.
-    """
-    a = _instrument_optika(axis_field=axis_field)
-
-    # one pixel in the middle of the field, all of whose light reaches
-    # the sensor
-    index = {ax: 10 for ax in axis_field}
-    solution = _scene_frames(a, shape_frames=dict())
-    outputs = 0 * solution.outputs
-    outputs[index] = 1e3 * solution.outputs[index]
-    if energy:
-        outputs = (outputs * a._energy_per_photon).to(
-            u.erg / u.cm**2 / u.sr / u.nm / u.s
-        )
-    solution = na.FunctionArray(inputs=solution.inputs, outputs=outputs)
-
-    result = _result(a, solution)._snr()
-
-    images = a.image(solution, noise=False, uncertainty=True).outputs
-    signal = images.nominal.to(u.electron).value
-    variance = np.square(images.width.to(u.electron).value)
-    lit = signal > 0
-
-    with np.errstate(divide="ignore", invalid="ignore"):
-        expected = np.sqrt(np.sum(np.square(signal) / variance, where=lit))
-
-    assert result.shape == {ax: 20 for ax in axis_field}
-    assert np.all(result[{ax: slice(11, None) for ax in axis_field}] == 0)
-    assert result[index].ndarray > 10
-    assert np.isclose(result[index].ndarray, expected.ndarray, rtol=1e-10)
-
-    # the read noise of one pixel for every voxel lowers the ratio
-    sensor = dataclasses.replace(a.system.sensor, read_noise=5 * u.electron)
-    a = dataclasses.replace(a, system=dataclasses.replace(a.system, sensor=sensor))
-
-    result_read = _result(a, solution)._snr()
-
-    assert 0 < result_read[index].ndarray < result[index].ndarray
 
 
 @pytest.mark.parametrize("truth", [None, scene])
@@ -199,7 +41,8 @@ def test_plot_moments(
 
     num_blank = 0
     if threshold_snr is not None:
-        num_blank = int((inversion._snr() <= threshold_snr).sum().ndarray)
+        snr = instrument.snr(inversion.solution)
+        num_blank = int((snr <= threshold_snr).sum().ndarray)
         assert num_blank > 0
 
     for ax_radiance, ax_median, ax_iqr in axs:

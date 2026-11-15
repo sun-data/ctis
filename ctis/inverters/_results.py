@@ -1,6 +1,5 @@
 import abc
 import dataclasses
-import math
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.ticker
@@ -94,90 +93,6 @@ class AbstractInversionResult(
 
         return radiance, median, iqr
 
-    def _snr(self) -> na.AbstractScalar:
-        """
-        The signal-to-noise ratio of the spectral line profile in every pixel
-        of the reconstructed scene, as if that pixel were alone in the scene.
-
-        The signal of a voxel is what it adds to the images of a channel.
-        Its noise is the shot noise of that signal alone, and the read noise
-        of one pixel of the sensor, which every voxel is taken to land on.
-        The ratio of a pixel of the scene is the ratios of its voxels, for
-        every channel and every wavelength, summed in quadrature.
-
-        The light which the rest of the scene sends to the same pixels of the
-        sensor is left out, so this ratio is an upper limit to how well the
-        line profile of a pixel can be reconstructed.
-
-        The signal of every voxel and the noise model of the sensor are those
-        of the operators of the instrument, which are assembled here if the
-        inversion did not iterate on them.
-        """
-        inverter = self.inverter
-        instrument = inverter.instrument
-
-        # the precision which the inversion assembled the operators in, if
-        # it did, since another precision would assemble them again
-        dtype = getattr(inverter, "dtype", np.float64)
-
-        operators = instrument._operators(dtype)
-        if operators is None:
-            raise ValueError(
-                "The signal-to-noise ratio is computed from the instrument as "
-                "a pair of sparse matrices, which this instrument does not "
-                "provide."
-            )
-
-        shape_channel = operators.shape_channel
-        shape_voxels = shape_channel | operators.shape_scene
-        shape_response = shape_channel | operators.shape_line
-        shape_pixels = shape_channel | operators.shape_sensor
-
-        def named(a: np.ndarray, shape: dict[str, int]) -> na.ScalarArray:
-            """A factor of the operators, with the axes that it varies along."""
-            axes = tuple(ax for ax, num in zip(shape, a.shape) if num != 1)
-            return na.ScalarArray(np.squeeze(a), axes=axes)
-
-        scene = self.solution.outputs
-
-        # the operators take a scene in photons or in units of energy, and a
-        # scene in units of energy is converted to photons as `image` does it
-        unit_scene = operators.unit_scene
-        if not na.unit_normalized(scene).is_equivalent(unit_scene):
-            scene = scene / instrument._energy_per_photon
-
-        scene = np.maximum(scene.to(unit_scene).value, 0)
-
-        # the factors have an axis for the frames, which a scene of the
-        # operators has last
-        signal = scene * named(operators.scale[..., 0], shape_voxels)
-        signal = signal * named(operators.gain, shape_response)
-        if operators.weights_scene is not None:
-            signal = signal * named(operators.weights_scene, shape_voxels)
-
-        # the read noise is averaged over the sensor before it is compared to
-        # the scene, since the axes of the two can have the same names
-        variance_read = named(operators.variance_read, shape_pixels)
-        variance_read = variance_read.mean(
-            axis=tuple(
-                ax for ax in operators.shape_sensor if ax in variance_read.shape
-            ),
-        )
-
-        variance = signal * named(operators.vmr, shape_response) + variance_read
-
-        # a voxel which emits nothing has no ratio if there is no read noise
-        with np.errstate(divide="ignore", invalid="ignore"):
-            ratio = np.square(signal) / variance
-        ratio = np.nan_to_num(ratio)
-
-        # the channels which the factors do not vary along are counted
-        axis = (*shape_channel, instrument.axis_wavelength)
-        num_same = math.prod(shape_voxels[ax] for ax in axis if ax not in ratio.shape)
-        ratio = num_same * ratio.sum(tuple(ax for ax in axis if ax in ratio.shape))
-
-        return np.sqrt(ratio)
-
     def plot_moments(
         self,
         axis: str,
@@ -227,11 +142,11 @@ class AbstractInversionResult(
             signal-to-noise ratio of the reconstructed line profile is at or
             below this threshold, since they mean little there.
             The ratio is that of each pixel of the reconstructed scene as if
-            it were alone in the scene: the signal it adds to the images,
-            compared to the shot noise of that signal and the read noise.
-            It is only available for an instrument which can be expressed as
-            a pair of sparse matrices, as :class:`~ctis.inverters.MartInverter`
-            describes.
+            it were alone in the scene,
+            the :meth:`~ctis.instruments.AbstractInstrument.snr` of the
+            instrument for the reconstructed scene, which is only available
+            for an instrument which can be expressed as a pair of sparse
+            matrices.
             The default is to leave no pixels blank.
         """
         scenes = dict(reconstructed=self.solution)
@@ -242,7 +157,7 @@ class AbstractInversionResult(
 
         where = None
         if threshold_snr is not None:
-            where = self._snr() > threshold_snr
+            where = self.inverter.instrument.snr(self.solution) > threshold_snr
 
         def blanked(a: na.AbstractScalar) -> na.AbstractScalar:
             if where is None:
@@ -420,9 +335,11 @@ class AbstractInversionResult(
             The default is to not exclude any pixels.
         threshold_snr
             Spatial locations where the signal-to-noise ratio of the
-            reconstructed line profile is at or below this threshold are
-            excluded from the histogram, as :meth:`plot_moments` leaves them
-            blank, for the instruments it describes.
+            reconstructed line profile,
+            the :meth:`~ctis.instruments.AbstractInstrument.snr` of the
+            instrument for the reconstructed scene, is at or below this
+            threshold are excluded from the histogram,
+            as :meth:`plot_moments` leaves them blank.
             The default is to not exclude any pixels.
         """
 
@@ -435,7 +352,9 @@ class AbstractInversionResult(
         where = radiance_truth > thresh
 
         if threshold_snr is not None:
-            where = where & (self._snr() > threshold_snr)
+            where = where & (
+                self.inverter.instrument.snr(self.solution) > threshold_snr
+            )
 
         r_radiance = na.stats.pearsonr(
             x=radiance_truth,

@@ -109,6 +109,59 @@ class AbstractInstrument(
             units of the backprojection and is not converted.
         """
 
+    @abc.abstractmethod
+    def snr(
+        self,
+        scene: na.AbstractScalar | na.AbstractFunctionArray,
+    ) -> na.AbstractScalar:
+        r"""
+        The signal-to-noise ratio of the spectral line profile in every pixel
+        of a scene, as if that pixel were alone in the scene.
+
+        The signal of a voxel, :math:`s`, is what it adds to the images of a
+        channel.
+        Its noise is the shot noise of that signal alone, and the read noise
+        of one pixel of the sensor, :math:`\sigma_\text{r}`, which all of
+        the signal is taken to land on.
+        The ratio of a pixel of the scene is the ratios of its voxels, for
+        every channel :math:`c` and every wavelength :math:`\lambda`, summed
+        in quadrature,
+
+        .. math::
+
+            \text{SNR}^2 = \sum_{c, \lambda}
+            \frac{s_{c \lambda}^2}{F_c \, s_{c \lambda} + \sigma_\text{r}^2},
+
+        where :math:`F_c` is the variance of the shot noise of a channel for
+        each unit of its signal.
+
+        The light which the rest of the scene sends to the same pixels of the
+        sensor is left out, and all the light of a voxel is counted, whether
+        it lands on the sensor or not.
+        This ratio is therefore an upper limit to how well the line profile
+        of a pixel can be measured, and how far below it an inversion lands
+        depends on the scene.
+
+        The ratio is summed over the channels and :attr:`axis_wavelength`,
+        so the result has the other axes of the scene.
+
+        Parameters
+        ----------
+        scene
+            The spectral radiance of the scene,
+            evaluated on :attr:`coordinates_scene`,
+            in the units that :meth:`image` takes.
+            A negative radiance is taken to be zero.
+
+        Raises
+        ------
+        ValueError
+            If this instrument cannot be expressed as a pair of sparse
+            matrices, as :class:`~ctis.inverters.MartInverter` describes,
+            since the signal of every voxel and the noise model of the
+            sensor are the factors around those matrices.
+        """
+
     @property
     @abc.abstractmethod
     def coordinates_scene(self) -> na.AbstractSpectralPositionalVectorArray:
@@ -240,7 +293,10 @@ class AbstractInstrument(
         """
         return (*self._shape_line, self.axis_wavelength)
 
-    def _operators(self, dtype: type = np.float64) -> None | Operators:
+    def _operators(
+        self,
+        dtype: None | type = np.float64,
+    ) -> None | Operators:
         """
         This instrument as a pair of sparse matrices which act on plain
         arrays, or :obj:`None` if it does not provide them.
@@ -252,7 +308,9 @@ class AbstractInstrument(
         ----------
         dtype
             The precision of the matrices and of the arrays they act on,
-            :obj:`numpy.float64` or :obj:`numpy.float32`.
+            :obj:`numpy.float64` or :obj:`numpy.float32`, or :obj:`None` for
+            the precision that the matrices are kept in, which is
+            :obj:`numpy.float64` if none are kept.
         """
         return None
 
@@ -356,7 +414,10 @@ class AbstractLinearInstrument(
             getattr(cls, name, None) is not getattr(owner, name, None) for name in names
         )
 
-    def _operators(self, dtype: type = np.float64) -> None | Operators:
+    def _operators(
+        self,
+        dtype: None | type = np.float64,
+    ) -> None | Operators:
         """
         This instrument as a pair of sparse matrices which act on plain
         arrays, or :obj:`None` if it cannot be expressed as one.
@@ -385,8 +446,13 @@ class AbstractLinearInstrument(
         ----------
         dtype
             The precision of the matrices and of the arrays they act on,
-            :obj:`numpy.float64` or :obj:`numpy.float32`.
+            :obj:`numpy.float64` or :obj:`numpy.float32`, or :obj:`None` for
+            the precision that the matrices are kept in, which is
+            :obj:`numpy.float64` if none are kept.
         """
+        if dtype is None:
+            kept = self._operators_kept
+            dtype = np.float64 if kept is None else kept[0]
         dtype = np.dtype(dtype)
 
         if self._overridden():
@@ -783,6 +849,80 @@ class AbstractLinearInstrument(
             inputs=coordinates,
             outputs=values_output,
         )
+
+    def snr(
+        self,
+        scene: na.AbstractScalar | na.AbstractFunctionArray,
+    ) -> na.AbstractScalar:
+
+        # the signal of every voxel and the noise model of the sensor are
+        # the factors around the matrices of this instrument, in whichever
+        # precision the matrices are kept in, since another precision would
+        # assemble them again
+        operators = self._operators(None)
+        if operators is None:
+            raise ValueError(
+                "The signal-to-noise ratio is computed from the instrument as "
+                "a pair of sparse matrices, which this instrument does not "
+                "provide."
+            )
+
+        if isinstance(scene, na.AbstractFunctionArray):
+            if not np.all(scene.inputs == self.coordinates_scene):
+                raise ValueError(
+                    "`scene.inputs` and `self.coordinates_scene` are not equal."
+                )
+            scene = scene.outputs
+
+        shape_channel = operators.shape_channel
+        shape_voxels = shape_channel | operators.shape_scene
+        shape_response = shape_channel | operators.shape_line
+        shape_pixels = shape_channel | operators.shape_sensor
+
+        def named(a: np.ndarray, shape: dict[str, int]) -> na.ScalarArray:
+            """A factor of the operators, with the axes that it varies along."""
+            axes = tuple(ax for ax, num in zip(shape, a.shape) if num != 1)
+            return na.ScalarArray(np.squeeze(a), axes=axes)
+
+        # a scene in units of energy is converted to the photons which the
+        # operators take, as `image` does it
+        unit_scene = operators.unit_scene
+        if not na.unit_normalized(scene).is_equivalent(unit_scene):
+            scene = scene / self._energy_per_photon
+
+        # a voxel cannot send less than no light
+        scene = np.maximum(scene.to(unit_scene).value, 0)
+
+        # the factors have an axis for the frames, which a scene of the
+        # operators has last
+        signal = scene * named(operators.scale[..., 0], shape_voxels)
+        signal = signal * named(operators.gain, shape_response)
+        if operators.weights_scene is not None:
+            signal = signal * named(operators.weights_scene, shape_voxels)
+
+        # the read noise is averaged over the sensor before it is compared to
+        # the scene, since the axes of the two can have the same names
+        variance_read = named(operators.variance_read, shape_pixels)
+        variance_read = variance_read.mean(
+            axis=tuple(
+                ax for ax in operators.shape_sensor if ax in variance_read.shape
+            ),
+        )
+
+        variance = signal * named(operators.vmr, shape_response) + variance_read
+
+        # a voxel which emits nothing has no ratio if there is no read noise
+        with np.errstate(divide="ignore", invalid="ignore"):
+            ratio = np.square(signal) / variance
+        ratio = np.nan_to_num(ratio)
+
+        # the channels and the wavelengths which neither the scene nor the
+        # factors vary along are counted
+        axis = (*shape_channel, self.axis_wavelength)
+        num_same = math.prod(shape_voxels[ax] for ax in axis if ax not in ratio.shape)
+        ratio = num_same * ratio.sum(tuple(ax for ax in axis if ax in ratio.shape))
+
+        return np.sqrt(ratio)
 
 
 @dataclasses.dataclass
