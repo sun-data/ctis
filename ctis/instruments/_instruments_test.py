@@ -565,9 +565,13 @@ class TestIdealInstrument(
         convert a scene by.
         """
         operators = a._operators()
+        scene = _scene(a).outputs
 
-        assert operators.unit_scene.is_equivalent(_scene(a).outputs.unit)
+        assert operators.unit_scene.is_equivalent(scene.unit)
         assert operators.energy is None
+
+        with pytest.raises(u.UnitConversionError):
+            a.image(scene / a._energy_per_photon, noise=False)
 
     @pytest.mark.parametrize(
         argnames="kwargs",
@@ -1943,6 +1947,87 @@ def test_optika_operators_proportional(
 
     assert a._operators() is None
     assert a.image(_scene(a), noise=False).outputs.sum() > 0
+
+
+class _MaterialPhotons(
+    optika.sensors.materials.IdealSensorMaterial,
+):
+    """A sensor material which takes light in photons alone."""
+
+    def signal(
+        self,
+        photons: u.Quantity | na.AbstractScalar,
+        **kwargs: Any,
+    ) -> na.AbstractScalar:
+        return super().signal(photons.to(u.photon), **kwargs)
+
+
+class _MaterialShifted(
+    optika.sensors.materials.IdealSensorMaterial,
+):
+    """
+    A sensor material which takes light in units of energy for photons of a
+    wavelength one part in a hundred shorter than theirs.
+    """
+
+    def signal(
+        self,
+        photons: u.Quantity | na.AbstractScalar,
+        wavelength: u.Quantity | na.AbstractScalar,
+        **kwargs: Any,
+    ) -> na.AbstractScalar:
+        if not photons.unit.is_equivalent(u.photon):
+            wavelength = 0.99 * wavelength
+        return super().signal(photons, wavelength, **kwargs)
+
+
+@pytest.mark.parametrize(
+    argnames="material",
+    argvalues=[_MaterialPhotons(), _MaterialShifted()],
+    ids=["photons alone", "energy of another wavelength"],
+)
+def test_optika_operators_energy_unsupported(
+    material: optika.sensors.materials.AbstractSensorMaterial,
+) -> None:
+    """
+    An instrument whose sensor takes no light in units of energy, or takes
+    it for photons of another energy than the operators would divide it by,
+    provides operators which hold no energy of a photon, so that a scene in
+    units of energy is left to its own methods.
+    The operators still reproduce the instrument for a scene in photons.
+    """
+    a = _instrument_optika(material=material)
+    operators = a._operators()
+
+    assert operators is not None
+    assert operators.energy is None
+
+    TestOptikaInstrument().test__operators(a)
+
+
+def test_optika_operators_wavelength_channel() -> None:
+    """
+    An instrument whose scene has its wavelengths given for each channel,
+    the same for all of them, provides its operators, which reproduce it.
+    The energy of a photon then has the axis of the channels, which a scene
+    does not have, so the operators hold none, and a scene in units of
+    energy is left to the methods of the instrument.
+    """
+    a = _instrument_optika()
+    coordinates = a.coordinates_scene
+
+    zero = na.ScalarArray.zeros(a.channel.shape) * coordinates.wavelength.unit
+    a = dataclasses.replace(
+        a,
+        coordinates_scene=coordinates.replace(wavelength=coordinates.wavelength + zero),
+    )
+    operators = a._operators()
+
+    assert a.channel.axes[0] in a._energy_per_photon.shape
+    assert operators is not None
+    assert operators.energy is None
+
+    TestOptikaInstrument().test__operators(a)
 
 
 @pytest.mark.parametrize(

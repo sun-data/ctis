@@ -495,11 +495,16 @@ class Operators:
     """
     The energy of one photon of each voxel, in units of :attr:`unit_energy`,
     for an instrument which takes a scene in units of energy as well as in
-    :attr:`unit_scene`, which is then in photons, or :obj:`None` if the
-    instrument takes a scene in :attr:`unit_scene` alone.
+    :attr:`unit_scene`, which is then in photons.
 
     A scene in units of energy is divided by it before it is given to these
     operators, and a scene they give back is multiplied by it.
+
+    It is :obj:`None` if a scene in units of energy cannot be given to
+    these operators that way: if the instrument takes a scene in
+    :attr:`unit_scene` alone, or divides one in units of energy by
+    something else.
+    Such a scene is left to the methods of the instrument.
 
     It broadcasts against the scene and the frames: it has the axes of the
     scene, each of length one if the energy does not vary along it, followed

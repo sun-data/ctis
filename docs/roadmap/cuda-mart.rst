@@ -944,13 +944,18 @@ The rest are questions to settle before the milestone that needs them.
   it is divided by the energy of a photon at each wavelength,
   as the sensor of optika divides a scene in units of energy,
   and the solution is given in the units of the guess.
-- **Imaging with the instrument computes the weights again (M8).**
-  The matrices of :class:`~ctis.instruments.OptikaInstrument` release the weights
-  once they are assembled,
-  and its ``image`` is computed from the weights and not from the matrices.
-  So imaging a solution with the instrument after an inversion
-  computes the weights a second time and holds them beside the matrices,
-  which the production grid has no room for.
+  The instrument asks its sensor whether it divides such a scene that way,
+  and leaves the guess to the reference path if it does not.
+- **The methods of the instrument compute the weights again (M8).**
+  The matrices of :class:`~ctis.instruments.OptikaInstrument` are assembled,
+  and the weights released, before the guess is looked at.
+  So an inversion whose guess the matrices cannot take,
+  such as one which is not a plain array of the scene,
+  is left to the reference path,
+  which computes the weights a second time and holds them beside the matrices.
+  So does imaging a solution with the instrument afterward,
+  since its ``image`` is computed from the weights and not from the matrices.
+  The production grid has no room for both.
 - **Charge diffusion changes Level-4 (M9).**
   From optika 4.0, the noise-free model of a sensor includes charge diffusion,
   so MART will also undo the diffusion blur,
