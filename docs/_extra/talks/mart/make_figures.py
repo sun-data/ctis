@@ -394,7 +394,7 @@ def main():
 
         # The line moments of every pixel
         with np.errstate(divide="ignore", invalid="ignore"):
-            fig, axs = inversion.plot_moments(scene, axis="wavelength")
+            fig, axs = inversion.plot_moments_histogram(scene, axis="wavelength")
         fig.set_size_inches(17.6, 6.6)
         # separate the colorbar labels from their tick labels
         for cax in fig.axes[len(axs) :]:

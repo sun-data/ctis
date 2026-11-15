@@ -1,7 +1,9 @@
 import abc
 import dataclasses
+import math
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.ticker
 import astropy.units as u
 import astropy.visualization
 import named_arrays as na
@@ -53,7 +55,332 @@ class AbstractInversionResult(
     def message(self) -> str:
         """Any message from the inverter regarding these results."""
 
+    def _moments(
+        self,
+        scene: na.FunctionArray[
+            na.AbstractDopplerPositionalVectorArray,
+            na.ScalarArray,
+        ],
+        axis: str,
+    ) -> tuple[na.AbstractScalar, na.AbstractScalar, na.AbstractScalar]:
+        """
+        The radiance, the median, and the interquartile range of the spectral
+        line profile in every pixel of a scene.
+
+        Parameters
+        ----------
+        scene
+            The scene to compute the moments of, the reconstructed scene or
+            one on the same grid.
+        axis
+            The axis along which to compute the median and the interquartile
+            range.
+        """
+        axis_wavelength = self.inverter.instrument.axis_wavelength
+
+        dw = scene.inputs.wavelength.volume_cell(axis_wavelength)
+
+        radiance = (scene.outputs * dw).sum(axis_wavelength)
+        median = na.pdf.median(
+            x=scene.inputs.velocity,
+            f=scene.outputs,
+            axis=axis,
+        )
+        iqr = na.pdf.iqr(
+            x=scene.inputs.velocity,
+            f=scene.outputs,
+            axis=axis,
+        )
+
+        return radiance, median, iqr
+
+    def _snr(self) -> na.AbstractScalar:
+        """
+        The signal-to-noise ratio of the spectral line profile in every pixel
+        of the reconstructed scene, as if that pixel were alone in the scene.
+
+        The signal of a voxel is what it adds to the images of a channel.
+        Its noise is the shot noise of that signal alone, and the read noise
+        of one pixel of the sensor, which every voxel is taken to land on.
+        The ratio of a pixel of the scene is the ratios of its voxels, for
+        every channel and every wavelength, summed in quadrature.
+
+        The light which the rest of the scene sends to the same pixels of the
+        sensor is left out, so this ratio is an upper limit to how well the
+        line profile of a pixel can be reconstructed.
+
+        The signal of every voxel and the noise model of the sensor are those
+        of the operators of the instrument, which are assembled here if the
+        inversion did not iterate on them.
+        """
+        inverter = self.inverter
+        instrument = inverter.instrument
+
+        # the precision which the inversion assembled the operators in, if
+        # it did, since another precision would assemble them again
+        dtype = getattr(inverter, "dtype", np.float64)
+
+        operators = instrument._operators(dtype)
+        if operators is None:
+            raise ValueError(
+                "The signal-to-noise ratio is computed from the instrument as "
+                "a pair of sparse matrices, which this instrument does not "
+                "provide."
+            )
+
+        shape_channel = operators.shape_channel
+        shape_voxels = shape_channel | operators.shape_scene
+        shape_response = shape_channel | operators.shape_line
+        shape_pixels = shape_channel | operators.shape_sensor
+
+        def named(a: np.ndarray, shape: dict[str, int]) -> na.ScalarArray:
+            """A factor of the operators, with the axes that it varies along."""
+            axes = tuple(ax for ax, num in zip(shape, a.shape) if num != 1)
+            return na.ScalarArray(np.squeeze(a), axes=axes)
+
+        scene = self.solution.outputs
+
+        # the operators take a scene in photons or in units of energy, and a
+        # scene in units of energy is converted to photons as `image` does it
+        unit_scene = operators.unit_scene
+        if not na.unit_normalized(scene).is_equivalent(unit_scene):
+            scene = scene / instrument._energy_per_photon
+
+        scene = np.maximum(scene.to(unit_scene).value, 0)
+
+        # the factors have an axis for the frames, which a scene of the
+        # operators has last
+        signal = scene * named(operators.scale[..., 0], shape_voxels)
+        signal = signal * named(operators.gain, shape_response)
+        if operators.weights_scene is not None:
+            signal = signal * named(operators.weights_scene, shape_voxels)
+
+        # the read noise is averaged over the sensor before it is compared to
+        # the scene, since the axes of the two can have the same names
+        variance_read = named(operators.variance_read, shape_pixels)
+        variance_read = variance_read.mean(
+            axis=tuple(
+                ax for ax in operators.shape_sensor if ax in variance_read.shape
+            ),
+        )
+
+        variance = signal * named(operators.vmr, shape_response) + variance_read
+
+        # a voxel which emits nothing has no ratio if there is no read noise
+        with np.errstate(divide="ignore", invalid="ignore"):
+            ratio = np.square(signal) / variance
+        ratio = np.nan_to_num(ratio)
+
+        # the channels which the factors do not vary along are counted
+        axis = (*shape_channel, instrument.axis_wavelength)
+        num_same = math.prod(shape_voxels[ax] for ax in axis if ax not in ratio.shape)
+        ratio = num_same * ratio.sum(tuple(ax for ax in axis if ax in ratio.shape))
+
+        return np.sqrt(ratio)
+
     def plot_moments(
+        self,
+        axis: str,
+        truth: (
+            None
+            | na.FunctionArray[
+                na.AbstractDopplerPositionalVectorArray,
+                na.ScalarArray,
+            ]
+        ) = None,
+        range_radiance: None | tuple[u.Quantity, u.Quantity] = None,
+        range_median: None | tuple[u.Quantity, u.Quantity] = None,
+        range_iqr: None | tuple[u.Quantity, u.Quantity] = None,
+        threshold_snr: None | float = None,
+    ) -> tuple[plt.Figure, np.ndarray]:
+        """
+        Plot maps of the radiance, median, and interquartile range of the
+        spectral line profile in every pixel of the reconstructed scene.
+
+        The result is the figure and a 2D array of its axes, with a row for
+        each scene and a column for each of the three moments.
+
+        Use :meth:`plot_moments_histogram` to compare the moments of the
+        reconstructed scene to those of a true scene pixel by pixel.
+
+        Parameters
+        ----------
+        axis
+            The axis along which to compute the radiance, median,
+            and interquartile range.
+        truth
+            An optional true scene, which is plotted in a row above the
+            reconstructed scene, on the same color scales.
+        range_radiance
+            The limits of the color scale of the radiance.
+            The scale is in the unit of these limits.
+            The default is zero to the 99.5th percentile.
+        range_median
+            The limits of the color scale of the median.
+            The default is symmetric about zero, and reaches the 99th
+            percentile of the magnitude of the median.
+        range_iqr
+            The limits of the color scale of the interquartile range.
+            The default is zero to the 99th percentile.
+        threshold_snr
+            The median and the interquartile range are left blank where the
+            signal-to-noise ratio of the reconstructed line profile is at or
+            below this threshold, since they mean little there.
+            The ratio is that of each pixel of the reconstructed scene as if
+            it were alone in the scene: the signal it adds to the images,
+            compared to the shot noise of that signal and the read noise.
+            It is only available for an instrument which can be expressed as
+            a pair of sparse matrices, as :class:`~ctis.inverters.MartInverter`
+            describes.
+            The default is to leave no pixels blank.
+        """
+        scenes = dict(reconstructed=self.solution)
+        if truth is not None:
+            scenes = dict(true=truth) | scenes
+
+        moments = {name: self._moments(scenes[name], axis) for name in scenes}
+
+        where = None
+        if threshold_snr is not None:
+            where = self._snr() > threshold_snr
+
+        def blanked(a: na.AbstractScalar) -> na.AbstractScalar:
+            if where is None:
+                return a
+            return np.where(where, a, np.nan)
+
+        # the scene which the default limits of the color scales come from
+        radiance, median, iqr = next(iter(moments.values()))
+
+        def percentile(a: na.AbstractScalar, q: float) -> u.Quantity:
+            """
+            A percentile of the pixels which are not blank, or of all the
+            pixels if every one of them is.
+            """
+            b = blanked(a)
+            if np.any(np.isfinite(b)).ndarray:
+                a = b
+            return np.nanpercentile(a, q).ndarray
+
+        # the limits are percentiles, since otherwise a few pixels would set
+        # the scale of all the others
+        if range_radiance is None:
+            bound = np.nanpercentile(radiance, 99.5).ndarray
+            range_radiance = (0 * bound, bound)
+        if range_median is None:
+            bound = percentile(np.abs(median), 99)
+            range_median = (-bound, bound)
+        if range_iqr is None:
+            bound = percentile(iqr, 99)
+            range_iqr = (0 * bound, bound)
+
+        ranges = (range_radiance, range_median, range_iqr)
+        labels = ("radiance", "median", "IQR")
+
+        # the radiance and the interquartile range are magnitudes, and the
+        # median has a sign
+        color_blank = "0.55"
+        cmaps = (
+            plt.get_cmap("gray"),
+            plt.get_cmap("RdBu_r").with_extremes(bad=color_blank),
+            plt.get_cmap("Purples_r").with_extremes(bad=color_blank),
+        )
+
+        def label(name: str, unit: u.UnitBase, exponent: int = 0) -> str:
+            factors = []
+            if exponent != 0:
+                factors.append(f"$10^{{{exponent}}}$")
+            if unit != u.dimensionless_unscaled:
+                factors.append(f"{unit:latex_inline}")
+            if not factors:
+                return name
+            return f"{name} ({' '.join(factors)})"
+
+        def values(a: na.AbstractScalar, unit: u.UnitBase) -> na.AbstractScalar:
+            return (a / unit).to(u.dimensionless_unscaled).value
+
+        positions = dict()
+        for name in scenes:
+            position = scenes[name].inputs.position.explicit
+            unit_x = na.unit_normalized(position.x)
+            unit_y = na.unit_normalized(position.y)
+            positions[name] = (
+                values(position.x, unit_x),
+                values(position.y, unit_y),
+                unit_x,
+                unit_y,
+            )
+
+        # the panels have the proportions of the scene
+        x, y, _, _ = next(iter(positions.values()))
+        aspect = (y.max() - y.min()) / (x.max() - x.min())
+        aspect = float(aspect.ndarray)
+
+        num_rows = len(scenes)
+
+        fig, axs = plt.subplots(
+            nrows=num_rows,
+            ncols=len(labels),
+            sharex=True,
+            sharey=True,
+            squeeze=False,
+            constrained_layout=True,
+            figsize=(10, 1.4 + num_rows * (0.3 + 2.7 * aspect)),
+        )
+
+        for row, name in enumerate(scenes):
+            x, y, unit_x, unit_y = positions[name]
+
+            for col, moment in enumerate(moments[name]):
+                ax = axs[row, col]
+
+                # every color scale is in the unit of its limits
+                vmin, vmax = (u.Quantity(limit) for limit in ranges[col])
+                unit = vmin.unit
+                vmin = vmin.value
+                vmax = vmax.to_value(unit)
+
+                # limits which are far from one are factored out of the
+                # scale, into its label
+                exponent = 0
+                magnitude = max(abs(vmin), abs(vmax))
+                if magnitude > 0 and not 1e-3 <= magnitude < 1e5:
+                    exponent = int(np.floor(np.log10(magnitude)))
+                factor = 10.0**exponent
+
+                if col > 0:
+                    moment = blanked(moment)
+
+                img = na.plt.pcolormesh(
+                    x,
+                    y,
+                    C=values(moment, unit) / factor,
+                    ax=ax,
+                    cmap=cmaps[col],
+                    vmin=vmin / factor,
+                    vmax=vmax / factor,
+                )
+
+                ax.set_aspect("equal")
+
+                if row == 0:
+                    colorbar = fig.colorbar(
+                        img.ndarray.item(),
+                        ax=axs[:, col],
+                        location="top",
+                        label=label(labels[col], unit, exponent),
+                    )
+                    colorbar.locator = matplotlib.ticker.MaxNLocator(nbins=5)
+                    colorbar.update_ticks()
+
+                if row == num_rows - 1:
+                    ax.set_xlabel(label("scene $x$", unit_x))
+
+            axs[row, 0].set_ylabel(f"{name}\n" + label("scene $y$", unit_y))
+
+        return fig, axs
+
+    def plot_moments_histogram(
         self,
         truth: na.FunctionArray[
             na.AbstractDopplerPositionalVectorArray,
@@ -65,10 +392,13 @@ class AbstractInversionResult(
         range_median: None | tuple[u.Quantity, u.Quantity] = None,
         range_iqr: None | tuple[u.Quantity, u.Quantity] = None,
         percentile_radiance: float = 0,
+        threshold_snr: None | float = None,
     ) -> tuple[plt.Figure, np.ndarray]:
         """
         Plot column-normalized 2D histograms of the true vs. reconstructed
         radiance, median, and interquartile range of the spectral line profile.
+
+        Use :meth:`plot_moments` to plot maps of the same three moments.
 
         Parameters
         ----------
@@ -88,45 +418,24 @@ class AbstractInversionResult(
         percentile_radiance
             Spatial locations below this threshold are excluded from the histogram.
             The default is to not exclude any pixels.
+        threshold_snr
+            Spatial locations where the signal-to-noise ratio of the
+            reconstructed line profile is at or below this threshold are
+            excluded from the histogram, as :meth:`plot_moments` leaves them
+            blank, for the instruments it describes.
+            The default is to not exclude any pixels.
         """
 
         recon = self.solution
 
-        axis_wavelength = self.inverter.instrument.axis_wavelength
-
-        wavelength_truth = truth.inputs.wavelength
-        wavelength_recon = recon.inputs.wavelength
-
-        dw_truth = wavelength_truth.volume_cell(axis_wavelength)
-        dw_recon = wavelength_recon.volume_cell(axis_wavelength)
-
-        radiance_truth = (truth.outputs * dw_truth).sum(axis_wavelength)
-        radiance_recon = (recon.outputs * dw_recon).sum(axis_wavelength)
+        radiance_truth, median_truth, iqr_truth = self._moments(truth, axis)
+        radiance_recon, median_recon, iqr_recon = self._moments(recon, axis)
 
         thresh = np.nanpercentile(radiance_truth, percentile_radiance)
         where = radiance_truth > thresh
 
-        median_truth = na.pdf.median(
-            x=truth.inputs.velocity,
-            f=truth.outputs,
-            axis=axis,
-        )
-        median_recon = na.pdf.median(
-            x=recon.inputs.velocity,
-            f=recon.outputs,
-            axis=axis,
-        )
-
-        iqr_truth = na.pdf.iqr(
-            x=truth.inputs.velocity,
-            f=truth.outputs,
-            axis=axis,
-        )
-        iqr_recon = na.pdf.iqr(
-            x=recon.inputs.velocity,
-            f=recon.outputs,
-            axis=axis,
-        )
+        if threshold_snr is not None:
+            where = where & (self._snr() > threshold_snr)
 
         r_radiance = na.stats.pearsonr(
             x=radiance_truth,

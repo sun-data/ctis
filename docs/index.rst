@@ -59,9 +59,10 @@ Features
   and the correlation between the predicted images and the residuals.
 - :func:`~ctis.scenes.gaussians`,
   a synthetic test scene of Gaussian blobs with different Doppler shifts,
-  and :meth:`~ctis.inverters.AbstractInversionResult.plot_moments`,
-  which compares the radiance, Doppler shift, and line width of a reconstruction against the
-  true scene.
+  :meth:`~ctis.inverters.AbstractInversionResult.plot_moments`,
+  which maps the radiance, Doppler shift, and line width of a reconstruction,
+  and :meth:`~ctis.inverters.AbstractInversionResult.plot_moments_histogram`,
+  which compares them against the true scene pixel by pixel.
 
 Key concepts
 ============
