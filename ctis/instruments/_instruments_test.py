@@ -1471,6 +1471,8 @@ def _instrument_optika(
     material: None | optika.sensors.materials.AbstractSensorMaterial = None,
     vignetted: bool = False,
     lines: None | u.Quantity = None,
+    axis_field: tuple[str, str] = ("scene_x", "scene_y"),
+    stretched: bool = False,
 ) -> ctis.instruments.OptikaInstrument:
     """
     A small instrument on a linear system of :mod:`optika`, with three
@@ -1489,6 +1491,12 @@ def _instrument_optika(
         The shift of each spectral line from the band, if the scene has
         several: each line then covers a band as wide as `wavelength`,
         shifted by its own amount.
+    axis_field
+        The two spatial axes of the scene, which can be named like the
+        pixels of the sensor, ``sensor_x`` and ``sensor_y``.
+    stretched
+        Whether the cells of the scene grow across the field, so that
+        their volumes differ, as those of an observation can.
     """
     wavelength_min, wavelength_max = wavelength
 
@@ -1501,8 +1509,6 @@ def _instrument_optika(
     low = band.min().ndarray
     high = band.max().ndarray
     width = high - low
-
-    axis_field = ("scene_x", "scene_y")
 
     kwargs_system = dict()
     if vignetted:
@@ -1563,14 +1569,18 @@ def _instrument_optika(
     )
     # the scene grid spans the field of view so the backprojection of a
     # contained source is not clipped
+    position = na.Cartesian2dVectorLinearSpace(
+        start=-20 * u.arcsec,
+        stop=+20 * u.arcsec,
+        axis=na.Cartesian2dVectorArray(*axis_field),
+        num=21,
+    )
+    if stretched:
+        position = position.explicit
+        position = position * (1 + position / (100 * u.arcsec))
     coordinates_scene = na.SpectralPositionalVectorArray(
         wavelength=band,
-        position=na.Cartesian2dVectorLinearSpace(
-            start=-20 * u.arcsec,
-            stop=+20 * u.arcsec,
-            axis=na.Cartesian2dVectorArray(*axis_field),
-            num=21,
-        ),
+        position=position,
     )
     return ctis.instruments.OptikaInstrument(
         system=system,
@@ -1592,8 +1602,18 @@ def _instrument_optika(
             material=optika.sensors.materials.e2v_ccd97(),
             lines=[0, 60] * u.nm,
         ),
+        _instrument_optika(
+            material=optika.sensors.materials.e2v_ccd97(),
+            axis_field=("sensor_x", "sensor_y"),
+            stretched=True,
+        ),
     ],
-    ids=["ideal sensor", "sensor whose gain varies", "two lines"],
+    ids=[
+        "ideal sensor",
+        "sensor whose gain varies",
+        "two lines",
+        "scene named like the pixels",
+    ],
 )
 class TestOptikaInstrument(
     AbstractTestAbstractLinearInstrument,
@@ -1864,6 +1884,48 @@ def test_optika_operators_proportional(
 
     assert a._operators() is None
     assert a.image(_scene(a), noise=False).outputs.sum() > 0
+
+
+@pytest.mark.parametrize(
+    argnames="kwargs",
+    argvalues=[
+        dict(),
+        dict(axis_field=("sensor_x", "sensor_y"), stretched=True),
+    ],
+    ids=["scene with axes of its own", "scene named like the pixels"],
+)
+def test_optika_operators_pixels(kwargs: dict) -> None:
+    """
+    An instrument whose sensor responds differently from pixel to pixel,
+    here one whose exposure time varies over it, provides no operators,
+    whatever the axes of its scene are named: their factors would hold
+    the response of one pixel for all of them.
+    Its own methods give every pixel the response it has.
+    """
+    a = _instrument_optika(**kwargs)
+    operators = a._operators()
+
+    assert operators is not None
+
+    axis_x = a.axis_sensor_xy[0]
+    ramp = na.linspace(1, 2, axis=axis_x, num=operators.shape_sensor[axis_x])
+
+    sensor = a.system.sensor
+    sensor = dataclasses.replace(
+        sensor,
+        timedelta_exposure=ramp * sensor.timedelta_exposure,
+    )
+    b = dataclasses.replace(
+        a,
+        system=dataclasses.replace(a.system, sensor=sensor),
+    )
+
+    assert b._operators() is None
+
+    expected = a.image(_scene(a), noise=False).outputs * ramp
+
+    assert expected.sum() > 0
+    _assert_close(b.image(_scene(b), noise=False).outputs, expected)
 
 
 @pytest.mark.parametrize(

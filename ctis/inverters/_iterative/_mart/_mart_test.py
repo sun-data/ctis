@@ -1047,23 +1047,40 @@ def _images_optika(
 
 
 @pytest.mark.parametrize(
-    argnames="vignetted,guessed",
-    argvalues=[(True, False), (False, True)],
-    ids=["vignetted, without a guess", "plain, with a guess"],
+    argnames="kwargs,guessed",
+    argvalues=[
+        (dict(vignetted=True), False),
+        (dict(), True),
+        (
+            dict(
+                vignetted=True,
+                axis_field=("sensor_x", "sensor_y"),
+                stretched=True,
+            ),
+            False,
+        ),
+    ],
+    ids=[
+        "vignetted, without a guess",
+        "plain, with a guess",
+        "scene named like the pixels",
+    ],
 )
-def test__call__optika(vignetted: bool, guessed: bool) -> None:
+def test__call__optika(kwargs: dict, guessed: bool) -> None:
     """
     An instrument on a linear system of :mod:`optika` is inverted on its
     matrices, with the result of the iteration on its methods: with
-    vignetting and a field stop, from the first guess of the inverter, and
-    without them, from a guess.
+    vignetting and a field stop, from the first guess of the inverter,
+    without them, from a guess, and with a scene on the grid of another
+    instrument, whose spatial axes are named like the pixels of the sensor
+    and whose cells differ in size.
 
     Without vignetting, the first guess of the inverter fills the sensor
     evenly, and the correlation of even images with anything is rounding
     error, which the two iterations do not share.
     """
     a = ctis.inverters.MartInverter(
-        instrument=_instrument_optika(vignetted=vignetted),
+        instrument=_instrument_optika(**kwargs),
         num_iteration=6,
         threshold_convergence=-np.inf,
     )

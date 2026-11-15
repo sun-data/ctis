@@ -1629,10 +1629,10 @@ class OptikaInstrument(
     names the axis which separates them, :attr:`axis_line`.
     If the ratio strays from the middle of its range by more than two parts
     in a thousand within a line, if the sensor does not respond to one of
-    the wavelengths, or if its signal or the variance of its noise is not
-    proportional to the light, the instrument does not provide the
-    matrices, and the inverters iterate on :meth:`image` and
-    :meth:`backproject`, which is slower.
+    the wavelengths, if its signal or the variance of its noise is not
+    proportional to the light, or if its response differs from pixel to
+    pixel, the instrument does not provide the matrices, and the inverters
+    iterate on :meth:`image` and :meth:`backproject`, which is slower.
 
     The matrices follow the sensor: if :attr:`system`, or the sensor of the
     system, is assigned after they were assembled, the response of the
@@ -1803,6 +1803,14 @@ class OptikaInstrument(
         light.
         A response which only bends for light brighter than that is not
         noticed.
+        Nor does one whose sensor responds differently from pixel to pixel,
+        as one whose exposure time varies over it does, since the one pixel
+        which is exposed then stands for no other.
+
+        The spatial axes of the scene can be named like the pixels of the
+        sensor, as those of a scene on the grid of another instrument can,
+        so the axes of the one pixel are dropped from its response before
+        the response meets the scene.
 
         Parameters
         ----------
@@ -1828,12 +1836,10 @@ class OptikaInstrument(
 
         shape_voxels = shape_channel | shape_scene
         shape_pixels = shape_channel | shape_sensor
-
-        # one pixel, since the response of the sensor is that of any of them
-        shape_pixel = {ax: 1 for ax in axis_pixel}
         shape_response = shape_channel | shape_line
         shape_response = shape_response | {axis_wavelength: num_wavelength}
 
+        # one pixel, since the response of the sensor is that of any of them
         inputs = na.SpectralPositionalVectorArray(
             wavelength=self.coordinates_scene.spectral_positional.wavelength,
             position=na.Cartesian2dVectorArray(0, 0) * u.pix,
@@ -1896,6 +1902,21 @@ class OptikaInstrument(
             integrate=True,
         ).outputs
 
+        # a sensor which responds differently from pixel to pixel is left to
+        # the named arrays as well, since the one pixel then stands for no
+        # other
+        shape_exposed = na.shape_broadcasted(gain, vmr, absorbed)
+        if any(shape_exposed[ax] != 1 for ax in axis_pixel):
+            return None
+
+        # the axes of the one pixel are dropped, since they can be named like
+        # the spatial axes of the scene, which the factors of the voxels
+        # vary along
+        index_pixel = {ax: 0 for ax in axis_pixel}
+        gain = gain[index_pixel]
+        vmr = vmr[index_pixel]
+        absorbed = absorbed[index_pixel]
+
         volume = self._volume_scene
         area = 1 * system.weights_unit
 
@@ -1911,13 +1932,13 @@ class OptikaInstrument(
         scale_backproject = absorbed / area / volume
         scale_backproject = scale_backproject / math.prod(shape_line.values())
 
-        scale = aligned(scale, shape=shape_voxels | shape_pixel, unit=unit_images)
+        scale = aligned(scale, shape=shape_voxels, unit=unit_images)
         scale_backproject = aligned(
             a=scale_backproject,
-            shape=shape_voxels | shape_pixel,
+            shape=shape_voxels,
             unit=unit_scene,
         )
-        vmr = aligned(vmr, shape=shape_response | shape_pixel, unit=unit_images)
+        vmr = aligned(vmr, shape=shape_response, unit=unit_images)
         read_noise = aligned(sensor.read_noise, shape=shape_pixels, unit=unit_images)
 
         # anything with other axes or units is left to the named arrays
@@ -1931,11 +1952,6 @@ class OptikaInstrument(
         if not np.all(np.abs(vmr - middle) <= self._tolerance_vmr * middle):
             return None
 
-        num_axes = len(shape_voxels)
-        scale = scale.reshape(scale.shape[:num_axes])
-        scale_backproject = scale_backproject.reshape(
-            scale_backproject.shape[:num_axes]
-        )
         vmr = middle.reshape(middle.shape[:axis])
 
         # the response of the sensor is in the factor of every voxel
