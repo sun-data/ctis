@@ -1029,6 +1029,11 @@ def test__call__buffer_released(monkeypatch: pytest.MonkeyPatch) -> None:
     assert all(buffer() is None for buffer in buffers)
 
 
+def test_gamma_default() -> None:
+    """The learning rate is one unless told otherwise."""
+    assert ctis.inverters.MartInverter(instrument=instrument).gamma == 1
+
+
 def _images_optika(
     a: ctis.instruments.OptikaInstrument,
 ) -> na.FunctionArray[na.SpectralPositionalVectorArray, na.ScalarArray]:

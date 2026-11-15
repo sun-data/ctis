@@ -139,8 +139,10 @@ def main():
         * quantum_yield,
     )
 
+    # the learning rate the talk was given with, which was the default then
     mart = ctis.inverters.MartInverter(
         instrument=instrument,
+        gamma=2 / instrument.num_channel,
         intermediate=True,
     )
     inversion = mart(images)
