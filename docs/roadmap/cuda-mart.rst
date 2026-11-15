@@ -208,7 +208,7 @@ On the host alone it is 2.1 to 8 times faster than ctis.
   the matrices of :class:`~ctis.instruments.OptikaInstrument` gave the images
   and the backprojection of its own methods to 2e-14 of their peaks,
   and after four iterations of MART the solution of the reference path,
-  to 1.3e-14 of its peak in float64 and 1.2e-7 in float32.
+  to 1.6e-14 of its peak in float64 and 1.5e-7 in float32.
   Their variance was within 6e-4 of that of the reference.
   With one ratio for both lines it would have been off by 5e-3:
   the two lines are 5 Å apart, and their ratios already differ by 1%.
@@ -382,8 +382,10 @@ which every gate compares against.
   An instrument whose ratio strays from the middle of its range by more than 0.2%
   within a line provides no matrices, and is inverted on the reference path.
   So is one whose sensor does not respond to a wavelength,
-  or whose gain or ratio changes with the brightness of the light,
-  which the instrument checks at one photon a second and at a thousand.
+  whose gain or ratio changes with the brightness of the light,
+  which the instrument checks at one photon a second and at a thousand,
+  or whose response differs from pixel to pixel,
+  since the instrument asks the sensor for the response of one pixel.
   The forward matrix keeps the lines apart, as described below,
   and the variance of an image is the sum of the images of its lines,
   each times its ratio:
@@ -603,7 +605,7 @@ At ESIS scale, where it cannot run, the standard is the product of tempest.
         on two lines of the flight model, with 6″ cells and 6 velocity bins,
         the images agree to 9e-15 of their peak and the variance to 6e-4,
         and after four iterations the solution agrees
-        to 1.3e-14 in float64 and to 1.2e-7 in float32
+        to 1.6e-14 in float64 and to 1.5e-7 in float32
       - The weights of one spectral line of ESIS at production
         in under 20 s on the host and under 10 s on a GPU.
         The host takes 14.9 s
