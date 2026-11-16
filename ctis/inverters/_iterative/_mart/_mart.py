@@ -54,6 +54,8 @@ class MartInverter(
     :meth:`~ctis.instruments.AbstractInstrument.image` method of the
     instrument takes a scene in, and the solution is given in the unit of
     the guess.
+    It can be given with its coordinates, so the solution of one inversion
+    can be the first guess of another.
     Without a guess, the solution is in the unit that the
     :meth:`~ctis.instruments.AbstractInstrument.backproject` method of the
     instrument gives.
@@ -120,7 +122,11 @@ class MartInverter(
     def __call__(
         self,
         images: na.FunctionArray[na.SpectralPositionalVectorArray, na.ScalarArray],
-        guess: None | na.ScalarArray = None,
+        guess: (
+            None
+            | na.ScalarArray
+            | na.FunctionArray[na.SpectralPositionalVectorArray, na.ScalarArray]
+        ) = None,
         verbose: bool = False,
     ) -> IterativeInversionResult:
         """
@@ -146,6 +152,10 @@ class MartInverter(
             Must be evaluated on the same coordinates as
             :attr:`~ctis.instruments.AbstractInstrument.coordinates_scene`
             attribute of :attr:`instrument`.
+            It can be given with its coordinates, as the
+            :attr:`~ctis.inverters.IterativeInversionResult.solution` of
+            an earlier inversion is, and they are then checked against
+            those of the instrument.
             It can be in any unit that the
             :meth:`~ctis.instruments.AbstractInstrument.image` method of
             :attr:`instrument` takes a scene in, and the solution is given
@@ -161,6 +171,17 @@ class MartInverter(
                 "`images.inputs.position` and `self.coordinates_sensor.position` "
                 "are not equal."
             )
+
+        # a guess which is given with its coordinates, as the solution of an
+        # earlier inversion is, has them checked here, once, and is inverted
+        # as its values are
+        if isinstance(guess, na.AbstractFunctionArray):
+            if not np.all(guess.inputs == instrument.coordinates_scene):
+                raise ValueError(
+                    "`guess.inputs` and `self.instrument.coordinates_scene` "
+                    "are not equal."
+                )
+            guess = guess.outputs
 
         # the axes of the images beyond those of the channels and the sensor
         shape_extra = self._shape_extra(images.outputs)
