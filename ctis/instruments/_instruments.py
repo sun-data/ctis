@@ -1634,6 +1634,16 @@ class OptikaInstrument(
     pixel, the instrument does not provide the matrices, and the inverters
     iterate on :meth:`image` and :meth:`backproject`, which is slower.
 
+    The matrices take a scene in photons, the unit that :meth:`backproject`
+    gives by default.
+    A first guess in units of energy, which :meth:`image` takes as well, is
+    inverted on them too: it is divided by the energy of a photon at each
+    wavelength, as the sensor divides a scene in units of energy, and the
+    solution is given in the units of the guess.
+    The sensor is asked whether it divides it so, and if it does not, or if
+    the wavelengths of the scene are given for each channel, such a guess
+    is inverted on :meth:`image` and :meth:`backproject` instead.
+
     The matrices follow the sensor: if :attr:`system`, or the sensor of the
     system, is assigned after they were assembled, the response of the
     sensor is folded into them again.
@@ -1671,6 +1681,10 @@ class OptikaInstrument(
     The operators take both to be the same whatever the light, which they
     are, to within rounding, for a sensor whose signal and the variance of
     its noise are proportional to the light.
+
+    It is also the furthest that the signal of the sensor for the energy of
+    one photon can be from its signal for the photon, as a fraction of that
+    signal, for the operators to take a scene in units of energy.
     """
 
     system: optika.systems.AbstractLinearSystem = dataclasses.MISSING
@@ -1812,6 +1826,23 @@ class OptikaInstrument(
         so the axes of the one pixel are dropped from its response before
         the response meets the scene.
 
+        The scene of the factors is in photons, the unit that
+        :meth:`backproject` gives by default.
+        :meth:`image` takes a scene in units of energy as well, which the
+        sensor divides by the energy of a photon at each wavelength, so the
+        factors include that energy, for such a scene to be given to the
+        operators the same way.
+        The sensor is asked whether it does divide it so, by exposing the
+        one pixel to the energy of one photon a second at each wavelength:
+        if that gives another signal than one photon a second does, or if
+        the sensor takes no light in units of energy, the factors include
+        no energy.
+        Nor do they if the energy cannot be expressed for each voxel of the
+        scene, as that of a scene whose wavelengths are given for each
+        channel cannot.
+        The operators are provided all the same, and a scene in units of
+        energy is then left to :meth:`image`.
+
         Parameters
         ----------
         shape_channel
@@ -1888,6 +1919,29 @@ class OptikaInstrument(
         if not np.all(np.abs(vmr_bright - vmr) <= tolerance * vmr):
             return None
 
+        # the energy of the photons of each voxel, which a scene in units of
+        # energy is divided by on its way to the matrices.
+        # The sensor is asked whether it takes the light of such a scene the
+        # same way: exposed to the energy of one photon a second, it then
+        # gives the signal of one photon a second.
+        # If it gives another, or takes no light in units of energy, the
+        # factors have no such energy, and a scene in units of energy is
+        # left to the named arrays
+        energy = self._energy_per_photon
+        try:
+            exposed_energy = sensor.expose(
+                image=na.FunctionArray(inputs=inputs, outputs=ones * rate * energy),
+                direction=direction,
+                axis_wavelength=axis_wavelength,
+                noise=False,
+                integrate=False,
+            ).outputs
+            error = np.abs(exposed_energy - exposed.nominal)
+            if not np.all(error <= tolerance * exposed.nominal):
+                energy = None
+        except u.UnitsError:
+            energy = None
+
         unit_images = na.unit_normalized(exposed.nominal)
 
         # the photons a second, at each wavelength, which one unit of signal
@@ -1945,6 +1999,15 @@ class OptikaInstrument(
         if any(a is None for a in (scale, scale_backproject, vmr, read_noise)):
             return None
 
+        # so is a scene in units of energy, if the energy of its photons
+        # cannot be expressed for each voxel, as that of a scene whose
+        # wavelengths are given for each channel cannot.
+        # The matrices are provided all the same
+        if energy is not None:
+            energy = aligned(energy, shape=shape_scene, unit=Operators.unit_energy)
+        if energy is not None:
+            energy = energy[..., np.newaxis].astype(dtype)
+
         # one ratio for all the wavelengths of a line, the middle of its
         # range, which is that of each of them to within the tolerance
         axis = len(shape_channel) + len(shape_line)
@@ -1966,6 +2029,7 @@ class OptikaInstrument(
             gain=gain.astype(dtype),
             vmr=vmr.astype(dtype),
             variance_read=np.square(read_noise).astype(dtype),
+            energy=energy,
             unit_scene=unit_scene,
             unit_images=unit_images,
         )

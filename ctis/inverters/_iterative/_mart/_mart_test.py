@@ -14,6 +14,7 @@ from ctis.instruments._operators import Operators
 from ctis.instruments._instruments_test import (
     _instrument_optika,
     _instrument_optika_lines,
+    _MaterialPhotons,
 )
 from .._iterative_test import AbstractTestAbstractIterativeInverter
 
@@ -1051,6 +1052,40 @@ def _images_optika(
     return a.image(scene * 1e3 * operators.unit_scene, noise=False)
 
 
+unit_radiance = u.erg / (u.cm**2 * u.s * u.sr * u.AA)
+"""A unit of energy for a scene, which is not that of any of the matrices."""
+
+
+def _guess_optika(
+    a: ctis.instruments.OptikaInstrument,
+    unit: None | u.UnitBase = None,
+) -> na.ScalarArray:
+    """
+    A guess at the scene of an instrument on a linear system of
+    :mod:`optika`, in the unit of the scene of its matrices, which is in
+    photons, or in `unit`, a unit of energy.
+
+    The guess in units of energy is the one in photons times the energy of
+    a photon at the mean wavelength of the scene, so that the two are about
+    as bright.
+    """
+    operators = a._operators()
+    guess = na.random.uniform(
+        low=1,
+        high=2,
+        shape_random=operators.shape_scene,
+        seed=1,
+    )
+    guess = guess * 1e3 * operators.unit_scene
+
+    if unit is not None:
+        wavelength = a.coordinates_scene.wavelength.mean()
+        energy = astropy.constants.h * astropy.constants.c / wavelength / u.photon
+        guess = (guess * energy).to(unit)
+
+    return guess
+
+
 @pytest.mark.parametrize(
     argnames="kwargs,guessed",
     argvalues=[
@@ -1093,14 +1128,7 @@ def test__call__optika(kwargs: dict, guessed: bool) -> None:
 
     guess = None
     if guessed:
-        operators = a.instrument._operators()
-        guess = na.random.uniform(
-            low=1,
-            high=2,
-            shape_random=operators.shape_scene,
-            seed=1,
-        )
-        guess = guess * 1e3 * operators.unit_scene
+        guess = _guess_optika(a.instrument)
 
     assert _uses_operators(a, images_optika, guess)
 
@@ -1112,6 +1140,152 @@ def test__call__optika(kwargs: dict, guessed: bool) -> None:
 
     assert result.num_iteration == 6
     _assert_same(result, expected)
+
+
+@pytest.mark.parametrize(
+    argnames="kwargs,unit,intermediate",
+    argvalues=[
+        (dict(), None, False),
+        (
+            dict(
+                material=optika.sensors.materials.e2v_ccd97(),
+                lines=[0, 60] * u.nm,
+            ),
+            unit_radiance,
+            True,
+        ),
+    ],
+    ids=[
+        "one band, in the unit of the matrices times an energy",
+        "two lines, in another unit of energy, every solution",
+    ],
+)
+def test__call__optika_energy(
+    kwargs: dict,
+    unit: None | u.UnitBase,
+    intermediate: bool,
+) -> None:
+    """
+    A guess in units of energy is inverted on the matrices of an instrument
+    on a linear system of :mod:`optika`, which take a scene in photons, with
+    the result of the iteration on the methods of the instrument, whose
+    sensor divides the scene by the energy of a photon at each wavelength.
+    Every solution is in the units of the guess, which is not overwritten.
+
+    A guess in the unit of the scene of the matrices times that of the
+    energy of a photon is the one whose values need no conversion, so that
+    they are the ones which would be overwritten if any were.
+
+    The two lines are sixty nanometres apart, so the photons of one have a
+    tenth more energy than those of the other.
+    """
+    a = ctis.inverters.MartInverter(
+        instrument=_instrument_optika(**kwargs),
+        num_iteration=6,
+        threshold_convergence=-np.inf,
+        intermediate=intermediate,
+    )
+    images_optika = _images_optika(a.instrument)
+
+    operators = a.instrument._operators()
+
+    if unit is None:
+        unit = operators.unit_scene * operators.unit_energy
+
+    guess = _guess_optika(a.instrument, unit=unit)
+    guess_original = guess.copy()
+
+    # the energy of a photon changes across the scene, so one energy for
+    # every voxel would not give the same solution
+    assert not guess.unit.is_equivalent(operators.unit_scene)
+    assert np.ptp(operators.energy) > 0.01 * operators.energy.min()
+    assert _uses_operators(a, images_optika, guess)
+
+    with pytest.warns(UserWarning, match="Max number of iterations"):
+        result = a(images_optika, guess=guess)
+
+    with pytest.warns(UserWarning, match="Max number of iterations"):
+        expected = _reference(a, images_optika, guess)
+
+    num_solution = result.solutions.outputs.shape[a.axis_iteration]
+
+    assert result.num_iteration == 6
+    assert (num_solution > 1) == intermediate
+    assert result.solutions.outputs.unit == guess.unit
+    assert np.all(guess == guess_original)
+    _assert_same(result, expected)
+
+
+def test__call__optika_energy_frames() -> None:
+    """
+    Frames are reconstructed together from a guess in units of energy for
+    each of them, each as it would be alone, bit for bit.
+    """
+    instrument_optika = _instrument_optika()
+    a = ctis.inverters.MartInverter(
+        instrument=instrument_optika,
+        num_iteration=4,
+        threshold_convergence=-np.inf,
+    )
+
+    shape_frames = dict(time=2)
+    brightness = na.ScalarArray(np.array([0.5, 2.0]), axes="time")
+
+    images_optika = _images_optika(instrument_optika)
+    images_frames = na.FunctionArray(
+        inputs=images_optika.inputs,
+        outputs=images_optika.outputs * brightness,
+    )
+    guess = _guess_optika(instrument_optika, unit=unit_radiance) * brightness
+
+    assert _uses_operators(a, images_frames, guess)
+
+    with pytest.warns(UserWarning, match="Max number of iterations"):
+        result = a(images_frames, guess=guess)
+
+    assert result.solution.outputs.unit == guess.unit
+    assert result.solution.outputs.shape == guess.shape
+
+    for index in na.ndindex(shape_frames):
+        with pytest.warns(UserWarning, match="Max number of iterations"):
+            expected = a(images_frames[index], guess=guess[index])
+        _assert_frame(result, index, expected)
+
+
+@pytest.mark.parametrize(
+    argnames="material,unit",
+    argvalues=[
+        (None, u.electron),
+        (_MaterialPhotons(), unit_radiance),
+    ],
+    ids=[
+        "neither in photons nor in units of energy",
+        "in units of energy, for a sensor which takes photons alone",
+    ],
+)
+def test__call__optika_guess_unsupported(
+    material: None | optika.sensors.materials.AbstractSensorMaterial,
+    unit: u.UnitBase,
+) -> None:
+    """
+    A guess which the matrices cannot take is left to the iteration on the
+    methods of the instrument, which raises the error it always has: a
+    guess which is neither in photons nor in units of energy, and a guess
+    in units of energy for an instrument whose sensor takes light in
+    photons alone.
+    """
+    a = ctis.inverters.MartInverter(
+        instrument=_instrument_optika(material=material),
+    )
+    images_optika = _images_optika(a.instrument)
+
+    shape_scene = a.instrument._operators().shape_scene
+    guess = na.ScalarArray.ones(shape_scene) * unit
+
+    assert not _uses_operators(a, images_optika, guess)
+
+    with pytest.raises(u.UnitConversionError):
+        a(images_optika, guess=guess)
 
 
 def test__call__optika_line() -> None:
@@ -1190,14 +1364,24 @@ def test__call__optika_assigned() -> None:
     _assert_same(result, expected)
 
 
-def test_dtype_optika() -> None:
+@pytest.mark.parametrize(
+    argnames="energy",
+    argvalues=[False, True],
+    ids=["without a guess", "with a guess in units of energy"],
+)
+def test_dtype_optika(energy: bool) -> None:
     """
     An instrument on a linear system of :mod:`optika` is inverted in single
     precision too, to the solution of double precision to within the
-    precision.
+    precision, from the first guess of the inverter and from a guess in
+    units of energy.
     """
     instrument_optika = _instrument_optika()
     images_optika = _images_optika(instrument_optika)
+
+    guess = None
+    if energy:
+        guess = _guess_optika(instrument_optika, unit=unit_radiance)
 
     kwargs = dict(
         instrument=instrument_optika,
@@ -1205,11 +1389,14 @@ def test_dtype_optika() -> None:
         threshold_convergence=-np.inf,
     )
 
-    with pytest.warns(UserWarning, match="Max number of iterations"):
-        result = ctis.inverters.MartInverter(dtype=np.float32, **kwargs)(images_optika)
+    single = ctis.inverters.MartInverter(dtype=np.float32, **kwargs)
+    double = ctis.inverters.MartInverter(**kwargs)
 
     with pytest.warns(UserWarning, match="Max number of iterations"):
-        expected = ctis.inverters.MartInverter(**kwargs)(images_optika)
+        result = single(images_optika, guess=guess)
+
+    with pytest.warns(UserWarning, match="Max number of iterations"):
+        expected = double(images_optika, guess=guess)
 
     assert result.solution.outputs.ndarray.dtype == np.float32
     assert result.num_iteration == expected.num_iteration

@@ -937,15 +937,25 @@ The rest are questions to settle before the milestone that needs them.
   The quantum yield of an :class:`~ctis.instruments.IdealInstrument`
   can differ from line to line and stay on the matrices.
   Lines whose windows differ in length, and lines tied in one window, are left to M8.
-- **A scene in units of energy leaves the fast path (M8).**
+- **A scene in units of energy (resolved).**
   The matrices of :class:`~ctis.instruments.OptikaInstrument` take a scene in photons,
   the unit its backprojection returns by default.
-  A first guess in units of energy is inverted on the reference path instead,
-  which cannot run at production.
-  The matrices are assembled before the guess is looked at, and release the weights,
-  so that inversion computes the weights a second time and holds them beside the matrices.
+  A first guess in units of energy is inverted on them too:
+  it is divided by the energy of a photon at each wavelength,
+  as the sensor of optika divides a scene in units of energy,
+  and the solution is given in the units of the guess.
+  The instrument asks its sensor whether it divides such a scene that way,
+  and leaves the guess to the reference path if it does not.
+- **The methods of the instrument compute the weights again (M8).**
+  The matrices of :class:`~ctis.instruments.OptikaInstrument` are assembled,
+  and the weights released, before the guess is looked at.
+  So an inversion whose guess the matrices cannot take,
+  such as one which is not a plain array of the scene,
+  is left to the reference path,
+  which computes the weights a second time and holds them beside the matrices.
   So does imaging a solution with the instrument afterward,
   since its ``image`` is computed from the weights and not from the matrices.
+  The production grid has no room for both.
 - **Charge diffusion changes Level-4 (M9).**
   From optika 4.0, the noise-free model of a sensor includes charge diffusion,
   so MART will also undo the diffusion blur,

@@ -49,6 +49,14 @@ class MartInverter(
     axis named after one of the scene.
     The images are inverted along those in one iteration, which can only
     stop all at once, so they can have no more than one element along them.
+
+    A first guess can be in any unit that the
+    :meth:`~ctis.instruments.AbstractInstrument.image` method of the
+    instrument takes a scene in, and the solution is given in the unit of
+    the guess.
+    Without a guess, the solution is in the unit that the
+    :meth:`~ctis.instruments.AbstractInstrument.backproject` method of the
+    instrument gives.
     """
 
     instrument: ctis.instruments.AbstractInstrument = dataclasses.MISSING
@@ -138,6 +146,10 @@ class MartInverter(
             Must be evaluated on the same coordinates as
             :attr:`~ctis.instruments.AbstractInstrument.coordinates_scene`
             attribute of :attr:`instrument`.
+            It can be in any unit that the
+            :meth:`~ctis.instruments.AbstractInstrument.image` method of
+            :attr:`instrument` takes a scene in, and the solution is given
+            in the unit of the guess.
         """
 
         instrument = self.instrument
@@ -254,7 +266,16 @@ class MartInverter(
         self,
         images: na.AbstractScalar,
         guess: None | na.AbstractScalar,
-    ) -> None | tuple[dict[str, int], Operators, np.ndarray, None | np.ndarray]:
+    ) -> (
+        None
+        | tuple[
+            dict[str, int],
+            Operators,
+            np.ndarray,
+            None | np.ndarray,
+            None | np.ndarray,
+        ]
+    ):
         """
         The axes of the frames, and the operators of the instrument with the
         observed images and the initial guess as the plain arrays that the
@@ -264,6 +285,13 @@ class MartInverter(
         Each array has the frames along one last axis.
         The guess is a copy, which the iteration is free to overwrite, or
         :obj:`None` if there is none.
+
+        A guess in units of energy, for operators which take a scene in
+        photons, is divided by the energy of the photons of each voxel, if
+        the operators have it, which is how the instrument itself takes
+        such a scene.
+        That energy is the last of the results, for the solution to be
+        multiplied by, and it is :obj:`None` for any other guess.
 
         Parameters
         ----------
@@ -310,13 +338,29 @@ class MartInverter(
             return None
 
         scene = None
+        energy = None
         if guess is not None:
+            shape_guess = operators.shape_scene | shape_frames
+
             scene = aligned(
                 a=guess,
-                shape=operators.shape_scene | shape_frames,
+                shape=shape_guess,
                 unit=operators.unit_scene,
                 dtype=operators.dtype,
             )
+
+            # a guess in units of energy, for operators which take a scene
+            # in photons, is divided by the energy of the photons of each
+            # voxel below
+            if scene is None and operators.energy is not None:
+                energy = operators.energy
+                scene = aligned(
+                    a=guess,
+                    shape=shape_guess,
+                    unit=operators.unit_scene * operators.unit_energy,
+                    dtype=operators.dtype,
+                )
+
             # a guess without every axis of the scene is left to the named
             # arrays, which do not accept one
             if scene is None or scene.shape[: len(shape_scene)] != shape_scene:
@@ -325,7 +369,10 @@ class MartInverter(
             scene = np.array(scene, dtype=operators.dtype, order="C")
             scene = scene.reshape(shape_scene + (num_frame,))
 
-        return shape_frames, operators, observed, scene
+            if energy is not None:
+                scene /= energy
+
+        return shape_frames, operators, observed, scene, energy
 
     def _call_arrays(
         self,
@@ -336,6 +383,7 @@ class MartInverter(
         operators: Operators,
         observed: np.ndarray,
         scene: None | np.ndarray,
+        energy: None | np.ndarray,
     ) -> IterativeInversionResult:
         """
         Reconstruct the scene of every frame by iterating on the operators
@@ -365,6 +413,10 @@ class MartInverter(
         scene
             The values of `guess`, as the operators take them, which can be
             overwritten, or :obj:`None` if there is no guess.
+        energy
+            The energy of the photons of each voxel, if `guess` is in units
+            of energy and was divided by it to give `scene`, which the
+            solution is then multiplied by, or :obj:`None` otherwise.
         """
         dtype = operators.dtype
 
@@ -494,9 +546,18 @@ class MartInverter(
         )
 
         # the solution is in the units of the guess, if there is one
-        solutions = solutions << operators.unit_scene
-        if guess is not None:
-            solutions = solutions.to(guess.unit, copy=False)
+        if energy is not None:
+            # the solution of a guess in units of energy, which was divided
+            # by the energy of the photons of each voxel, is multiplied by
+            # it again, in one pass with the factor between the two units
+            # of energy
+            unit = operators.unit_scene * operators.unit_energy
+            solutions *= energy * unit.to(guess.unit)
+            solutions = solutions << guess.unit
+        else:
+            solutions = solutions << operators.unit_scene
+            if guess is not None:
+                solutions = solutions.to(guess.unit, copy=False)
 
         shape_merit = (len(chi2), num_frame, num_channel)
 
