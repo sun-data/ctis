@@ -555,8 +555,49 @@ class AbstractTestAbstractInstrument(
         # a scene which is not a radiance has no ratio
         scene = _scene(a).outputs
 
-        with pytest.raises(ValueError, match="should be in units of"):
+        with pytest.raises(ValueError, match="take a scene in units of"):
             a.snr(scene.value * u.s)
+
+    def test_snr_scalar(
+        self,
+        a: ctis.instruments.AbstractInstrument,
+    ) -> None:
+        # a scene which is not an array of scalars has no ratio, and the
+        # error says so, not that its unit or its axes are wrong
+        scene = _scene(a).outputs
+        scene = na.NormalUncertainScalarArray(scene, width=0.1 * scene)
+
+        with pytest.raises(ValueError, match="array of scalars"):
+            a.snr(scene)
+
+    def test_snr_nan(
+        self,
+        a: ctis.instruments.AbstractInstrument,
+    ) -> None:
+        # a pixel with a voxel which is not a number has a ratio which is
+        # not a number either, for the line of that voxel, and every other
+        # pixel has the ratio it had
+        scene = _scene_frames(a, shape_frames=dict())
+        shape = na.shape(a.coordinates_scene.position)
+        index = {ax: (shape[ax] - 1) // 2 for ax in a.axis_scene_xy}
+
+        outputs = scene.outputs.copy()
+        first = {ax: 0 for ax in outputs.shape if ax not in a.axis_scene_xy}
+        outputs[index | first] = np.nan
+
+        result = a.snr(scene)
+        result_nan = a.snr(scene.replace(outputs=outputs))
+
+        expected = result.copy()
+        expected[index | {ax: 0 for ax in a._shape_line}] = np.nan
+
+        assert np.all(np.isfinite(result))
+        assert np.isnan(expected).sum() == 1
+        assert np.array_equal(
+            result_nan.ndarray_aligned(expected.axes),
+            expected.ndarray,
+            equal_nan=True,
+        )
 
     def test_snr_negative(
         self,
@@ -2297,6 +2338,13 @@ def test_optika_operators_energy_unsupported(
 
     TestOptikaInstrument().test__operators(a)
 
+    # a scene in units of energy has no ratio on them, and one in photons
+    # does
+    scene = _scene(a).outputs
+    with pytest.raises(ValueError, match="take a scene in units of"):
+        a.snr(scene)
+    assert np.any(a.snr((scene / a._energy_per_photon).to(operators.unit_scene)) > 0)
+
 
 def test_optika_operators_wavelength_channel() -> None:
     """
@@ -2321,6 +2369,10 @@ def test_optika_operators_wavelength_channel() -> None:
     assert operators.energy is None
 
     TestOptikaInstrument().test__operators(a)
+
+    # a scene in units of energy has no ratio on them
+    with pytest.raises(ValueError, match="take a scene in units of"):
+        a.snr(_scene(a))
 
 
 @pytest.mark.parametrize(

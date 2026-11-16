@@ -146,21 +146,42 @@ class AbstractInstrument(
         spectral lines, if it has several, and any axis that the scene has
         beyond those of :attr:`coordinates_scene`.
 
+        The images of every pixel alone are read off the sparse matrix of the
+        forward model, which :class:`~ctis.inverters.MartInverter` describes.
+        If nothing has assembled the matrices of this instrument yet, this
+        does, as an inversion would, and they are kept for the next one.
+        An instrument which computes :meth:`image` from weights releases
+        those when its matrices are assembled, and computes them again the
+        next time it needs them.
+
         Parameters
         ----------
         scene
             The spectral radiance of the scene,
             evaluated on :attr:`coordinates_scene`,
-            in the units that :meth:`image` takes.
-            A negative radiance is taken to be zero.
+            in the units that the matrices of this instrument take a scene
+            in, which are those that :meth:`image` takes but for the
+            exception below.
+            A negative radiance is taken to be zero, and a pixel with a
+            radiance which is not a number has a ratio which is not a number
+            either.
 
         Raises
         ------
         ValueError
             If this instrument cannot be expressed as a pair of sparse
-            matrices, as :class:`~ctis.inverters.MartInverter` describes,
-            since the images of every pixel alone are read off the matrix of
-            the forward model.
+            matrices, since the images of every pixel alone are read off the
+            matrix of the forward model.
+
+            If the scene is in units which the matrices cannot take.
+            Those of an :class:`OptikaInstrument` take a scene in photons,
+            and one in units of energy only if they hold the energy of the
+            photons of each voxel.
+            They hold none if the wavelengths of the scene are given for
+            each channel, or if the sensor does not divide a scene in units
+            of energy by the energy of a photon at each wavelength, so such
+            an instrument takes a scene in photons here, whichever
+            :meth:`image` takes.
         """
 
     @property
@@ -875,16 +896,29 @@ class AbstractLinearInstrument(
             scene = scene.outputs
 
         scene = na.as_named_array(scene)
+        if not isinstance(scene, na.AbstractScalarArray):
+            raise ValueError(
+                f"The scene should be an array of scalars, but it is a "
+                f"`{type(scene).__name__}`."
+            )
 
         # a scene in units of energy, for operators which take a scene in
         # photons, is divided by the energy of the photons of each voxel,
         # if the operators have it, as an inversion divides its first guess
+        unit = na.unit_normalized(scene)
         unit_scene = operators.unit_scene
+        units = f"{unit_scene}"
         energy = None
-        if not na.unit_normalized(scene).is_equivalent(unit_scene):
+        if not unit.is_equivalent(unit_scene):
             energy = operators.energy
             if energy is not None:
                 unit_scene = unit_scene * operators.unit_energy
+                units = f"{units}, or of {unit_scene}"
+        if not unit.is_equivalent(unit_scene):
+            raise ValueError(
+                f"The scene is in units of {unit}, but the sparse matrices of "
+                f"this instrument take a scene in units of {units}."
+            )
 
         # every other axis of the scene is an axis of the frames
         shape_scene = operators.shape_scene
@@ -904,10 +938,9 @@ class AbstractLinearInstrument(
             )
         if values is None:
             raise ValueError(
-                f"The scene should be in units of {unit_scene}, and have the "
-                f"axes of `coordinates_scene`, {shape_scene}, and any axes "
-                f"of its own beyond those, but it is in units of "
-                f"{na.unit_normalized(scene)}, and its axes are "
+                f"The scene should have the axes of `coordinates_scene`, "
+                f"{shape_scene}, and any axes of its own beyond those which "
+                f"are not axes of the images, but its axes are "
                 f"{na.shape(scene)}."
             )
         if energy is not None:

@@ -60,7 +60,7 @@ class AbstractInversionResult(
             na.AbstractDopplerPositionalVectorArray,
             na.ScalarArray,
         ],
-        axis: str,
+        axis: None | str = None,
     ) -> tuple[na.AbstractScalar, na.AbstractScalar, na.AbstractScalar]:
         """
         The radiance, the median, and the interquartile range of the spectral
@@ -73,9 +73,13 @@ class AbstractInversionResult(
             one on the same grid.
         axis
             The axis along which to compute the median and the interquartile
-            range.
+            range, which is the wavelength axis of the instrument by default.
+            The radiance is integrated along the wavelength axis of the
+            instrument whichever this is.
         """
         axis_wavelength = self.inverter.instrument.axis_wavelength
+        if axis is None:
+            axis = axis_wavelength
 
         dw = scene.inputs.wavelength.volume_cell(axis_wavelength)
 
@@ -95,7 +99,6 @@ class AbstractInversionResult(
 
     def plot_moments(
         self,
-        axis: str,
         truth: (
             None
             | na.FunctionArray[
@@ -103,6 +106,7 @@ class AbstractInversionResult(
                 na.ScalarArray,
             ]
         ) = None,
+        axis: None | str = None,
         range_radiance: None | tuple[u.Quantity, u.Quantity] = None,
         range_median: None | tuple[u.Quantity, u.Quantity] = None,
         range_iqr: None | tuple[u.Quantity, u.Quantity] = None,
@@ -120,15 +124,21 @@ class AbstractInversionResult(
 
         Parameters
         ----------
-        axis
-            The axis along which to compute the radiance, median,
-            and interquartile range.
         truth
             An optional true scene, which is plotted in a row above the
             reconstructed scene, on the same color scales.
+            Its radiance is in units which can be converted to those of the
+            reconstructed scene.
+        axis
+            The axis along which to compute the median and the interquartile
+            range.
+            The default is the wavelength axis of the instrument, which the
+            radiance is integrated along whichever this is.
         range_radiance
             The limits of the color scale of the radiance.
-            The scale is in the unit of these limits.
+            The scale is in the unit of its lower limit, or in that of its
+            upper limit if the lower one is a plain zero, and so are those
+            of the other two moments.
             The default is zero to the 99.5th percentile.
         range_median
             The limits of the color scale of the median.
@@ -148,48 +158,114 @@ class AbstractInversionResult(
             for an instrument which can be expressed as a pair of sparse
             matrices.
             The default is to leave no pixels blank.
+
+        Raises
+        ------
+        ValueError
+            If a scene has an axis beyond those of one scene, such as the
+            reconstruction of several frames, which these maps cannot show,
+            or if the units of the true scene cannot be converted to those
+            of the reconstructed scene.
         """
-        scenes = dict(reconstructed=self.solution)
+        instrument = self.inverter.instrument
+        solution = self.solution
+
+        scenes = dict(reconstructed=solution)
         if truth is not None:
+            unit_truth = na.unit_normalized(truth.outputs)
+            unit_solution = na.unit_normalized(solution.outputs)
+            if not unit_truth.is_equivalent(unit_solution):
+                raise ValueError(
+                    f"The true scene is in units of {unit_truth}, which "
+                    f"cannot be converted to those of the reconstructed "
+                    f"scene, {unit_solution}, to plot the two on the same "
+                    f"color scales."
+                )
             scenes = dict(true=truth) | scenes
 
         moments = {name: self._moments(scenes[name], axis) for name in scenes}
 
+        for name in scenes:
+            shape = na.shape_broadcasted(*moments[name])
+            axes = tuple(ax for ax in shape if ax not in instrument.axis_scene_xy)
+            if axes:
+                raise ValueError(
+                    f"These are maps of one scene, with the axes "
+                    f"{instrument.axis_scene_xy}, but the moments of the "
+                    f"{name} scene also have the axes {axes}."
+                )
+
         where = None
         if threshold_snr is not None:
-            where = self.inverter.instrument.snr(self.solution) > threshold_snr
+            where = instrument.snr(solution) > threshold_snr
 
         def blanked(a: na.AbstractScalar) -> na.AbstractScalar:
             if where is None:
                 return a
             return np.where(where, a, np.nan)
 
-        # the scene which the default limits of the color scales come from
-        radiance, median, iqr = next(iter(moments.values()))
-
-        def percentile(a: na.AbstractScalar, q: float) -> u.Quantity:
+        def unblanked(a: na.AbstractScalar) -> na.AbstractScalar:
             """
-            A percentile of the pixels which are not blank, or of all the
-            pixels if every one of them is.
+            A moment where it is not blank, or everywhere if every pixel is
+            blank.
             """
             b = blanked(a)
             if np.any(np.isfinite(b)).ndarray:
-                a = b
+                return b
+            return a
+
+        def percentile(a: na.AbstractScalar, q: float) -> u.Quantity:
+            """
+            A percentile of the pixels which are numbers, or zero if none of
+            them is, such as the median of a scene which emits nothing.
+            """
+            if not np.any(np.isfinite(a)).ndarray:
+                return 0 * na.unit_normalized(a)
             return np.nanpercentile(a, q).ndarray
+
+        # the scene which the default limits of the color scales come from
+        radiance, median, iqr = next(iter(moments.values()))
 
         # the limits are percentiles, since otherwise a few pixels would set
         # the scale of all the others
         if range_radiance is None:
-            bound = np.nanpercentile(radiance, 99.5).ndarray
+            bound = percentile(radiance, 99.5)
             range_radiance = (0 * bound, bound)
         if range_median is None:
-            bound = percentile(np.abs(median), 99)
+            bound = percentile(unblanked(np.abs(median)), 99)
             range_median = (-bound, bound)
         if range_iqr is None:
-            bound = percentile(iqr, 99)
+            bound = percentile(unblanked(iqr), 99)
             range_iqr = (0 * bound, bound)
 
-        ranges = (range_radiance, range_median, range_iqr)
+        def scale(
+            limits: tuple[u.Quantity, u.Quantity],
+        ) -> tuple[float, float, u.UnitBase, int]:
+            """
+            The limits of a color scale as numbers, the unit they are in, and
+            the power of ten which is factored out of the scale, into its
+            label, if they are far from one.
+            """
+            vmin, vmax = (u.Quantity(na.as_named_array(a).ndarray) for a in limits)
+
+            # a plain zero is a zero of any unit, as it is for astropy
+            plain = tuple(
+                a.unit == u.dimensionless_unscaled and a.value == 0
+                for a in (vmin, vmax)
+            )
+            unit = vmax.unit if plain[0] else vmin.unit
+            vmin = 0.0 if plain[0] else float(vmin.to_value(unit))
+            vmax = 0.0 if plain[1] else float(vmax.to_value(unit))
+
+            exponent = 0
+            magnitude = max(abs(vmin), abs(vmax))
+            if magnitude > 0 and not 1e-3 <= magnitude < 1e5:
+                exponent = int(np.floor(np.log10(magnitude)))
+
+            return vmin, vmax, unit, exponent
+
+        # every color scale is in the unit of its limits
+        scales = [scale(r) for r in (range_radiance, range_median, range_iqr)]
         labels = ("radiance", "median", "IQR")
 
         # the radiance and the interquartile range are magnitudes, and the
@@ -248,18 +324,7 @@ class AbstractInversionResult(
             for col, moment in enumerate(moments[name]):
                 ax = axs[row, col]
 
-                # every color scale is in the unit of its limits
-                vmin, vmax = (u.Quantity(limit) for limit in ranges[col])
-                unit = vmin.unit
-                vmin = vmin.value
-                vmax = vmax.to_value(unit)
-
-                # limits which are far from one are factored out of the
-                # scale, into its label
-                exponent = 0
-                magnitude = max(abs(vmin), abs(vmax))
-                if magnitude > 0 and not 1e-3 <= magnitude < 1e5:
-                    exponent = int(np.floor(np.log10(magnitude)))
+                vmin, vmax, unit, exponent = scales[col]
                 factor = 10.0**exponent
 
                 if col > 0:
@@ -300,7 +365,7 @@ class AbstractInversionResult(
             na.AbstractDopplerPositionalVectorArray,
             na.ScalarArray,
         ],
-        axis: str,
+        axis: None | str = None,
         num_bins: int = 50,
         range_radiance: None | tuple[u.Quantity, u.Quantity] = None,
         range_median: None | tuple[u.Quantity, u.Quantity] = None,
@@ -319,8 +384,10 @@ class AbstractInversionResult(
         truth
             The true scene which will be compared to the reconstructed scene.
         axis
-            The axis along which to compute the radiance, median,
-            and interquartile range.
+            The axis along which to compute the median and the interquartile
+            range.
+            The default is the wavelength axis of the instrument, which the
+            radiance is integrated along whichever this is.
         num_bins
             The number of bins along each axis of the histogram.
         range_radiance
@@ -351,9 +418,7 @@ class AbstractInversionResult(
         where = radiance_truth > thresh
 
         if threshold_snr is not None:
-            where = where & (
-                self.inverter.instrument.snr(self.solution) > threshold_snr
-            )
+            where = where & (self.inverter.instrument.snr(recon) > threshold_snr)
 
         r_radiance = na.stats.pearsonr(
             x=radiance_truth,

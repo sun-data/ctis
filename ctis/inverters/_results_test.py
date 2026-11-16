@@ -92,6 +92,127 @@ def test_plot_moments_ranges() -> None:
     plt.close(fig)
 
 
+def test_plot_moments_axis() -> None:
+    """
+    The median and the interquartile range are computed along the wavelength
+    axis of the instrument unless another axis is given, by both methods,
+    which take the true scene first.
+    """
+    axis = instrument.axis_wavelength
+
+    for method, args in [
+        (inversion.plot_moments, ()),
+        (inversion.plot_moments, (scene,)),
+        (inversion.plot_moments_histogram, (scene,)),
+    ]:
+        fig, axs = method(*args)
+        fig_axis, axs_axis = method(*args, axis=axis)
+
+        assert axs.shape == axs_axis.shape
+        for ax, ax_axis in zip(axs.flat, axs_axis.flat):
+            assert np.ma.allequal(
+                ax.collections[0].get_array(),
+                ax_axis.collections[0].get_array(),
+            )
+
+        plt.close(fig)
+        plt.close(fig_axis)
+
+
+kms = u.km / u.s
+
+
+@pytest.mark.parametrize(
+    argnames="kwargs,column,expected",
+    argvalues=[
+        (dict(range_iqr=(0, 300 * kms)), 2, (0, 300)),
+        (dict(range_iqr=(0 * kms, 0.3 * u.Mm / u.s)), 2, (0, 300)),
+        (dict(range_iqr=(0.0 * u.Mm / u.s, 300 * kms)), 2, (0, 0.3)),
+        (dict(range_median=(-300 * kms, 0)), 1, (-300, 0)),
+        (
+            dict(range_median=(na.ScalarArray(-300 * kms), na.ScalarArray(300 * kms))),
+            1,
+            (-300, 300),
+        ),
+    ],
+    ids=[
+        "plain zero below",
+        "two units",
+        "zero with a unit",
+        "plain zero above",
+        "named arrays",
+    ],
+)
+def test_plot_moments_limits(
+    kwargs: dict,
+    column: int,
+    expected: tuple[float, float],
+) -> None:
+    """
+    The limits of a color scale can be quantities or named arrays, in units
+    of their own, and a plain zero beside either.
+    The scale is in the unit of its lower limit, unless that is a plain
+    zero.
+    """
+    fig, axs = inversion.plot_moments(**kwargs)
+
+    assert axs[0, column].collections[0].get_clim() == pytest.approx(expected)
+
+    plt.close(fig)
+
+
+def test_plot_moments_dark() -> None:
+    """
+    A reconstruction which emits nothing has neither a median nor an
+    interquartile range anywhere, and its maps are plotted without a
+    warning, on scales whose limits are numbers.
+    """
+    solutions = inversion.solutions
+    dark = dataclasses.replace(
+        inversion,
+        solutions=solutions.replace(outputs=0 * solutions.outputs),
+    )
+
+    for threshold_snr in (None, 5):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            fig, axs = dark.plot_moments(threshold_snr=threshold_snr)
+
+        for ax in axs.flat:
+            vmin, vmax = ax.collections[0].get_clim()
+            assert np.isfinite(vmin) and np.isfinite(vmax)
+
+        plt.close(fig)
+
+
+def test_plot_moments_frames() -> None:
+    """
+    The maps are of one scene, so the reconstruction of several frames is
+    not plotted, and the error says why.
+    """
+    solutions = inversion.solutions
+    frames = na.ScalarArray(np.array([1, 2]), axes="time")
+    result = dataclasses.replace(
+        inversion,
+        solutions=solutions.replace(outputs=solutions.outputs * frames),
+    )
+
+    with pytest.raises(ValueError, match="maps of one scene"):
+        result.plot_moments()
+
+
+def test_plot_moments_truth_unit() -> None:
+    """
+    A true scene in units which cannot be converted to those of the
+    reconstructed scene is not plotted on its color scales, and the error
+    names the units of both.
+    """
+    truth = scene.replace(outputs=scene.outputs / instrument._energy_per_photon)
+
+    with pytest.raises(ValueError, match="true scene is in units of"):
+        inversion.plot_moments(truth)
+
+
 @pytest.mark.parametrize("threshold_snr", [5, np.inf])
 def test_plot_moments_no_runtime_warnings(threshold_snr: float) -> None:
     """

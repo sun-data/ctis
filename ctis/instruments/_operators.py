@@ -718,19 +718,15 @@ class Operators:
         """
         return np.dtype(self.forward.data.dtype)
 
-    def _products(
+    def _leaving(
         self,
         scene: np.ndarray,
         buffer: None | np.ndarray = None,
     ) -> np.ndarray:
         """
-        What :attr:`forward` brings to every pixel from each spectral line,
-        summed over wavelength, for the scene of each frame.
-
-        The result is a new array with an axis for the channels, one for the
-        lines, one for the pixels and one for the frames, which the caller is
-        free to overwrite, and which is negative wherever the scene makes it
-        so.
+        What leaves every voxel toward each channel, for the scene of each
+        frame: an array of the shape that :attr:`forward` takes, followed by
+        an axis for the frames.
 
         Parameters
         ----------
@@ -738,8 +734,8 @@ class Operators:
             The scenes, of shape :attr:`shape_scene` followed by an axis for
             the frames.
         buffer
-            An array to overwrite with the photons leaving every voxel, see
-            :meth:`photons`.
+            An array to overwrite with the result, see :meth:`photons`.
+            If :obj:`None`, a new array is allocated.
         """
         shape_scene = tuple(self.shape_scene.values())
         if scene.shape[:~0] != shape_scene:
@@ -772,9 +768,36 @@ class Operators:
             result=buffer.reshape(self._scale.shape + (num_frame,)),
         )
 
-        result = self._apply(self.forward, buffer)
+        return buffer
 
-        return result.reshape(self.num_channel, self.num_line, -1, num_frame)
+    def _products(
+        self,
+        scene: np.ndarray,
+        buffer: None | np.ndarray = None,
+    ) -> np.ndarray:
+        """
+        What :attr:`forward` brings to every pixel from each spectral line,
+        summed over wavelength, for the scene of each frame.
+
+        The result is a new array with an axis for the channels, one for the
+        lines, one for the pixels and one for the frames, which the caller is
+        free to overwrite, and which is negative wherever the scene makes it
+        so.
+
+        Parameters
+        ----------
+        scene
+            The scenes, of shape :attr:`shape_scene` followed by an axis for
+            the frames.
+        buffer
+            An array to overwrite with the photons leaving every voxel, see
+            :meth:`photons`.
+        """
+        leaving = self._leaving(scene, buffer=buffer)
+
+        result = self._apply(self.forward, leaving)
+
+        return result.reshape(self.num_channel, self.num_line, -1, scene.shape[~0])
 
     def photons(
         self,
@@ -869,6 +892,8 @@ class Operators:
         The result is a new array with the axis of the lines, if the scene
         has several, the two spatial axes of a scene and an axis for the
         frames.
+        It is not a number for a line of a pixel which has a voxel that is
+        not one.
 
         Parameters
         ----------
@@ -876,24 +901,10 @@ class Operators:
             The scenes, of shape :attr:`shape_scene` followed by an axis for
             the frames, none of which is negative.
         """
-        shape_scene = tuple(self.shape_scene.values())
-        if scene.shape[:~0] != shape_scene:
-            raise ValueError(
-                f"the scenes should have a shape of {shape_scene} followed by "
-                f"an axis for the frames, but their shape is {scene.shape}"
-            )
+        leaving = self._leaving(scene)
 
         num_frame = scene.shape[~0]
         shape_xy = self.forward.shape_input[~1:]
-
-        # what leaves every voxel toward each channel, in the shape the
-        # matrix takes
-        leaving = np.empty(self.forward.shape_input + (num_frame,), dtype=self.dtype)
-        _multiply(
-            scene=scene.reshape((-1,) + scene.shape[~2:]),
-            scale=self._scale,
-            result=leaving.reshape(self._scale.shape + (num_frame,)),
-        )
 
         shape = (self.num_channel, self.num_line, math.prod(shape_xy), num_frame)
         result = np.zeros(shape)
@@ -912,8 +923,14 @@ class Operators:
         result = np.sqrt(result.sum(0))
 
         shape = tuple(self.shape_line.values()) + shape_xy + (num_frame,)
+        result = result.reshape(shape)
 
-        return result.reshape(shape)
+        # the pass above skips what is not a number, which would leave a
+        # pixel with such a voxel the ratio of its other voxels
+        axis_wavelength = len(self.shape_line)
+        result[np.isnan(scene).any(axis_wavelength)] = np.nan
+
+        return result
 
     def backproject(self, images: np.ndarray) -> np.ndarray:
         """
