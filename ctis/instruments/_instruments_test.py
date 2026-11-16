@@ -541,11 +541,11 @@ class AbstractTestAbstractInstrument(
         scene = _scene(a).outputs
         axis_x, axis_y = a.axis_scene_xy
 
-        with pytest.raises(ValueError, match="should have the axes"):
+        with pytest.raises(ValueError, match="have the axes of"):
             a.snr(scene[{axis_x: slice(None, ~0)}])
 
         ones = na.ScalarArray(np.ones(2), axes=a._axis_channel[0])
-        with pytest.raises(ValueError, match="should have the axes"):
+        with pytest.raises(ValueError, match="have the axes of"):
             a.snr(scene * ones)
 
     def test_snr_unit(
@@ -555,7 +555,7 @@ class AbstractTestAbstractInstrument(
         # a scene which is not a radiance has no ratio
         scene = _scene(a).outputs
 
-        with pytest.raises(u.UnitConversionError):
+        with pytest.raises(ValueError, match="should be in units of"):
             a.snr(scene.value * u.s)
 
     def test_snr_negative(

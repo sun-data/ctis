@@ -874,13 +874,17 @@ class AbstractLinearInstrument(
                 )
             scene = scene.outputs
 
-        # a scene in units of energy is converted to the photons which the
-        # operators take, as `image` does it
         scene = na.as_named_array(scene)
+
+        # a scene in units of energy, for operators which take a scene in
+        # photons, is divided by the energy of the photons of each voxel,
+        # if the operators have it, as an inversion divides its first guess
         unit_scene = operators.unit_scene
+        energy = None
         if not na.unit_normalized(scene).is_equivalent(unit_scene):
-            scene = scene / self._energy_per_photon
-        scene = scene.to(unit_scene)
+            energy = operators.energy
+            if energy is not None:
+                unit_scene = unit_scene * operators.unit_energy
 
         # every other axis of the scene is an axis of the frames
         shape_scene = operators.shape_scene
@@ -900,10 +904,14 @@ class AbstractLinearInstrument(
             )
         if values is None:
             raise ValueError(
-                f"The scene should have the axes of `coordinates_scene`, "
-                f"{shape_scene}, and any axes of its own beyond those, but "
-                f"its axes are {na.shape(scene)}."
+                f"The scene should be in units of {unit_scene}, and have the "
+                f"axes of `coordinates_scene`, {shape_scene}, and any axes "
+                f"of its own beyond those, but it is in units of "
+                f"{na.unit_normalized(scene)}, and its axes are "
+                f"{na.shape(scene)}."
             )
+        if energy is not None:
+            values = values / energy
 
         # a voxel cannot send less than no light
         result = operators.snr(np.maximum(values, 0))
