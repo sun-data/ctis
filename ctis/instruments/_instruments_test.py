@@ -1656,9 +1656,17 @@ class TestIdealInstrument(
             }
         )
 
+        scene = _scene(imaged)
+
+        # it is still imaged, with its own method
+        _assert_close(
+            imaged.image(scene, noise=False).outputs,
+            a.image(scene, noise=False).outputs,
+        )
+
         assert imaged._operators(None) is None
         with pytest.raises(ValueError, match="pair of sparse matrices"):
-            imaged.snr(_scene(imaged))
+            imaged.snr(scene)
 
 
 def test_num_channel_axes_shared() -> None:
