@@ -207,9 +207,8 @@ class AbstractInversionResult(
                 factors.append(f"$10^{{{exponent}}}$")
             if unit != u.dimensionless_unscaled:
                 factors.append(f"{unit:latex_inline}")
-            if not factors:
-                return name
-            return f"{name} ({' '.join(factors)})"
+            suffix = f" ({' '.join(factors)})" if factors else ""
+            return f"{name}{suffix}"
 
         def values(a: na.AbstractScalar, unit: u.UnitBase) -> na.AbstractScalar:
             return (a / unit).to(u.dimensionless_unscaled).value

@@ -118,32 +118,33 @@ class AbstractInstrument(
         The signal-to-noise ratio of the spectral line profile in every pixel
         of a scene, as if that pixel were alone in the scene.
 
-        The signal of a voxel, :math:`s`, is what it adds to the images of a
-        channel.
-        Its noise is the shot noise of that signal alone, and the read noise
-        of one pixel of the sensor, :math:`\sigma_\text{r}`, which all of
-        the signal is taken to land on.
-        The ratio of a pixel of the scene is the ratios of its voxels, for
-        every channel :math:`c` and every wavelength :math:`\lambda`, summed
-        in quadrature,
+        It is that of the images which the pixel would give if the rest of
+        the scene were dark: the signal :math:`s` of every pixel of the
+        sensor which its light lands on, against the shot noise of that
+        signal and the read noise of that pixel, :math:`\sigma`,
+        summed in quadrature over the pixels :math:`i` of every channel
+        :math:`c`,
 
         .. math::
 
-            \text{SNR}^2 = \sum_{c, \lambda}
-            \frac{s_{c \lambda}^2}{F_c \, s_{c \lambda} + \sigma_\text{r}^2},
+            \text{SNR}^2 = \sum_{c, i}
+            \frac{s_{c i}^2}{F_c \, s_{c i} + \sigma_{c i}^2},
 
         where :math:`F_c` is the variance of the shot noise of a channel for
         each unit of its signal.
 
         The light which the rest of the scene sends to the same pixels of the
-        sensor is left out, and all the light of a voxel is counted, whether
-        it lands on the sensor or not.
-        This ratio is therefore an upper limit to how well the line profile
-        of a pixel can be measured, and how far below it an inversion lands
-        depends on the scene.
+        sensor is left out, so this ratio is an upper limit to how well the
+        line profile of a pixel can be measured, and how far below it an
+        inversion lands depends on the scene.
+        Light which misses the sensor adds nothing to it.
 
-        The ratio is summed over the channels and :attr:`axis_wavelength`,
-        so the result has the other axes of the scene.
+        If the scene has several spectral lines, the ratio is that of each
+        line of a pixel alone.
+
+        The result has the two spatial axes of the scene, the axis of its
+        spectral lines, if it has several, and any axis that the scene has
+        beyond those of :attr:`coordinates_scene`.
 
         Parameters
         ----------
@@ -158,8 +159,8 @@ class AbstractInstrument(
         ValueError
             If this instrument cannot be expressed as a pair of sparse
             matrices, as :class:`~ctis.inverters.MartInverter` describes,
-            since the signal of every voxel and the noise model of the
-            sensor are the factors around those matrices.
+            since the images of every pixel alone are read off the matrix of
+            the forward model.
         """
 
     @property
@@ -855,10 +856,9 @@ class AbstractLinearInstrument(
         scene: na.AbstractScalar | na.AbstractFunctionArray,
     ) -> na.AbstractScalar:
 
-        # the signal of every voxel and the noise model of the sensor are
-        # the factors around the matrices of this instrument, in whichever
-        # precision the matrices are kept in, since another precision would
-        # assemble them again
+        # the images of every pixel of the scene alone are read off the
+        # matrix of the forward model, in whichever precision the matrices
+        # are kept in, since another precision would assemble them again
         operators = self._operators(None)
         if operators is None:
             raise ValueError(
@@ -874,55 +874,44 @@ class AbstractLinearInstrument(
                 )
             scene = scene.outputs
 
-        shape_channel = operators.shape_channel
-        shape_voxels = shape_channel | operators.shape_scene
-        shape_response = shape_channel | operators.shape_line
-        shape_pixels = shape_channel | operators.shape_sensor
-
-        def named(a: np.ndarray, shape: dict[str, int]) -> na.ScalarArray:
-            """A factor of the operators, with the axes that it varies along."""
-            axes = tuple(ax for ax, num in zip(shape, a.shape) if num != 1)
-            return na.ScalarArray(np.squeeze(a), axes=axes)
-
         # a scene in units of energy is converted to the photons which the
         # operators take, as `image` does it
+        scene = na.as_named_array(scene)
         unit_scene = operators.unit_scene
         if not na.unit_normalized(scene).is_equivalent(unit_scene):
             scene = scene / self._energy_per_photon
+        scene = scene.to(unit_scene)
+
+        # every other axis of the scene is an axis of the frames
+        shape_scene = operators.shape_scene
+        shape_frames = frames(
+            shape=na.shape(scene),
+            shape_own=shape_scene,
+            shape_other=operators.shape_images,
+        )
+        values = None
+        if shape_frames is not None:
+            values = framed(
+                a=scene,
+                shape=shape_scene,
+                shape_frames=shape_frames,
+                unit=unit_scene,
+                dtype=operators.dtype,
+            )
+        if values is None:
+            raise ValueError(
+                f"The scene should have the axes of `coordinates_scene`, "
+                f"{shape_scene}, and any axes of its own beyond those, but "
+                f"its axes are {na.shape(scene)}."
+            )
 
         # a voxel cannot send less than no light
-        scene = np.maximum(scene.to(unit_scene).value, 0)
+        result = operators.snr(np.maximum(values, 0))
 
-        # the factors have an axis for the frames, which a scene of the
-        # operators has last
-        signal = scene * named(operators.scale[..., 0], shape_voxels)
-        signal = signal * named(operators.gain, shape_response)
-        if operators.weights_scene is not None:
-            signal = signal * named(operators.weights_scene, shape_voxels)
+        axes = tuple(ax for ax in shape_scene if ax != self.axis_wavelength)
+        result = result.reshape(result.shape[:~0] + tuple(shape_frames.values()))
 
-        # the read noise is averaged over the sensor before it is compared to
-        # the scene, since the axes of the two can have the same names
-        variance_read = named(operators.variance_read, shape_pixels)
-        variance_read = variance_read.mean(
-            axis=tuple(
-                ax for ax in operators.shape_sensor if ax in variance_read.shape
-            ),
-        )
-
-        variance = signal * named(operators.vmr, shape_response) + variance_read
-
-        # a voxel which emits nothing has no ratio if there is no read noise
-        with np.errstate(divide="ignore", invalid="ignore"):
-            ratio = np.square(signal) / variance
-        ratio = np.nan_to_num(ratio)
-
-        # the channels and the wavelengths which neither the scene nor the
-        # factors vary along are counted
-        axis = (*shape_channel, self.axis_wavelength)
-        num_same = math.prod(shape_voxels[ax] for ax in axis if ax not in ratio.shape)
-        ratio = num_same * ratio.sum(tuple(ax for ax in axis if ax in ratio.shape))
-
-        return np.sqrt(ratio)
+        return na.ScalarArray(result, axes=(*axes, *shape_frames))
 
 
 @dataclasses.dataclass

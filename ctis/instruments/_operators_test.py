@@ -410,3 +410,70 @@ def test__combine(combine: Callable) -> None:
         rtol=1e-14,
         atol=0,
     )
+
+
+@pytest.mark.parametrize(
+    argnames="snr_squared",
+    argvalues=[_operators._snr_squared, _operators._snr_squared.py_func],
+    ids=["compiled", "python"],
+)
+def test__snr_squared(snr_squared: Callable) -> None:
+    """
+    The kernel sums each row of the matrix over the voxels of one pixel of
+    the scene, which gives what that pixel alone brings to a pixel of the
+    sensor, and adds the square of its signal over the variance of its noise
+    to the result, unless it brings nothing or the pixel has no noise.
+    """
+    rng = np.random.default_rng(0)
+    num_channel, num_line, num_pixel = 2, 2, 5
+    num_spectral, num_xy, num_frame = 6, 4, 2
+    num_row = num_channel * num_line * num_pixel
+    num_voxel = num_channel * num_spectral * num_xy
+
+    # a matrix most of whose entries are empty, with one empty row
+    matrix = rng.uniform(0, 1, size=(num_row, num_voxel))
+    matrix[rng.uniform(size=matrix.shape) < 0.6] = 0
+    matrix[3] = 0
+
+    indptr = np.concatenate([[0], np.cumsum((matrix != 0).sum(axis=1))])
+    rows, indices = np.nonzero(matrix)
+    data = matrix[rows, indices]
+
+    # some voxels send less than no light, and some pixels have no noise
+    leaving = rng.uniform(-1, 2, size=(num_voxel, num_frame))
+    gain = rng.uniform(1, 2, size=(num_channel, num_line))
+    gain_variance = rng.uniform(1, 2, size=(num_channel, num_line))
+    gain_variance[0, 0] = 0
+    variance_read = rng.uniform(0, 1, size=(num_channel, num_pixel))
+    variance_read[0, :2] = 0
+
+    result = np.full((num_channel, num_line, num_xy, num_frame), 0.5)
+
+    snr_squared(
+        indptr,
+        indices,
+        data,
+        leaving,
+        gain,
+        gain_variance,
+        variance_read,
+        result,
+    )
+
+    alone = np.einsum(
+        "clpsx,sxf->clpxf",
+        matrix.reshape(num_channel, num_line, num_pixel, -1, num_xy),
+        leaving.reshape(-1, num_xy, num_frame),
+    )
+    signal = gain[..., np.newaxis, np.newaxis, np.newaxis] * alone
+    variance = gain_variance[..., np.newaxis, np.newaxis, np.newaxis] * alone
+    variance = variance + variance_read[:, np.newaxis, :, np.newaxis, np.newaxis]
+    measured = (alone > 0) & (variance > 0)
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        expected = np.where(measured, np.square(signal) / variance, 0)
+    expected = 0.5 + expected.sum(axis=2)
+
+    assert np.any(alone < 0)
+    assert np.any((alone > 0) & (variance == 0))
+    assert np.allclose(result, expected, rtol=1e-13, atol=0)
