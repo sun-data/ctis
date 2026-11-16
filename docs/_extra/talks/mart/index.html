@@ -978,7 +978,7 @@ na.plt.stairs(scene.inputs.wavelength,
     <p class="kicker">Step 14 of 15</p>
     <h2>Compare line moments, pixel by pixel</h2>
     <pre><code class="language-python" data-trim data-noescape>
-inversion.plot_moments(scene, axis="wavelength")
+inversion.plot_moments_histogram(scene, axis="wavelength")
     </code></pre>
     <figure class="fig"><img src="figures/moments.png" alt="Histograms of true against reconstructed radiance, median velocity and interquartile range"></figure>
     <p class="caption">Column-normalized 2D histograms of radiance, median velocity and interquartile range, with Pearson's $r$. Options: <code>num_bins</code>, <code>range_*</code>, and <code>percentile_radiance</code> to exclude faint pixels.</p>

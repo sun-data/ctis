@@ -359,6 +359,100 @@ def _combine(
             variance[c, n, f] = max(shot, 0.0) + variance_read[c, n]
 
 
+@numba.njit(cache=True, parallel=True)
+def _snr_squared(
+    indptr: np.ndarray,
+    indices: np.ndarray,
+    data: np.ndarray,
+    leaving: np.ndarray,
+    gain: np.ndarray,
+    gain_variance: np.ndarray,
+    variance_read: np.ndarray,
+    result: np.ndarray,
+) -> None:
+    """
+    Add, to the square of the signal-to-noise ratio of every pixel of the
+    scene, what each channel measures of that pixel alone.
+
+    A row of the forward matrix holds what every voxel brings to one pixel
+    of the sensor from one spectral line.
+    Summed over the voxels of one pixel of the scene, it is the signal which
+    that pixel of the scene gives the pixel of the sensor when the rest of
+    the scene is dark, and the square of that signal over the variance of
+    its noise is what the pixel of the sensor adds to the ratio.
+
+    This is one pass over the entries of the matrix, with the channels
+    shared between the threads, and every sum accumulated in double
+    precision.
+
+    Parameters
+    ----------
+    indptr
+        Where each row of the forward matrix starts in `indices` and `data`.
+        The rows are the pixels of the sensor, for each channel and each
+        line.
+    indices
+        The voxel of each entry of the matrix, as an index into the first
+        axis of `leaving`, which has the two spatial axes of a scene last.
+    data
+        The value of each entry of the matrix.
+    leaving
+        What leaves every voxel toward each channel, an array with an axis
+        for the voxels of every channel and one for the frames.
+    gain
+        The signal for each unit of what the matrix brings to a pixel, for
+        each channel and each line.
+    gain_variance
+        The variance of the shot noise for each unit of what the matrix
+        brings to a pixel, for each channel and each line.
+    variance_read
+        The variance of the read noise, for each channel and each pixel.
+    result
+        An array with an axis for the channels, one for the lines, one for
+        the pixels of the scene and one for the frames, which is added to.
+    """
+    num_channel, num_line, num_xy, num_frame = result.shape
+    num_pixel = variance_read.shape[1]
+
+    for c in numba.prange(num_channel):
+
+        # what each pixel of the scene brings to one pixel of the sensor,
+        # the pixels of the scene which bring something to it, and the row
+        # of the matrix which each pixel of the scene was last met in
+        alone = np.empty((num_xy, num_frame))
+        met = np.empty(num_xy, dtype=np.int64)
+        row_last = np.full(num_xy, -1)
+
+        for line in range(num_line):
+            for n in range(num_pixel):
+                row = (c * num_line + line) * num_pixel + n
+
+                num_met = 0
+                for k in range(indptr[row], indptr[row + 1]):
+                    voxel = indices[k]
+                    xy = voxel % num_xy
+                    if row_last[xy] != row:
+                        row_last[xy] = row
+                        met[num_met] = xy
+                        num_met += 1
+                        for f in range(num_frame):
+                            alone[xy, f] = 0.0
+                    weight = data[k]
+                    for f in range(num_frame):
+                        alone[xy, f] += weight * leaving[voxel, f]
+
+                for m in range(num_met):
+                    xy = met[m]
+                    for f in range(num_frame):
+                        brought = alone[xy, f]
+                        if brought > 0:
+                            signal = gain[c, line] * brought
+                            variance = gain_variance[c, line] * brought
+                            variance = variance + variance_read[c, n]
+                            if variance > 0:
+                                result[c, line, xy, f] += signal * signal / variance
+
+
 @dataclasses.dataclass(eq=False)
 class Operators:
     """
@@ -624,19 +718,15 @@ class Operators:
         """
         return np.dtype(self.forward.data.dtype)
 
-    def _products(
+    def _leaving(
         self,
         scene: np.ndarray,
         buffer: None | np.ndarray = None,
     ) -> np.ndarray:
         """
-        What :attr:`forward` brings to every pixel from each spectral line,
-        summed over wavelength, for the scene of each frame.
-
-        The result is a new array with an axis for the channels, one for the
-        lines, one for the pixels and one for the frames, which the caller is
-        free to overwrite, and which is negative wherever the scene makes it
-        so.
+        What leaves every voxel toward each channel, for the scene of each
+        frame: an array of the shape that :attr:`forward` takes, followed by
+        an axis for the frames.
 
         Parameters
         ----------
@@ -644,8 +734,8 @@ class Operators:
             The scenes, of shape :attr:`shape_scene` followed by an axis for
             the frames.
         buffer
-            An array to overwrite with the photons leaving every voxel, see
-            :meth:`photons`.
+            An array to overwrite with the result, see :meth:`photons`.
+            If :obj:`None`, a new array is allocated.
         """
         shape_scene = tuple(self.shape_scene.values())
         if scene.shape[:~0] != shape_scene:
@@ -678,9 +768,36 @@ class Operators:
             result=buffer.reshape(self._scale.shape + (num_frame,)),
         )
 
-        result = self._apply(self.forward, buffer)
+        return buffer
 
-        return result.reshape(self.num_channel, self.num_line, -1, num_frame)
+    def _products(
+        self,
+        scene: np.ndarray,
+        buffer: None | np.ndarray = None,
+    ) -> np.ndarray:
+        """
+        What :attr:`forward` brings to every pixel from each spectral line,
+        summed over wavelength, for the scene of each frame.
+
+        The result is a new array with an axis for the channels, one for the
+        lines, one for the pixels and one for the frames, which the caller is
+        free to overwrite, and which is negative wherever the scene makes it
+        so.
+
+        Parameters
+        ----------
+        scene
+            The scenes, of shape :attr:`shape_scene` followed by an axis for
+            the frames.
+        buffer
+            An array to overwrite with the photons leaving every voxel, see
+            :meth:`photons`.
+        """
+        leaving = self._leaving(scene, buffer=buffer)
+
+        result = self._apply(self.forward, leaving)
+
+        return result.reshape(self.num_channel, self.num_line, -1, scene.shape[~0])
 
     def photons(
         self,
@@ -761,6 +878,59 @@ class Operators:
         shape_images = tuple(self.shape_images.values()) + photons.shape[~0:]
 
         return images.reshape(shape_images), variance.reshape(shape_images)
+
+    def snr(self, scene: np.ndarray) -> np.ndarray:
+        """
+        The signal-to-noise ratio of every pixel of the scene of each frame,
+        as if that pixel were alone in the scene, for each spectral line.
+
+        It is that of the images which the pixel would give if the rest of
+        the scene were dark: the square of the signal of every pixel of the
+        sensor over the variance of its noise, summed over the pixels of
+        every channel which the light of that pixel of the scene lands on.
+
+        The result is a new array with the axis of the lines, if the scene
+        has several, the two spatial axes of a scene and an axis for the
+        frames.
+        It is not a number for a line of a pixel which has a voxel that is
+        not one.
+
+        Parameters
+        ----------
+        scene
+            The scenes, of shape :attr:`shape_scene` followed by an axis for
+            the frames, none of which is negative.
+        """
+        leaving = self._leaving(scene)
+
+        num_frame = scene.shape[~0]
+        shape_xy = self.forward.shape_input[~1:]
+
+        shape = (self.num_channel, self.num_line, math.prod(shape_xy), num_frame)
+        result = np.zeros(shape)
+
+        _snr_squared(
+            indptr=self.forward.indptr,
+            indices=self.forward.indices,
+            data=self.forward.data,
+            leaving=leaving.reshape(-1, num_frame),
+            gain=self._gain,
+            gain_variance=self._gain_variance,
+            variance_read=self._variance_read,
+            result=result,
+        )
+
+        result = np.sqrt(result.sum(0))
+
+        shape = tuple(self.shape_line.values()) + shape_xy + (num_frame,)
+        result = result.reshape(shape)
+
+        # the pass above skips what is not a number, which would leave a
+        # pixel with such a voxel the ratio of its other voxels
+        axis_wavelength = len(self.shape_line)
+        result[np.isnan(scene).any(axis_wavelength)] = np.nan
+
+        return result
 
     def backproject(self, images: np.ndarray) -> np.ndarray:
         """

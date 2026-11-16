@@ -418,6 +418,210 @@ class AbstractTestAbstractInstrument(
         contribution = np.sqrt(np.square(width_1) - np.square(width_0))
         assert np.allclose(contribution.to_value(u.electron), 10)
 
+    @pytest.mark.parametrize("read_noise", [0, 5])
+    @pytest.mark.parametrize("corner", [False, True])
+    def test_snr(
+        self,
+        a: ctis.instruments.AbstractInstrument,
+        read_noise: float,
+        corner: bool,
+    ) -> None:
+        # the ratio of a pixel is that of the images of that pixel alone:
+        # the signal of every pixel of the sensor which its light lands on,
+        # against the shot noise of that signal and the read noise of the
+        # pixel, summed in quadrature over the pixels of every channel.
+        # A pixel in a corner of the scene can miss the sensor
+        shape = na.shape(a.coordinates_scene.position)
+        axis_x, axis_y = a.axis_scene_xy
+        index = {ax: (shape[ax] - 1) // 2 for ax in a.axis_scene_xy}
+        if corner:
+            index = {axis_x: 1, axis_y: shape[axis_y] - 3}
+
+        scene = _scene(a)
+        outputs = 0 * scene.outputs
+        outputs[index] = scene.outputs.max()
+        scene = scene.replace(outputs=outputs)
+
+        # the images of each line of the pixel, and the variance of their
+        # shot noise, which are those of its wavelengths summed
+        a = self._with_read_noise(a, 0 * u.electron)
+        images = a.image(
+            scene,
+            integrate=False,
+            noise=False,
+            uncertainty=True,
+        ).outputs
+        signal = images.nominal.sum(a.axis_wavelength).to(u.electron).value
+        variance = np.square(images.width).sum(a.axis_wavelength)
+        variance = variance.to(u.electron**2).value + read_noise**2
+
+        # a pixel of the sensor which the light misses has no ratio if there
+        # is no read noise
+        with np.errstate(divide="ignore", invalid="ignore"):
+            expected = np.nan_to_num(np.square(signal) / variance)
+        expected = np.sqrt(expected.sum((*a._axis_channel, *a.axis_sensor_xy)))
+
+        a = self._with_read_noise(a, read_noise * u.electron)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            result = a.snr(scene)
+
+        # one ratio for each pixel of the scene, and each of its lines
+        assert na.unit(result) is None
+        assert result.shape == a._shape_line | {
+            ax: shape[ax] - 1 for ax in a.axis_scene_xy
+        }
+        assert np.allclose(
+            result[index].ndarray,
+            expected.ndarray,
+            rtol=1e-12,
+            atol=0,
+        )
+        if not corner:
+            assert np.all(result[index] > 0)
+
+        # the pixels which emit nothing have a ratio of zero
+        rest = result.copy()
+        rest[index] = 0
+        assert np.all(rest == 0)
+
+        # the outputs of a scene alone are taken to be on the grid of the
+        # instrument
+        assert np.all(a.snr(scene.outputs) == result)
+
+    def test_snr_alone(
+        self,
+        a: ctis.instruments.AbstractInstrument,
+    ) -> None:
+        # the ratio of a pixel does not depend on the rest of the scene
+        shape = na.shape(a.coordinates_scene.position)
+        index = {ax: (shape[ax] - 1) // 2 for ax in a.axis_scene_xy}
+
+        scene = _scene_frames(a, shape_frames=dict())
+        outputs = 0 * scene.outputs
+        outputs[index] = scene.outputs[index]
+
+        result = a.snr(scene)
+        result_alone = a.snr(scene.replace(outputs=outputs))
+
+        assert np.all(result[index] > 0)
+        assert np.allclose(
+            result[index].ndarray,
+            result_alone[index].ndarray,
+            rtol=1e-12,
+            atol=0,
+        )
+
+    def test_snr_frames(
+        self,
+        a: ctis.instruments.AbstractInstrument,
+    ) -> None:
+        # any other axis of the scene is an axis of the result
+        scene = _scene(a)
+        factor = na.ScalarArray(np.array([1, 3, 0]), axes="time")
+
+        result = a.snr(scene.outputs * factor)
+
+        assert result.shape["time"] == factor.shape["time"]
+        for i in range(factor.shape["time"]):
+            index = dict(time=i)
+            assert np.allclose(
+                result[index].ndarray,
+                a.snr(scene.outputs * factor[index]).ndarray,
+                rtol=1e-12,
+                atol=0,
+            )
+
+    def test_snr_axes(
+        self,
+        a: ctis.instruments.AbstractInstrument,
+    ) -> None:
+        # a scene which is not on the grid of the instrument, or which has
+        # an axis of the images, has no ratio
+        scene = _scene(a).outputs
+        axis_x, axis_y = a.axis_scene_xy
+
+        with pytest.raises(ValueError, match="have the axes of"):
+            a.snr(scene[{axis_x: slice(None, ~0)}])
+
+        ones = na.ScalarArray(np.ones(2), axes=a._axis_channel[0])
+        with pytest.raises(ValueError, match="have the axes of"):
+            a.snr(scene * ones)
+
+    def test_snr_unit(
+        self,
+        a: ctis.instruments.AbstractInstrument,
+    ) -> None:
+        # a scene which is not a radiance has no ratio
+        scene = _scene(a).outputs
+
+        with pytest.raises(ValueError, match="take a scene in units of"):
+            a.snr(scene.value * u.s)
+
+    def test_snr_scalar(
+        self,
+        a: ctis.instruments.AbstractInstrument,
+    ) -> None:
+        # a scene which is not an array of scalars has no ratio, and the
+        # error says so, not that its unit or its axes are wrong
+        scene = _scene(a).outputs
+        scene = na.NormalUncertainScalarArray(scene, width=0.1 * scene)
+
+        with pytest.raises(ValueError, match="array of scalars"):
+            a.snr(scene)
+
+    def test_snr_nan(
+        self,
+        a: ctis.instruments.AbstractInstrument,
+    ) -> None:
+        # a pixel with a voxel which is not a number has a ratio which is
+        # not a number either, for the line of that voxel, and every other
+        # pixel has the ratio it had
+        scene = _scene_frames(a, shape_frames=dict())
+        shape = na.shape(a.coordinates_scene.position)
+        index = {ax: (shape[ax] - 1) // 2 for ax in a.axis_scene_xy}
+
+        outputs = scene.outputs.copy()
+        first = {ax: 0 for ax in outputs.shape if ax not in a.axis_scene_xy}
+        outputs[index | first] = np.nan
+
+        result = a.snr(scene)
+        result_nan = a.snr(scene.replace(outputs=outputs))
+
+        expected = result.copy()
+        expected[index | {ax: 0 for ax in a._shape_line}] = np.nan
+
+        assert np.all(np.isfinite(result))
+        assert np.isnan(expected).sum() == 1
+        assert np.array_equal(
+            result_nan.ndarray_aligned(expected.axes),
+            expected.ndarray,
+            equal_nan=True,
+        )
+
+    def test_snr_negative(
+        self,
+        a: ctis.instruments.AbstractInstrument,
+    ) -> None:
+        # a negative radiance, which an inversion can leave, is no light
+        scene = _scene(a)
+        shape = na.shape(a.coordinates_scene.position)
+        index = {ax: (shape[ax] - 1) // 2 for ax in a.axis_scene_xy}
+
+        assert np.all(a.snr(-scene.outputs) == 0)
+        assert np.all(a.snr(scene)[index] > 0)
+
+    def test_snr_grid(
+        self,
+        a: ctis.instruments.AbstractInstrument,
+    ) -> None:
+        # a scene on another grid than that of the instrument has no ratio
+        scene = _scene(a)
+        inputs = scene.inputs.replace(position=2 * scene.inputs.position)
+
+        with pytest.raises(ValueError, match="are not equal"):
+            a.snr(scene.replace(inputs=inputs))
+
 
 def _psf(a: ctis.instruments.IdealInstrument) -> na.ScalarArray:
     """
@@ -781,6 +985,9 @@ class TestIdealInstrument(
 
         with pytest.raises(ValueError, match="the scenes should have a shape of"):
             operators.image(np.ones(shape_scene))
+
+        with pytest.raises(ValueError, match="the scenes should have a shape of"):
+            operators.snr(np.ones(shape_scene))
 
         with pytest.raises(ValueError, match="cannot reshape array"):
             operators.backproject(np.ones(shape_images[1:] + (1,)))
@@ -1395,6 +1602,113 @@ class TestIdealInstrument(
         assert actual.sum() > 0
         assert np.allclose(actual, expected, rtol=1e-10, atol=1e-10 * expected.max())
 
+    def test_snr_spread(
+        self,
+        a: ctis.instruments.IdealInstrument,
+    ) -> None:
+        """
+        A pixel whose light is spread over more pixels of the sensor has a
+        lower ratio if the sensor has read noise, since each of those pixels
+        adds its own, and the same ratio if it has none, since the ratio is
+        then the square root of its photons.
+        """
+        scene = _scene(a)
+        shape = na.shape(a.coordinates_scene.position)
+        index = {ax: (shape[ax] - 1) // 2 for ax in a.axis_scene_xy}
+        blurred = dataclasses.replace(a, psf=_psf(a))
+
+        # the electrons of each line of the pixel, in every channel, over
+        # the variance of the shot noise of each, are its photons
+        electrons = a.image(scene, integrate=False, noise=False).outputs
+        electrons = electrons.sum((*a._axis_channel, *a.axis_sensor_xy))
+        electrons = electrons.sum(a.axis_wavelength)
+        photons = na.as_named_array(electrons / a.quantum_yield)
+        expected = np.sqrt(photons.to(u.photon).value)
+
+        for b in (a, blurred):
+            result = b.snr(scene)[index]
+            assert np.allclose(
+                result.ndarray,
+                expected.ndarray,
+                rtol=1e-12,
+                atol=0,
+            )
+
+        if a.psf is None:
+            sharp = dataclasses.replace(a, read_noise=5 * u.electron)
+            blurred = dataclasses.replace(blurred, read_noise=5 * u.electron)
+            assert np.all(blurred.snr(scene)[index] < sharp.snr(scene)[index])
+
+    def test_snr_precision(
+        self,
+        a: ctis.instruments.IdealInstrument,
+    ) -> None:
+        """
+        The ratio is computed from the operators in the precision they are
+        kept in, so that it does not assemble them again.
+        """
+        a = dataclasses.replace(a)
+        scene = _scene(a)
+
+        operators = a._operators(np.float32)
+        result = a.snr(scene)
+
+        assert a._operators(None) is operators
+        assert a._operators(np.float32) is operators
+        assert np.allclose(
+            result.ndarray,
+            dataclasses.replace(a).snr(scene).ndarray_aligned(result.axes),
+            rtol=1e-6,
+            atol=0,
+        )
+
+    def test_snr_unsupported(
+        self,
+        a: ctis.instruments.IdealInstrument,
+    ) -> None:
+        """
+        The ratio is computed from the operators of the instrument, so an
+        instrument which does not provide them has none, and says so.
+        """
+
+        @dataclasses.dataclass
+        class Imaged(ctis.instruments.IdealInstrument):
+            """An ideal instrument with a forward model of its own."""
+
+            def image(
+                self,
+                scene: na.AbstractScalar | na.AbstractFunctionArray,
+                integrate: bool = True,
+                noise: bool = True,
+                uncertainty: bool = False,
+            ) -> na.FunctionArray:
+                return super().image(
+                    scene=scene,
+                    integrate=integrate,
+                    noise=noise,
+                    uncertainty=uncertainty,
+                )
+
+        imaged = Imaged(
+            **{
+                field.name: getattr(a, field.name)
+                for field in dataclasses.fields(a)
+                if field.init
+            }
+        )
+
+        scene = _scene(imaged)
+
+        # it is still imaged, with its own method
+        _assert_close(
+            imaged.image(scene, noise=False).outputs,
+            a.image(scene, noise=False).outputs,
+        )
+
+        assert imaged._operators(None) is None
+        with pytest.raises(ValueError, match="pair of sparse matrices"):
+            imaged.snr(scene)
+
 
 def test_num_channel_axes_shared() -> None:
     """
@@ -1693,6 +2007,26 @@ class TestOptikaInstrument(
         return dataclasses.replace(
             a,
             system=dataclasses.replace(a.system, sensor=sensor),
+        )
+
+    def test_snr_photons(
+        self,
+        a: ctis.instruments.OptikaInstrument,
+    ) -> None:
+        # a scene in photons has the ratio of the same scene in units of
+        # energy
+        scene = _scene(a)
+        photons = scene.outputs / a._energy_per_photon
+        photons = photons.to(a._operators().unit_scene)
+
+        result = a.snr(photons)
+
+        assert np.any(result > 0)
+        assert np.allclose(
+            result.ndarray,
+            a.snr(scene).ndarray_aligned(result.axes),
+            rtol=1e-12,
+            atol=0,
         )
 
 
@@ -2004,6 +2338,13 @@ def test_optika_operators_energy_unsupported(
 
     TestOptikaInstrument().test__operators(a)
 
+    # a scene in units of energy has no ratio on them, and one in photons
+    # does
+    scene = _scene(a).outputs
+    with pytest.raises(ValueError, match="take a scene in units of"):
+        a.snr(scene)
+    assert np.any(a.snr((scene / a._energy_per_photon).to(operators.unit_scene)) > 0)
+
 
 def test_optika_operators_wavelength_channel() -> None:
     """
@@ -2028,6 +2369,10 @@ def test_optika_operators_wavelength_channel() -> None:
     assert operators.energy is None
 
     TestOptikaInstrument().test__operators(a)
+
+    # a scene in units of energy has no ratio on them
+    with pytest.raises(ValueError, match="take a scene in units of"):
+        a.snr(_scene(a))
 
 
 @pytest.mark.parametrize(
