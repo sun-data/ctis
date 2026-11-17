@@ -23,30 +23,63 @@ def _percentile(a: na.AbstractScalar, q: float) -> u.Quantity:
     return np.nanpercentile(a, q).ndarray
 
 
-def _scale(
-    limits: tuple[u.Quantity, u.Quantity],
-) -> tuple[float, float, u.UnitBase, int]:
+def _limits(
+    limits: None | tuple[None | u.Quantity, None | u.Quantity],
+    unit: None | u.UnitBase = None,
+) -> tuple[None | float, None | float, None | u.UnitBase]:
     """
-    The limits of a scale as numbers, the unit they are in, and the power of
-    ten which is factored out of the scale, into its label, if they are far
-    from one.
-    """
-    vmin, vmax = (u.Quantity(na.as_named_array(a).ndarray) for a in limits)
+    The limits of a scale as numbers, each of which is :obj:`None` if it is
+    not given, and the unit they are in.
 
-    # a plain zero is a zero of any unit, as it is for astropy
-    plain = tuple(
-        a.unit == u.dimensionless_unscaled and a.value == 0 for a in (vmin, vmax)
+    The unit is the one they are converted to, if there is one, and
+    otherwise that of the first limit which has one, or :obj:`None` if
+    neither has.
+    A plain zero has none, since it is a zero of any unit, as it is for
+    astropy.
+
+    Parameters
+    ----------
+    limits
+        The lower and the upper limit of the scale, or :obj:`None` if
+        neither is given.
+    unit
+        An optional unit to convert the limits to.
+    """
+    if limits is None:
+        limits = (None, None)
+
+    quantities = [
+        None if a is None else u.Quantity(na.as_named_array(a).ndarray) for a in limits
+    ]
+    plain = [
+        q is not None and q.unit == u.dimensionless_unscaled and q.value == 0
+        for q in quantities
+    ]
+
+    if unit is None:
+        units = [q.unit for q, p in zip(quantities, plain) if q is not None and not p]
+        if units:
+            unit = units[0]
+
+    vmin, vmax = (
+        None if q is None else 0.0 if p else float(q.to_value(unit))
+        for q, p in zip(quantities, plain)
     )
-    unit = vmax.unit if plain[0] else vmin.unit
-    vmin = 0.0 if plain[0] else float(vmin.to_value(unit))
-    vmax = 0.0 if plain[1] else float(vmax.to_value(unit))
 
-    exponent = 0
-    magnitude = max(abs(vmin), abs(vmax))
-    if magnitude > 0 and not 1e-3 <= magnitude < 1e5:
-        exponent = int(np.floor(np.log10(magnitude)))
+    return vmin, vmax, unit
 
-    return vmin, vmax, unit, exponent
+
+def _blanked(
+    a: na.AbstractScalar,
+    where: None | na.AbstractScalar,
+) -> na.AbstractScalar:
+    """
+    An array where a condition holds, and no number elsewhere, or the array
+    itself if there is no condition.
+    """
+    if where is None:
+        return a
+    return np.where(where, a, np.nan)
 
 
 def _label(name: str, unit: u.UnitBase, exponent: int = 0) -> str:
@@ -187,9 +220,9 @@ class AbstractInversionResult(
             ]
         ) = None,
         axis: None | str = None,
-        range_radiance: None | tuple[u.Quantity, u.Quantity] = None,
-        range_median: None | tuple[u.Quantity, u.Quantity] = None,
-        range_iqr: None | tuple[u.Quantity, u.Quantity] = None,
+        range_radiance: None | tuple[None | u.Quantity, None | u.Quantity] = None,
+        range_median: None | tuple[None | u.Quantity, None | u.Quantity] = None,
+        range_iqr: None | tuple[None | u.Quantity, None | u.Quantity] = None,
         threshold_snr: None | float = None,
     ) -> tuple[plt.Figure, np.ndarray]:
         """
@@ -216,10 +249,11 @@ class AbstractInversionResult(
             radiance is integrated along whichever this is.
         range_radiance
             The limits of the color scale of the radiance.
-            The scale is in the unit of its lower limit, or in that of its
-            upper limit if the lower one is a plain zero, and so are those
-            of the other two moments.
-            The default is zero to the 99.5th percentile.
+            The scale is in the unit of the first limit which has one, as a
+            plain zero has none, and so are those of the other two moments.
+            The default is zero to the 99.5th percentile, and a limit which
+            is :obj:`None` is that of the default, here and for the other
+            two moments.
         range_median
             The limits of the color scale of the median.
             The default is symmetric about zero, and reaches the 99th
@@ -271,17 +305,12 @@ class AbstractInversionResult(
         if threshold_snr is not None:
             where = instrument.snr(solution) > threshold_snr
 
-        def blanked(a: na.AbstractScalar) -> na.AbstractScalar:
-            if where is None:
-                return a
-            return np.where(where, a, np.nan)
-
         def unblanked(a: na.AbstractScalar) -> na.AbstractScalar:
             """
             A moment where it is not blank, or everywhere if every pixel is
             blank.
             """
-            b = blanked(a)
+            b = _blanked(a, where)
             if np.any(np.isfinite(b)).ndarray:
                 return b
             return a
@@ -289,20 +318,39 @@ class AbstractInversionResult(
         # the scene which the default limits of the color scales come from
         radiance, median, iqr = next(iter(moments.values()))
 
-        # the limits are percentiles, since otherwise a few pixels would set
-        # the scale of all the others
-        if range_radiance is None:
-            bound = _percentile(radiance, 99.5)
-            range_radiance = (0 * bound, bound)
-        if range_median is None:
-            bound = _percentile(unblanked(np.abs(median)), 99)
-            range_median = (-bound, bound)
-        if range_iqr is None:
-            bound = _percentile(unblanked(iqr), 99)
-            range_iqr = (0 * bound, bound)
+        # the default limits are percentiles, since otherwise a few pixels
+        # would set the scale of all the others
+        bound_radiance = _percentile(radiance, 99.5)
+        bound_median = _percentile(unblanked(np.abs(median)), 99)
+        bound_iqr = _percentile(unblanked(iqr), 99)
+        defaults = (
+            (0 * bound_radiance, bound_radiance),
+            (-bound_median, bound_median),
+            (0 * bound_iqr, bound_iqr),
+        )
+        ranges = (range_radiance, range_median, range_iqr)
 
-        # every color scale is in the unit of its limits
-        scales = [_scale(r) for r in (range_radiance, range_median, range_iqr)]
+        # every color scale is in the unit of its limits, or in that of the
+        # moment if neither limit has one
+        scales = []
+        for limits, default, moment in zip(ranges, defaults, (radiance, median, iqr)):
+            vmin, vmax, unit = _limits(limits)
+            if unit is None:
+                unit = na.unit_normalized(moment)
+            if vmin is None:
+                vmin = float(u.Quantity(default[0]).to_value(unit))
+            if vmax is None:
+                vmax = float(u.Quantity(default[1]).to_value(unit))
+
+            # limits which are far from one have a power of ten factored
+            # out of them, into the label of the scale
+            exponent = 0
+            magnitude = max(abs(vmin), abs(vmax))
+            if magnitude > 0 and not 1e-3 <= magnitude < 1e5:
+                exponent = int(np.floor(np.log10(magnitude)))
+
+            scales.append((vmin, vmax, unit, exponent))
+
         labels = ("radiance", "median", "IQR")
 
         # the radiance and the interquartile range are magnitudes, and the
@@ -353,7 +401,7 @@ class AbstractInversionResult(
                 factor = 10.0**exponent
 
                 if col > 0:
-                    moment = blanked(moment)
+                    moment = _blanked(moment, where)
 
                 img = na.plt.pcolormesh(
                     x,
@@ -398,6 +446,7 @@ class AbstractInversionResult(
         range_radiance_error: None | tuple[None | float, None | float] = None,
         range_median_error: None | tuple[None | u.Quantity, None | u.Quantity] = None,
         range_iqr_error: None | tuple[None | u.Quantity, None | u.Quantity] = None,
+        range_snr: None | tuple[None | float, None | float] = None,
         percentile_radiance: float = 0,
         threshold_snr: None | float = None,
     ) -> tuple[plt.Figure, np.ndarray]:
@@ -418,6 +467,9 @@ class AbstractInversionResult(
         to the true one, on a logarithmic scale, and the error of the median
         and of the interquartile range is the reconstructed moment minus the
         true one.
+        A pixel which is reconstructed with no radiance has a ratio of zero,
+        an error of -100%, which is below every bin of a logarithmic scale
+        but counts in all that follows.
         A dashed line marks no error.
         In the upper row, a dotted line marks the error of a reconstruction
         which is the same in every pixel, at the median of the reconstructed
@@ -430,23 +482,29 @@ class AbstractInversionResult(
         so it is the distribution of their errors.
         A pixel whose error is beyond the limits of the vertical scale is
         still counted, so a column can sum to less than one.
-        By default, those limits are symmetric about no error, at three
-        times the scatter of the errors of the pixels in the upper row,
-        which is half the width of the central 68% of them.
 
-        The signal-to-noise ratio is on a logarithmic scale, from one,
-        below which the noise is larger than the signal, or from its 1st
-        percentile if that is larger, to its 99th percentile.
-        It is that of the reconstructed scene, the one which an inversion of
-        observed images has, so it rises with the reconstructed radiance:
-        of two pixels with the same true radiance, the one which is
-        reconstructed brighter has the higher ratio.
+        The pixels of a panel are those within the limits of its horizontal
+        scale.
+        By default, its vertical scale is symmetric about no error, and
+        reaches a tenth beyond the median of the errors of its pixels plus
+        three times their scatter, which is half the width of the central
+        68% of them.
+        The two rows have scales of their own, since the lower row keeps
+        pixels which the upper one leaves out.
 
         Every panel of the upper row is labeled with the Pearson correlation
-        coefficient of the true and the reconstructed moment, the median of
-        the error, and its scatter.
+        coefficient of the true and the reconstructed moment of its pixels,
+        the median of their errors, and their scatter.
         For the radiance, the last two are those of the logarithm of the
         ratio, as percentages.
+
+        The signal-to-noise ratio is that of the reconstructed scene, the
+        one which an inversion of observed images has, so it rises with the
+        reconstructed radiance: of two pixels with the same true radiance,
+        the one which is reconstructed brighter has the higher ratio.
+
+        A reconstruction of several frames is compared to the true scene
+        frame by frame, and the pixels of every frame are counted together.
 
         Use :meth:`plot_moments` to plot maps of the same three moments.
 
@@ -465,15 +523,16 @@ class AbstractInversionResult(
             The number of bins along each axis of every histogram.
         range_radiance
             The limits of the true radiance, the horizontal scale of the
-            upper left panel, which is logarithmic, so the lower limit is
-            positive.
-            The scale is in the unit of its lower limit, or in that of its
-            upper limit if the lower one is :obj:`None` or a plain zero,
-            and so are those of the other two moments.
+            upper left panel.
+            The scale is in the unit of the first limit which has one, as a
+            plain zero has none, and so are those of the other two moments.
             A limit which is :obj:`None` is the 1st or the 99th percentile
             of the pixels in the upper row, since otherwise a few pixels
             would set the scale of all the others, and the lower limit is
             then no further than three decades below the upper one.
+            The scale is logarithmic, which has no zero, so a lower limit
+            which is not positive is taken as :obj:`None`, as it is for the
+            other logarithmic scales.
         range_median
             The limits of the true median, the horizontal scale of the
             upper middle panel.
@@ -486,25 +545,31 @@ class AbstractInversionResult(
             of the pixels in the upper row.
         range_radiance_error
             The limits of the error of the radiance, the vertical scale of
-            the left panels, which is logarithmic, so the lower limit is
-            positive.
-            A limit which is :obj:`None` is that of a scale which is
-            symmetric about no error, at three times the scatter of the
-            errors of the pixels in the upper row.
-            Limits which are given keep the scale the same from one figure
-            to the next, to compare two reconstructions.
+            the left panels, which is logarithmic.
+            A limit which is :obj:`None` is that of the default scale of
+            each panel.
+            Limits which are given are those of both rows, and keep the
+            scale the same from one figure to the next, to compare two
+            reconstructions.
         range_median_error
             The limits of the error of the median, the vertical scale of the
             middle panels, which is in the unit of the true median,
             whichever unit these limits are in.
-            A limit which is :obj:`None` is that of a scale which is
-            symmetric about no error, as for the radiance.
+            A limit which is :obj:`None` is that of the default scale of
+            each panel.
         range_iqr_error
             The limits of the error of the interquartile range, the vertical
             scale of the right panels, which is in the unit of the true
             interquartile range, whichever unit these limits are in.
-            A limit which is :obj:`None` is that of a scale which is
-            symmetric about no error, as for the radiance.
+            A limit which is :obj:`None` is that of the default scale of
+            each panel.
+        range_snr
+            The limits of the signal-to-noise ratio, the horizontal scale of
+            the lower row, which is logarithmic.
+            A lower limit which is :obj:`None` is one, below which the noise
+            is larger than the signal, or the 1st percentile of the ratio if
+            that is larger, and an upper limit which is :obj:`None` is its
+            99th percentile.
         percentile_radiance
             Spatial locations where the true radiance is at or below this
             percentile of it are left out of both rows.
@@ -523,8 +588,8 @@ class AbstractInversionResult(
         ValueError
             If the units of the true scene cannot be converted to those of
             the reconstructed scene,
-            if the lower limit of the radiance or of its error is not
-            positive,
+            if the limits of a scale do not increase, such as a limit which
+            is given beyond the pixels which the other one is taken from,
             or if the instrument cannot be expressed as a pair of sparse
             matrices, which its signal-to-noise ratio is read from.
         """
@@ -538,34 +603,108 @@ class AbstractInversionResult(
 
         snr = instrument.snr(solution)
 
+        # every array is given the axes of all of them, so that the pixels
+        # of every frame of a reconstruction are counted
+        shape = na.shape_broadcasted(*moments_truth, *moments_solution, snr)
+        snr = na.broadcast_to(snr, shape)
+
         # the pixels of the lower row, and those of the upper row
         radiance_truth = moments_truth[0]
         where_lower = radiance_truth > np.nanpercentile(
             radiance_truth,
             percentile_radiance,
         )
+        where_lower = na.broadcast_to(where_lower, shape)
         where_upper = where_lower
         if threshold_snr is not None:
             where_upper = where_lower & (snr > threshold_snr)
 
-        def selected(
-            a: na.AbstractScalar,
-            where: na.AbstractScalar,
-        ) -> na.AbstractScalar:
-            """An array where a pixel is plotted, and no number elsewhere."""
-            return np.where(where, a, np.nan)
+        def resolved(
+            given: tuple[None | float, None | float],
+            default: tuple[float, float],
+            name: str,
+            log: bool,
+        ) -> tuple[float, float]:
+            """
+            The limits of a scale: those which are given, and the default
+            for the others.
+            A logarithmic scale has no zero, so a lower limit of one which
+            is not positive is not given.
+            """
+            lower, upper = given
+            if lower is None or (log and not lower > 0):
+                lower = default[0]
+            if upper is None:
+                upper = default[1]
+            if not lower < upper:
+                raise ValueError(
+                    f"The limits of `{name}` should increase, but they are "
+                    f"{lower:.4g} and {upper:.4g}, where a limit which is "
+                    f"not given is that of the pixels."
+                )
+            return lower, upper
 
-        def statistics(error: na.AbstractScalar) -> tuple[float, float]:
+        def statistics(
+            error: na.AbstractScalar,
+            where: na.AbstractScalar,
+            log: bool,
+        ) -> tuple[float, float]:
             """
-            The median of the errors which are numbers, and their scatter:
-            half the width of the central 68% of them.
+            The median of the errors of the pixels of a panel, and their
+            scatter: half the width of the central 68% of them.
+            On a logarithmic scale, both are those of the logarithm of the
+            errors.
             """
+            error = _blanked(error, where)
             if not np.any(np.isfinite(error)).ndarray:
                 return np.nan, np.nan
-            lower, median, upper = (
-                float(np.nanpercentile(error, q).ndarray) for q in (16, 50, 84)
-            )
-            return median, (upper - lower) / 2
+
+            q = na.ScalarArray(np.array([16, 50, 84]), axes="percentile")
+            lower, median, upper = np.nanpercentile(error, q).ndarray
+
+            # the logarithm of a percentile is the percentile of the
+            # logarithms, and a ratio of zero has one, unlike its logarithm
+            with np.errstate(divide="ignore", invalid="ignore"):
+                if log:
+                    lower, median, upper = np.log([lower, median, upper])
+                scatter = (upper - lower) / 2
+
+            return float(median), float(scatter)
+
+        def symmetric(
+            bias: float,
+            scatter: float,
+            fallback: float,
+            log: bool,
+        ) -> tuple[float, float]:
+            """
+            The default limits of a scale of errors: symmetric about no
+            error, a tenth beyond their median plus three times their
+            scatter.
+            If that is no scale, since there are no errors or they are all
+            the same but for rounding, the limits are a `fallback` either
+            side of no error.
+            """
+            half = 1.1 * (abs(bias) + 3 * scatter)
+            # the exponential of more than this is too large for a float
+            ceiling = 700 if log else np.inf
+            if not 1e-6 * fallback < half < ceiling:
+                half = fallback
+            if log:
+                return float(np.exp(-half)), float(np.exp(half))
+            return -half, half
+
+        def count(
+            x: na.AbstractScalar,
+            bins_x: na.AbstractScalar,
+            where: na.AbstractScalar,
+        ) -> na.AbstractScalar:
+            """The number of pixels in each column of a histogram."""
+            return na.histogram(
+                x,
+                bins=bins_x,
+                weights=where & np.isfinite(x),
+            ).outputs
 
         def histogram(
             x: na.AbstractScalar,
@@ -573,64 +712,33 @@ class AbstractInversionResult(
             bins_x: na.AbstractScalar,
             bins_y: na.AbstractScalar,
             where: na.AbstractScalar,
+            total: na.AbstractScalar,
         ) -> na.FunctionArray[na.Cartesian2dVectorArray, na.ScalarArray]:
             """
             A histogram of `y` against `x`, each column of which is divided
-            by the number of its pixels, whether `y` is within its bins or
-            not.
+            by the number of its pixels, `total`, whether `y` is within its
+            bins or not.
             """
-            where = where & np.isfinite(x)
             result = na.histogram2d(
                 x,
                 y,
                 bins=na.Cartesian2dVectorArray(bins_x, bins_y),
-                weights=where,
+                weights=where & np.isfinite(x),
             )
-            total = na.histogram(x, bins=bins_x, weights=where)
 
             # a column with no pixels is zero over zero
             with np.errstate(divide="ignore", invalid="ignore"):
-                result.outputs = np.nan_to_num(result.outputs / total.outputs)
+                result.outputs = np.nan_to_num(result.outputs / total)
 
             return result
 
-        def given(
-            limits: None | tuple[None | u.Quantity, None | u.Quantity],
-            unit: None | u.UnitBase = None,
-        ) -> tuple[None | float, None | float, None | u.UnitBase]:
-            """
-            The limits of a scale as numbers, each of which is :obj:`None`
-            if it is not given, and the unit they are in: the one they are
-            converted to, or the one they are given in.
-            """
-            lower, upper = (None, None) if limits is None else limits
-            if lower is None and upper is None:
-                return None, None, unit
-
-            # a limit which is not given is a plain zero for now, which
-            # leaves the unit of the scale to the other limit
-            vmin, vmax, unit_given, _ = _scale(
-                (0 if lower is None else lower, 0 if upper is None else upper),
-            )
-            if vmin == 0 and vmax == 0:
-                # a zero is all that is given, which has no unit of its own
-                unit_given = unit
-
-            factor = 1.0 if unit is None else unit_given.to(unit)
-
-            return (
-                None if lower is None else factor * vmin,
-                None if upper is None else factor * vmax,
-                unit_given if unit is None else unit,
-            )
-
-        def scale_log(axis: matplotlib.axis.Axis) -> None:
+        def scale_log(scale: matplotlib.axis.Axis) -> None:
             """
             Label a logarithmic scale with plain numbers if it spans less
             than two decades, which powers of ten would label only once or
             twice.
             """
-            lower, upper = axis.get_view_interval()
+            lower, upper = scale.get_view_interval()
             span = upper / lower
             if span < 100:
                 if span < 2.5:
@@ -644,27 +752,136 @@ class AbstractInversionResult(
                     )
                 else:
                     locator = matplotlib.ticker.LogLocator(subs=(1, 2, 5))
-                axis.set_major_locator(locator)
-                axis.set_major_formatter(matplotlib.ticker.FormatStrFormatter("%g"))
-                axis.set_minor_locator(matplotlib.ticker.NullLocator())
+                scale.set_major_locator(locator)
+                scale.set_major_formatter(matplotlib.ticker.FormatStrFormatter("%g"))
+                scale.set_minor_locator(matplotlib.ticker.NullLocator())
 
-        # the limits of the horizontal scales are percentiles, since
+        # the default limits of the horizontal scales are percentiles, since
         # otherwise a few pixels would set the scale of all the others
         percentiles = (1, 99)
 
         # the signal-to-noise ratio is plotted from one, below which the
         # noise is larger than the signal, unless every ratio is larger
-        snr_lower = selected(snr, where_lower)
+        snr_lower = _blanked(snr, where_lower)
         min_snr = max(1.0, float(_percentile(snr_lower, percentiles[0])))
         max_snr = float(_percentile(snr_lower, percentiles[1]))
         if not min_snr < max_snr:
             # the signal of no pixel is larger than its noise
             max_snr = 10 * min_snr
-        bins_snr = na.geomspace(min_snr, max_snr, axis="snr", num=num_bins + 1)
+        limits_snr = resolved(
+            given=_limits(range_snr, u.dimensionless_unscaled)[:2],
+            default=(min_snr, max_snr),
+            name="range_snr",
+            log=True,
+        )
+        bins_snr = na.geomspace(*limits_snr, axis="snr", num=num_bins + 1)
+        on_snr = where_lower & (snr >= limits_snr[0]) & (snr <= limits_snr[1])
+        total_snr = count(snr, bins_snr, where_lower)
 
         names = ("radiance", "median", "IQR")
+        arguments = ("range_radiance", "range_median", "range_iqr")
         ranges = (range_radiance, range_median, range_iqr)
         ranges_error = (range_radiance_error, range_median_error, range_iqr_error)
+
+        # everything is computed before the figure is made, so that limits
+        # which are refused leave no figure behind
+        columns = []
+        for col, name in enumerate(names):
+            # the radiance spans decades and its errors are relative, so it
+            # is on a logarithmic scale and its error is a ratio
+            log = col == 0
+            space = na.geomspace if log else na.linspace
+
+            vmin, vmax, unit = _limits(ranges[col])
+            if unit is None:
+                unit = na.unit_normalized(moments_truth[col])
+
+            true = na.broadcast_to(_values(moments_truth[col], unit), shape)
+            reconstructed = na.broadcast_to(
+                _values(moments_solution[col], unit),
+                shape,
+            )
+
+            # the default limits of the true moment are those of the pixels,
+            # unless they all have the same true moment or there are none
+            true_upper = _blanked(true, where_upper)
+            lower, upper = (float(_percentile(true_upper, q)) for q in percentiles)
+            if log:
+                lower = max(lower, upper / 1000)
+                if not 0 < lower < upper:
+                    lower, upper = (lower / 2, 2 * upper) if lower > 0 else (1.0, 10.0)
+            elif not lower < upper:
+                lower, upper = lower - 0.5, upper + 0.5
+            limits_true = resolved((vmin, vmax), (lower, upper), arguments[col], log)
+
+            bins_true = space(*limits_true, axis="true", num=num_bins + 1)
+            on_true = where_upper & (true >= limits_true[0]) & (true <= limits_true[1])
+            total_true = count(true, bins_true, where_upper)
+
+            if log:
+                # a pixel which emits nothing has no ratio, where one which
+                # is reconstructed with no radiance has a ratio of zero
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    error = reconstructed / true
+                error = np.where(np.isfinite(error) & (error >= 0), error, np.nan)
+                fallback = np.log(2)
+                label_error = f"reconstructed / true {name}"
+            else:
+                error = reconstructed - true
+                fallback = (limits_true[1] - limits_true[0]) / 100
+                label_error = _label(f"reconstructed $-$ true {name}", unit)
+
+            given_error = _limits(
+                ranges_error[col],
+                u.dimensionless_unscaled if log else unit,
+            )[:2]
+
+            rows = []
+            for x, bins_x, where, on, total in (
+                (true, bins_true, where_upper, on_true, total_true),
+                (snr, bins_snr, where_lower, on_snr, total_snr),
+            ):
+                bias, scatter = statistics(error, on, log)
+                limits_error = resolved(
+                    given=given_error,
+                    default=symmetric(bias, scatter, fallback, log),
+                    name=f"{arguments[col]}_error",
+                    log=log,
+                )
+                bins_error = space(*limits_error, axis="error", num=num_bins + 1)
+                hist = histogram(x, error, bins_x, bins_error, where, total)
+                rows.append((hist, bias, scatter))
+
+            # the numbers which label the upper panel are those of its pixels
+            _, bias, scatter = rows[0]
+            if log:
+                # adding zero turns a negative zero into a positive one
+                text = (
+                    f"median error ${np.round(100 * np.expm1(bias)) + 0.0:+.0f}$%\n"
+                    f"scatter ${100 * scatter:.0f}$%"
+                )
+            else:
+                suffix = ""
+                if unit != u.dimensionless_unscaled:
+                    suffix = f" {unit:latex_inline}"
+                text = (
+                    f"median error ${bias:+.3g}${suffix}\n"
+                    f"scatter ${scatter:.3g}${suffix}"
+                )
+
+            # the correlation of fewer than two pixels is not defined
+            finite = on_true & np.isfinite(true) & np.isfinite(reconstructed)
+            r = np.nan
+            if finite.sum().ndarray > 1:
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    r = na.stats.pearsonr(true, reconstructed, where=finite)
+                r = float(r.ndarray)
+            text = f"Pearson's $r = {r:.3f}$\n{text}"
+
+            # where a reconstruction which is the same in every pixel lies
+            constant = float(_percentile(_blanked(reconstructed, on_true), 50))
+
+            columns.append((log, unit, label_error, text, constant, rows))
 
         kwargs_none = dict(color="tab:red", linestyle="dashed")
         kwargs_reference = dict(color="white", linestyle="dotted")
@@ -682,99 +899,10 @@ class AbstractInversionResult(
             figsize=(10, 7.5),
         )
 
-        for col, name in enumerate(names):
-            # the radiance spans decades and its errors are relative, so it
-            # is on a logarithmic scale and its error is a ratio
-            log = col == 0
-
-            vmin, vmax, unit = given(ranges[col])
-            if unit is None:
-                unit = na.unit_normalized(moments_truth[col])
-
-            true = _values(moments_truth[col], unit)
-            reconstructed = _values(moments_solution[col], unit)
-
-            # a limit which is not given is that of the pixels
-            default = vmin is None or vmax is None
-            true_upper = selected(true, where_upper)
-            if vmax is None:
-                vmax = float(_percentile(true_upper, percentiles[1]))
-            if vmin is None:
-                vmin = float(_percentile(true_upper, percentiles[0]))
-                if log:
-                    vmin = max(vmin, vmax / 1000)
-            elif log and not vmin > 0:
-                raise ValueError(
-                    f"The radiance is on a logarithmic scale, so the lower "
-                    f"limit of `range_radiance` should be positive, but it "
-                    f"is {range_radiance[0]}."
-                )
-
-            if default and not vmin < vmax:
-                # every pixel in the upper row has the same true moment, or
-                # there are none
-                if log:
-                    vmin, vmax = (vmin / 2, 2 * vmax) if vmin > 0 else (1.0, 10.0)
-                else:
-                    vmin, vmax = vmin - 0.5, vmax + 0.5
-
-            if log:
-                emin, emax, _ = given(ranges_error[col], u.dimensionless_unscaled)
-                if emin is not None and not emin > 0:
-                    raise ValueError(
-                        f"The error of the radiance is on a logarithmic "
-                        f"scale, so the lower limit of "
-                        f"`range_radiance_error` should be positive, but it "
-                        f"is {range_radiance_error[0]}."
-                    )
-
-                # a pixel which emits nothing has no ratio
-                with np.errstate(divide="ignore", invalid="ignore"):
-                    error = reconstructed / true
-                error = np.where(np.isfinite(error) & (error > 0), error, np.nan)
-                bias, scatter = statistics(selected(np.log(error), where_upper))
-                half = 3 * scatter if scatter > 0 else np.log(2)
-                limits_error = (float(np.exp(-half)), float(np.exp(half)))
-                label_error = f"reconstructed / true {name}"
-                # adding zero turns a negative zero into a positive one
-                text = (
-                    f"median error ${np.round(100 * np.expm1(bias)) + 0.0:+.0f}$%\n"
-                    f"scatter ${100 * scatter:.0f}$%"
-                )
-            else:
-                emin, emax, _ = given(ranges_error[col], unit)
-
-                error = reconstructed - true
-                bias, scatter = statistics(selected(error, where_upper))
-                half = 3 * scatter if scatter > 0 else 1.0
-                limits_error = (-half, half)
-                label_error = _label(f"reconstructed $-$ true {name}", unit)
-                suffix = ""
-                if unit != u.dimensionless_unscaled:
-                    suffix = f" {unit:latex_inline}"
-                text = (
-                    f"median error ${bias:+.3g}${suffix}\n"
-                    f"scatter ${scatter:.3g}${suffix}"
-                )
-
-            # the limits of the errors which are given
-            limits_error = (
-                limits_error[0] if emin is None else emin,
-                limits_error[1] if emax is None else emax,
-            )
-
-            space = na.geomspace if log else na.linspace
-            bins_true = space(vmin, vmax, axis="true", num=num_bins + 1)
-            bins_error = space(*limits_error, axis="error", num=num_bins + 1)
-
-            rows = (
-                (true, bins_true, where_upper),
-                (snr, bins_snr, where_lower),
-            )
-            for row, (x, bins_x, where) in enumerate(rows):
+        for col, (log, unit, label_error, text, constant, rows) in enumerate(columns):
+            for row, (hist, _, _) in enumerate(rows):
                 ax = axs[row, col]
 
-                hist = histogram(x, error, bins_x, bins_error, where)
                 img = na.plt.pcolormesh(
                     C=hist,
                     ax=ax,
@@ -792,13 +920,14 @@ class AbstractInversionResult(
                 ax.axhline(1 if log else 0, label="no error", **kwargs_none)
 
                 # the signal-to-noise ratio is on a logarithmic scale too
-                if log or row == 1:
+                log_x = log or row == 1
+                if log_x:
                     ax.set_xscale("log")
                 if log:
                     ax.set_yscale("log")
-                ax.set_xlim(bins_x.min().ndarray, bins_x.max().ndarray)
-                ax.set_ylim(*limits_error)
-                if log or row == 1:
+                ax.set_xlim(hist.inputs.x.min().ndarray, hist.inputs.x.max().ndarray)
+                ax.set_ylim(hist.inputs.y.min().ndarray, hist.inputs.y.max().ndarray)
+                if log_x:
                     scale_log(ax.xaxis)
                 if log:
                     scale_log(ax.yaxis)
@@ -806,8 +935,6 @@ class AbstractInversionResult(
 
             ax_true, ax_snr = axs[:, col]
 
-            # where a reconstruction which is the same in every pixel lies
-            constant = float(_percentile(selected(reconstructed, where_upper), 50))
             if not log:
                 ax_true.axline(
                     (constant, 0),
@@ -823,25 +950,17 @@ class AbstractInversionResult(
                     **kwargs_reference,
                 )
 
-            # the correlation of fewer than two pixels is not defined
-            finite = where_upper & np.isfinite(true) & np.isfinite(reconstructed)
-            r = np.nan
-            if finite.sum().ndarray > 1:
-                with np.errstate(divide="ignore", invalid="ignore"):
-                    r = na.stats.pearsonr(true, reconstructed, where=finite)
-                r = float(r.ndarray)
-
             ax_true.text(
                 x=0.96,
                 y=0.96,
-                s=f"Pearson's $r = {r:.3f}$\n{text}",
+                s=text,
                 transform=ax_true.transAxes,
                 ha="right",
                 va="top",
                 fontsize="small",
                 bbox=dict(facecolor="white", alpha=0.85, edgecolor="none"),
             )
-            ax_true.set_xlabel(_label(f"true {name}", unit))
+            ax_true.set_xlabel(_label(f"true {names[col]}", unit))
 
             if threshold_snr is not None:
                 ax_snr.axvline(threshold_snr, label="threshold", **kwargs_reference)

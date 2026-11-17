@@ -7,7 +7,11 @@ import pytest
 import astropy.units as u
 import named_arrays as na
 import ctis
-from ._iterative._mart._mart_test import instrument, scene
+from ._iterative._mart._mart_test import (
+    instrument,
+    scene,
+    _IdealInstrumentWeights,
+)
 
 # read noise, so that the signal-to-noise ratio of a pixel depends on it
 instrument = dataclasses.replace(instrument, read_noise=2 * u.electron)
@@ -121,6 +125,7 @@ def test_plot_moments_axis() -> None:
 
 
 kms = u.km / u.s
+unit_radiance = u.erg / u.s / u.sr / u.cm**2
 
 
 @pytest.mark.parametrize(
@@ -130,6 +135,7 @@ kms = u.km / u.s
         (dict(range_iqr=(0 * kms, 0.3 * u.Mm / u.s)), 2, (0, 300)),
         (dict(range_iqr=(0.0 * u.Mm / u.s, 300 * kms)), 2, (0, 0.3)),
         (dict(range_median=(-300 * kms, 0)), 1, (-300, 0)),
+        (dict(range_iqr=(None, 300 * kms)), 2, (0, 300)),
         (
             dict(range_median=(na.ScalarArray(-300 * kms), na.ScalarArray(300 * kms))),
             1,
@@ -141,6 +147,7 @@ kms = u.km / u.s
         "two units",
         "zero with a unit",
         "plain zero above",
+        "no lower limit",
         "named arrays",
     ],
 )
@@ -153,7 +160,7 @@ def test_plot_moments_limits(
     The limits of a color scale can be quantities or named arrays, in units
     of their own, and a plain zero beside either.
     The scale is in the unit of its lower limit, unless that is a plain
-    zero.
+    zero, and a limit which is not given is that of the default scale.
     """
     fig, axs = inversion.plot_moments(**kwargs)
 
@@ -247,6 +254,20 @@ def _histogram(ax: plt.Axes) -> np.ndarray:
     return np.moveaxis(np.asarray(mesh.get_array()), axis_x, 0)
 
 
+def _reconstructed(
+    outputs: na.AbstractScalar,
+) -> ctis.inverters.AbstractInversionResult:
+    """
+    The inversion of this module with another reconstructed scene, on the
+    same grid.
+    """
+    solutions = inversion.solutions
+    return dataclasses.replace(
+        inversion,
+        solutions=solutions.replace(outputs=outputs + 0 * solutions.outputs),
+    )
+
+
 @pytest.mark.parametrize("threshold_snr", [None, 5])
 @pytest.mark.parametrize("percentile_radiance", [0, 50])
 def test_plot_moments_histogram(
@@ -316,11 +337,7 @@ def test_plot_moments_histogram_perfect(
     which are neither too faint nor at or below the threshold of the
     signal-to-noise ratio.
     """
-    solutions = inversion.solutions
-    perfect = dataclasses.replace(
-        inversion,
-        solutions=solutions.replace(outputs=scene.outputs + 0 * solutions.outputs),
-    )
+    perfect = _reconstructed(scene.outputs)
 
     fig, axs = perfect.plot_moments_histogram(
         truth=scene,
@@ -348,14 +365,65 @@ def test_plot_moments_histogram_perfect(
     where = radiance > np.nanpercentile(radiance, percentile_radiance)
     if threshold_snr is not None:
         where = where & (instrument.snr(perfect.solution) > threshold_snr)
-    median = np.where(where, median, np.nan).ndarray.to_value(kms)
-    expected, _ = np.histogram(
-        median[np.isfinite(median)],
-        bins=np.linspace(-300, 300, num=51),
+    expected = na.histogram(
+        median,
+        bins=na.linspace(-300, 300, axis="true", num=51) * kms,
+        weights=where & np.isfinite(median),
     )
+    expected = expected.outputs.ndarray
 
     assert 0 < expected.sum() < median.size
     assert np.array_equal(_histogram(axs[0, 1]).sum(1) > 0, expected > 0)
+
+    plt.close(fig)
+
+
+def test_plot_moments_histogram_pixels() -> None:
+    """
+    The numbers which label a panel, and the default limits of its errors,
+    are those of the pixels within the limits of its horizontal scale, and
+    those limits hold a reconstruction which is biased.
+    """
+    radiance, _, _ = inversion._moments(scene)
+    bright = 100 * unit_radiance
+
+    # a reconstruction which is twice the true scene where that is bright
+    result = _reconstructed(np.where(radiance > bright, 2, 1) * scene.outputs)
+
+    for limits, error in [((bright, None), "+100"), ((None, bright), "+0")]:
+        fig, axs = result.plot_moments_histogram(scene, range_radiance=limits)
+
+        hist = _histogram(axs[0, 0])
+        total = hist.sum(1)
+
+        assert f"median error ${error}$%" in axs[0, 0].texts[0].get_text()
+        assert "scatter $0$%" in axs[0, 0].texts[0].get_text()
+        assert np.any(total > 0)
+        assert np.all(np.isclose(total, 0) | np.isclose(total, 1))
+
+        plt.close(fig)
+
+
+def test_plot_moments_histogram_biased() -> None:
+    """
+    The default limits of the errors reach beyond their median, so a
+    reconstruction which is three times the true scene is on the scale of
+    both rows, which is not a scale of no width although the errors are all
+    the same.
+    """
+    fig, axs = _reconstructed(3 * scene.outputs).plot_moments_histogram(scene)
+
+    for ax in axs[:, 0]:
+        lower, upper = ax.get_ylim()
+        total = _histogram(ax).sum(1)
+
+        assert lower < 1 / 3
+        assert upper > 3
+        assert lower == pytest.approx(1 / upper)
+        assert np.any(total > 0)
+        assert np.all(np.isclose(total, 0) | np.isclose(total, 1))
+
+    assert "median error $+200$%" in axs[0, 0].texts[0].get_text()
 
     plt.close(fig)
 
@@ -397,19 +465,18 @@ def test_plot_moments_histogram_ranges(
     formatter: type,
 ) -> None:
     """
-    The horizontal scale of each panel of the upper row has the limits it is
-    given, in the unit of those limits, and a limit which is not given is
-    that of the pixels.
+    The horizontal scale of each panel has the limits it is given, in the
+    unit of those limits, and a limit which is not given is that of the
+    pixels.
     The scale of the radiance is logarithmic, and it is labeled with plain
     numbers unless it spans two decades.
     """
-    unit = u.erg / u.s / u.sr / u.cm**2
-
     fig, axs = inversion.plot_moments_histogram(
         truth=scene,
-        range_radiance=(lower * unit, 200 * unit),
+        range_radiance=(lower * unit_radiance, 200 * unit_radiance),
         range_median=[-300, 300] * kms,
         range_iqr=(None, 0.4 * u.Mm / u.s),
+        range_snr=(2, 20),
     )
 
     assert axs[0, 0].get_xlim() == pytest.approx((lower, 200))
@@ -427,6 +494,9 @@ def test_plot_moments_histogram_ranges(
     assert "km" in axs[0, 1].get_ylabel()
     assert "Mm" in axs[0, 2].get_ylabel()
 
+    for ax in axs[1]:
+        assert ax.get_xlim() == pytest.approx((2, 20))
+
     plt.close(fig)
 
 
@@ -434,7 +504,8 @@ def test_plot_moments_histogram_ranges_error() -> None:
     """
     The vertical scale of each column of panels has the limits it is given,
     converted to the unit of the true moment, and a limit which is not
-    given is that of a scale which is symmetric about no error.
+    given is that of the default scale of each panel, which is symmetric
+    about no error.
     """
     fig, axs = inversion.plot_moments_histogram(
         truth=scene,
@@ -459,33 +530,186 @@ def test_plot_moments_histogram_ranges_error() -> None:
     plt.close(fig_default)
 
 
-@pytest.mark.parametrize("argument", ["range_radiance", "range_radiance_error"])
-def test_plot_moments_histogram_range_radiance(argument: str) -> None:
+def test_plot_moments_histogram_zero() -> None:
     """
-    The radiance and its error are on logarithmic scales, which have no
-    zero, so a lower limit which is not positive is refused, and the error
-    says why.
+    A logarithmic scale has no zero, so a lower limit of one which is not
+    positive is that of the pixels, as if it were not given.
+    The histograms then take the limits of the radiance which the maps take.
     """
-    limits = [0, 200] * u.erg / u.s / u.sr / u.cm**2
-    if argument == "range_radiance_error":
-        limits = (0, 2)
+    fig, axs = inversion.plot_moments_histogram(
+        truth=scene,
+        range_radiance=[0, 200] * unit_radiance,
+        range_radiance_error=(0, 2),
+        range_snr=(0, 20),
+    )
+    fig_none, axs_none = inversion.plot_moments_histogram(
+        truth=scene,
+        range_radiance=(None, 200 * unit_radiance),
+        range_radiance_error=(None, 2),
+        range_snr=(None, 20),
+    )
 
-    with pytest.raises(ValueError, match=f"`{argument}` should be positive"):
-        inversion.plot_moments_histogram(scene, **{argument: limits})
+    for ax, ax_none in zip(axs.flat, axs_none.flat):
+        assert ax.get_xlim()[0] != 0
+        assert ax.get_xlim() == pytest.approx(ax_none.get_xlim())
+        assert ax.get_ylim() == pytest.approx(ax_none.get_ylim())
+
+    assert axs[0, 0].get_xlim()[1] == pytest.approx(200)
+    assert axs[0, 0].get_ylim()[1] == pytest.approx(2)
+    assert axs[1, 0].get_xlim()[1] == pytest.approx(20)
+
+    plt.close(fig)
+    plt.close(fig_none)
+
+
+@pytest.mark.parametrize(
+    argnames="kwargs",
+    argvalues=[
+        dict(range_median=(None, -1000 * kms)),
+        dict(range_radiance=(1e6 * unit_radiance, None)),
+        dict(range_radiance_error=(None, 0)),
+        dict(range_iqr_error=[30, -30] * kms),
+        dict(range_snr=(1000, None)),
+    ],
+    ids=[
+        "an upper limit below the pixels",
+        "a lower limit above the pixels",
+        "an upper limit of zero on a logarithmic scale",
+        "limits which decrease",
+        "a ratio above that of the pixels",
+    ],
+)
+def test_plot_moments_histogram_order(kwargs: dict) -> None:
+    """
+    Limits which do not increase are refused before a figure is made, and
+    the error names the argument.
+    """
+    plt.close("all")
+    (argument,) = kwargs
+
+    with pytest.raises(ValueError, match=f"`{argument}` should increase"):
+        inversion.plot_moments_histogram(scene, **kwargs)
+
+    assert not plt.get_fignums()
+
+
+def test_plot_moments_histogram_units() -> None:
+    """
+    A scale is in the unit of the first limit which has one, even if that
+    limit is zero, and a limit of the errors which is not a velocity is
+    refused before a figure is made.
+    """
+    fig, axs = inversion.plot_moments_histogram(
+        truth=scene,
+        range_iqr=(0 * u.Mm / u.s, None),
+    )
+
+    assert "Mm" in axs[0, 2].get_xlabel()
+    assert "Mm" in axs[0, 2].get_ylabel()
+    assert axs[0, 2].get_xlim()[0] == 0
+
+    plt.close("all")
+
+    with pytest.raises(u.UnitConversionError):
+        inversion.plot_moments_histogram(scene, range_iqr_error=(0 * u.deg, None))
+
+    assert not plt.get_fignums()
+
+
+def test_plot_moments_histogram_rows() -> None:
+    """
+    The lower row keeps the pixels at or below the threshold, so it is the
+    same whatever the threshold is, and its default vertical scales are
+    those of its own pixels.
+    With every pixel left out of the upper row, its histograms are empty.
+    """
+    fig, axs = inversion.plot_moments_histogram(scene, threshold_snr=5)
+    fig_all, axs_all = inversion.plot_moments_histogram(scene, threshold_snr=np.inf)
+
+    for ax, ax_all in zip(axs[1], axs_all[1]):
+        assert ax.get_xlim() == pytest.approx(ax_all.get_xlim())
+        assert ax.get_ylim() == pytest.approx(ax_all.get_ylim())
+        assert np.allclose(_histogram(ax), _histogram(ax_all))
+
+    # the errors of the median are larger below the threshold than above it
+    assert axs[1, 1].get_ylim()[1] > axs[0, 1].get_ylim()[1]
+
+    for ax in axs_all[0]:
+        assert _histogram(ax).max() == 0
+        assert np.all(np.isfinite(ax.get_xlim()))
+        assert np.all(np.isfinite(ax.get_ylim()))
+
+    plt.close(fig)
+    plt.close(fig_all)
+
+
+def test_plot_moments_histogram_frames() -> None:
+    """
+    The pixels of every frame of a reconstruction are counted, so the same
+    reconstruction in each of three frames has the histograms of one frame.
+    """
+    kwargs = dict(
+        truth=scene,
+        range_radiance=(1 * unit_radiance, 200 * unit_radiance),
+        range_median=[-300, 300] * kms,
+        range_iqr=[0, 400] * kms,
+        range_radiance_error=(0.5, 2),
+        range_median_error=[-30, 30] * kms,
+        range_iqr_error=[-30, 30] * kms,
+        range_snr=(1, 20),
+    )
+    frames = na.ScalarArray(np.ones(3), axes="time")
+    result = _reconstructed(inversion.solutions.outputs * frames)
+
+    fig, axs = result.plot_moments_histogram(**kwargs)
+    fig_one, axs_one = inversion.plot_moments_histogram(**kwargs)
+
+    for ax, ax_one in zip(axs.flat, axs_one.flat):
+        hist = _histogram(ax)
+
+        assert hist.max() > 0
+        assert hist.sum(1).max() <= 1 + 1e-12
+        assert np.allclose(hist, _histogram(ax_one))
+
+    for ax, ax_one in zip(axs[0], axs_one[0]):
+        assert ax.texts[0].get_text() == ax_one.texts[0].get_text()
+
+    plt.close(fig)
+    plt.close(fig_one)
+
+
+def test_plot_moments_histogram_no_radiance() -> None:
+    """
+    A pixel which is reconstructed with no radiance has an error of -100%,
+    which is below every bin of a logarithmic scale, but it counts in its
+    column and in the median of the errors.
+    """
+    shape = scene.outputs.shape
+    index_x = na.ScalarArray(np.arange(shape["scene_x"]), axes="scene_x")
+    index_y = na.ScalarArray(np.arange(shape["scene_y"]), axes="scene_y")
+
+    # the true scene in a third of the pixels, and nothing in the others
+    result = _reconstructed(((index_x + index_y) % 3 == 0) * scene.outputs)
+
+    fig, axs = result.plot_moments_histogram(scene)
+
+    total = _histogram(axs[0, 0]).sum(1)
+
+    assert "median error $-100$%" in axs[0, 0].texts[0].get_text()
+    assert np.any(total > 0)
+    assert np.all(total < 0.9)
+
+    plt.close(fig)
 
 
 def test_plot_moments_histogram_dark() -> None:
     """
-    A reconstruction which emits nothing has no ratio to the true radiance,
-    and neither a median nor an interquartile range, so its histograms are
-    empty, and they are plotted without a warning, on scales whose limits
-    are numbers.
+    A reconstruction which emits nothing has an error of -100% in its
+    radiance, and neither a median nor an interquartile range, so its
+    histograms are empty, and they are plotted without a warning, on scales
+    whose limits are numbers.
     """
-    solutions = inversion.solutions
-    dark = dataclasses.replace(
-        inversion,
-        solutions=solutions.replace(outputs=0 * solutions.outputs),
-    )
+    dark = _reconstructed(0 * inversion.solutions.outputs)
 
     for threshold_snr in (None, 5):
         with warnings.catch_warnings():
@@ -513,15 +737,7 @@ def test_plot_moments_histogram_unsupported() -> None:
     instrument which does not provide them are not plotted, and the error
     says why.
     """
-
-    @dataclasses.dataclass
-    class Unsupported(ctis.instruments.IdealInstrument):
-        """An ideal instrument which provides no sparse matrices."""
-
-        def _operators(self, dtype: None | type = np.float64) -> None:
-            return None
-
-    unsupported = Unsupported(
+    unsupported = _IdealInstrumentWeights(
         **{
             field.name: getattr(instrument, field.name)
             for field in dataclasses.fields(instrument)
