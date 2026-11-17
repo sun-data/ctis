@@ -303,6 +303,38 @@ class TestNeuralNetworkInverter(
             a(0 * images)
 
 
+@pytest.mark.parametrize("size_chunk", [1, 2])
+def test_backprojections_chunks(size_chunk: int):
+    """
+    Images backprojected a few at a time along their first axis of frames
+    give the same cubes, in the same order, as all at once.
+    """
+    a = ctis.inverters.NeuralNetworkInverter
+    factor_time = na.ScalarArray(np.array([0.5, 1, 2]), "time")
+    factor_sample = na.ScalarArray(np.array([1, 3]), "sample")
+    images_2d = instrument.image(
+        dataclasses.replace(
+            scene,
+            outputs=scene.outputs * factor_time * factor_sample,
+        )
+    )
+    unit = scene.outputs.unit
+
+    axes, x, scale = a._backprojections(instrument, images_2d, unit, size_chunk)
+    axes_all, x_all, scale_all = a._backprojections(instrument, images_2d, unit, 100)
+
+    assert axes.batch == dict(time=3, sample=2)
+    assert axes == axes_all
+    assert np.array_equal(x, x_all)
+    assert np.array_equal(scale, scale_all)
+
+    # the flattened batch is in the order of the axes of the batch
+    for i, j in np.ndindex(3, 2):
+        frame = images_2d[dict(time=i, sample=j)]
+        _, x_frame, _ = a._backprojections(instrument, frame, unit, 100)
+        assert np.array_equal(x[2 * i + j], x_frame[0])
+
+
 def test_train_seed():
     """
     The same seed trains the same network, to within the rounding of the

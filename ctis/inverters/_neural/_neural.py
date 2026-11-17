@@ -137,7 +137,9 @@ class NeuralNetworkInverter(
     size_batch: int = dataclasses.field(default=8, kw_only=True)
     """
     The number of frames which are given to the network at once when a
-    scene is reconstructed.
+    scene is reconstructed, and the number of elements along the first axis
+    of frames of the images which are backprojected at once, which bounds
+    the memory that the backprojection takes.
     """
 
     axis_epoch: ClassVar[str] = "epoch"
@@ -155,6 +157,7 @@ class NeuralNetworkInverter(
         cls,
         instrument: ctis.instruments.AbstractInstrument,
         shape: dict[str, int],
+        axis_frames: tuple[str, ...] = (),
     ) -> _Axes:
         """
         The roles which the axes of the backprojection of some images play
@@ -166,6 +169,9 @@ class NeuralNetworkInverter(
             The instrument which the network is trained for.
         shape
             The axes of the backprojection and their lengths.
+        axis_frames
+            The axes of the frames of the images, which come first among
+            the axes of the batch, in this order.
         """
         shape_line = instrument._shape_line
 
@@ -179,12 +185,15 @@ class NeuralNetworkInverter(
                     f"but it only has the axes {tuple(shape)}."
                 )
 
+        axis_batch = [ax for ax in axis_frames if ax in shape]
+        axis_batch += [
+            ax
+            for ax in shape
+            if ax not in axis_input and ax not in axis_cube and ax not in axis_batch
+        ]
+
         return _Axes(
-            batch={
-                ax: shape[ax]
-                for ax in shape
-                if ax not in axis_input and ax not in axis_cube
-            },
+            batch={ax: shape[ax] for ax in axis_batch},
             input={ax: shape[ax] for ax in axis_input},
             output={ax: shape_line[ax] for ax in shape_line},
             cube={ax: shape[ax] for ax in axis_cube},
@@ -237,6 +246,7 @@ class NeuralNetworkInverter(
         instrument: ctis.instruments.AbstractInstrument,
         images: na.FunctionArray[na.SpectralPositionalVectorArray, na.ScalarArray],
         unit: u.UnitBase,
+        size_chunk: int,
     ) -> tuple[_Axes, np.ndarray, np.ndarray]:
         """
         The backprojections of some images, as the network takes them.
@@ -244,6 +254,12 @@ class NeuralNetworkInverter(
         The results are the roles of the axes of the backprojections, the
         backprojections, each divided by its mean, and those means, which
         the scene of each frame is divided by for the network.
+
+        The images are backprojected a few at a time along their first axis
+        of frames, since the backprojection of an instrument can take far
+        more memory than its result, such as that of an
+        :class:`~ctis.instruments.OptikaInstrument`, which spreads each image
+        over every wavelength of its sensor.
 
         Parameters
         ----------
@@ -253,6 +269,9 @@ class NeuralNetworkInverter(
             The images to backproject.
         unit
             The unit of the scenes.
+        size_chunk
+            The number of elements along the first axis of frames of the
+            images which are backprojected at once.
         """
         position_images = images.inputs.position
         position_sensor = instrument.coordinates_sensor.position
@@ -262,17 +281,40 @@ class NeuralNetworkInverter(
                 "`instrument.coordinates_sensor.position` are not equal."
             )
 
-        backprojected = instrument.backproject(images, unit=unit).outputs
+        # the axes of the images beyond those of the channels and the sensor
+        axis_own = (*instrument._axis_channel, *instrument.axis_sensor_xy)
+        axis_frames = tuple(ax for ax in na.shape(images.outputs) if ax not in axis_own)
 
-        axes = cls._axes(instrument, na.shape(backprojected))
+        # since the batch is flattened with its first axis outermost, the
+        # backprojections of consecutive slices along that axis follow each
+        # other in the flattened batch
+        if axis_frames:
+            axis_chunk = axis_frames[0]
+            num_chunk = na.shape(images.outputs)[axis_chunk]
+            chunks = [
+                images[{axis_chunk: slice(i, i + size_chunk)}]
+                for i in range(0, num_chunk, size_chunk)
+            ]
+        else:
+            chunks = [images]
 
-        x = cls._cubes(
-            a=backprojected,
-            batch=axes.batch,
-            cubes=axes.input,
-            cube=axes.cube,
-            unit=unit,
-        )
+        x = []
+        for chunk in chunks:
+            backprojected = instrument.backproject(chunk, unit=unit).outputs
+            axes = cls._axes(instrument, na.shape(backprojected), axis_frames)
+            x.append(
+                cls._cubes(
+                    a=backprojected,
+                    batch=axes.batch,
+                    cubes=axes.input,
+                    cube=axes.cube,
+                    unit=unit,
+                )
+            )
+        x = np.concatenate(x)
+
+        if axis_frames:
+            axes.batch[axis_chunk] = num_chunk
 
         scale = x.mean(axis=(1, 2, 3, 4), keepdims=True, dtype=np.float64)
 
@@ -330,6 +372,9 @@ class NeuralNetworkInverter(
         size_batch
             The number of frames in each step of the optimizer, and in each
             reconstruction by the trained inverter.
+            It is also the number of elements along the first axis of frames
+            of the images which are backprojected at once, which bounds the
+            memory that the backprojection takes.
         learning_rate
             The learning rate of the Adam optimizer :cite:p:`Kingma2014`.
         fraction_validation
@@ -370,7 +415,7 @@ class NeuralNetworkInverter(
 
         unit = na.unit(scenes.outputs, unit_dimensionless=u.dimensionless_unscaled)
 
-        axes, x, scale = cls._backprojections(instrument, images, unit)
+        axes, x, scale = cls._backprojections(instrument, images, unit, size_batch)
 
         if set(na.shape(scenes.outputs)) - set(axes.batch | axes.output | axes.cube):
             raise ValueError(
@@ -518,7 +563,9 @@ class NeuralNetworkInverter(
         network = self.network
         unit = self.unit
 
-        axes, x, scale = self._backprojections(instrument, images, unit)
+        axes, x, scale = self._backprojections(
+            instrument, images, unit, self.size_batch
+        )
 
         device = next(network.parameters()).device
 
