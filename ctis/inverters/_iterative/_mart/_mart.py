@@ -54,6 +54,13 @@ class MartInverter(
     :meth:`~ctis.instruments.AbstractInstrument.image` method of the
     instrument takes a scene in, and the solution is given in the unit of
     the guess.
+    It can be given with its coordinates, so the solution of one inversion
+    can be the first guess of another.
+    Every iteration multiplies the scene by a correction, so a voxel which
+    is zero in the guess stays zero, and the solution of an inversion is
+    zero in every voxel which a channel recorded no signal from.
+    Such a solution cannot be the first guess of images which are bright
+    where it is zero.
     Without a guess, the solution is in the unit that the
     :meth:`~ctis.instruments.AbstractInstrument.backproject` method of the
     instrument gives.
@@ -120,7 +127,11 @@ class MartInverter(
     def __call__(
         self,
         images: na.FunctionArray[na.SpectralPositionalVectorArray, na.ScalarArray],
-        guess: None | na.ScalarArray = None,
+        guess: (
+            None
+            | na.ScalarArray
+            | na.FunctionArray[na.SpectralPositionalVectorArray, na.ScalarArray]
+        ) = None,
         verbose: bool = False,
     ) -> IterativeInversionResult:
         """
@@ -146,6 +157,11 @@ class MartInverter(
             Must be evaluated on the same coordinates as
             :attr:`~ctis.instruments.AbstractInstrument.coordinates_scene`
             attribute of :attr:`instrument`.
+            It can be given with its coordinates, as the
+            :attr:`~ctis.inverters.IterativeInversionResult.solution` of
+            an earlier inversion is, and they must then be equal to those
+            of the instrument.
+            A voxel which is zero in the guess is zero in the solution.
             It can be in any unit that the
             :meth:`~ctis.instruments.AbstractInstrument.image` method of
             :attr:`instrument` takes a scene in, and the solution is given
@@ -162,6 +178,17 @@ class MartInverter(
                 "are not equal."
             )
 
+        # a guess which is given with its coordinates, as the solution of an
+        # earlier inversion is, has them checked here, once, and is inverted
+        # as its values are
+        if isinstance(guess, na.AbstractFunctionArray):
+            if not np.all(guess.inputs == instrument.coordinates_scene):
+                raise ValueError(
+                    "`guess.inputs` and `self.instrument.coordinates_scene` "
+                    "are not equal."
+                )
+            guess = guess.outputs
+
         # the axes of the images beyond those of the channels and the sensor
         shape_extra = self._shape_extra(images.outputs)
 
@@ -170,6 +197,13 @@ class MartInverter(
             raise ValueError(
                 f"the images have an axis named {axis_iteration!r}, "
                 f"which is the axis of the iterations in the result."
+            )
+        if axis_iteration in na.shape(guess):
+            raise ValueError(
+                f"the guess has an axis named {axis_iteration!r}, which is "
+                f"the axis of the iterations in the result. The `solution` "
+                f"of an earlier inversion does not have it, and its "
+                f"`solutions` do."
             )
 
         arrays = self._arrays(images.outputs, guess)

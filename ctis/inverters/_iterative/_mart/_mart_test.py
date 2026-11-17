@@ -654,6 +654,71 @@ def test__call__frames_guess(guess: na.ScalarArray) -> None:
         _assert_frame(result, index, a(images_frames[index], guess=guess[index]))
 
 
+@pytest.mark.parametrize(
+    argnames="shape_frames",
+    argvalues=[
+        dict(),
+        dict(time=3),
+    ],
+    ids=["one frame", "a guess for each frame"],
+)
+def test__call__guess_function(shape_frames: dict[str, int]) -> None:
+    """
+    The solution of an inversion can be given whole, with its coordinates,
+    as the guess of another.
+    It is inverted exactly as its values are, on the operators of the
+    instrument and on its methods alike, to a solution which is a function
+    of the coordinates of the scene alone, and it is not overwritten.
+    """
+    images_frames = _images_frames(shape_frames) if shape_frames else images
+
+    a = ctis.inverters.MartInverter(
+        instrument=instrument,
+        threshold_convergence=1e-2,
+    )
+
+    guess = a(images_frames).solution
+    values = guess.outputs.copy()
+
+    assert isinstance(guess, na.FunctionArray)
+    assert _uses_operators(a, images_frames, guess.outputs)
+
+    result = a(images_frames, guess=guess)
+    expected = a(images_frames, guess=guess.outputs)
+
+    assert isinstance(result.solution.outputs, na.ScalarArray)
+    assert np.all(result.solutions.outputs == expected.solutions.outputs)
+    _assert_same(result, expected)
+
+    # the iteration on the methods of the instrument takes it the same way
+    reference = _reference(a, images_frames, guess)
+
+    assert isinstance(reference.solution.outputs, na.ScalarArray)
+    _assert_same(reference, expected)
+
+    assert np.all(guess.outputs == values)
+
+
+def test__call__guess_function_coordinates() -> None:
+    """
+    A guess which is given with coordinates other than those of the scene
+    of the instrument is refused, as the instrument refuses a scene on
+    another grid.
+    """
+    a = ctis.inverters.MartInverter(
+        instrument=instrument,
+        threshold_convergence=1e-2,
+    )
+    inputs = instrument.coordinates_scene
+    guess = na.FunctionArray(
+        inputs=inputs.replace(position=2 * inputs.position),
+        outputs=na.ScalarArray.ones(scene.outputs.shape) * scene.outputs.unit,
+    )
+
+    with pytest.raises(ValueError, match="`guess.inputs`"):
+        a(images, guess=guess)
+
+
 @pytest.mark.parametrize("intermediate", [False, True])
 def test__call__frames_without_operators(intermediate: bool) -> None:
     """
@@ -743,23 +808,36 @@ def test_dtype(dtype: type | str | np.dtype) -> None:
         _assert_frame(result, index, a(images_frames[index]))
 
 
-def test_dtype_guess() -> None:
+@pytest.mark.parametrize(
+    argnames="guess",
+    argvalues=[
+        na.ScalarArray.ones(scene.outputs.shape) * scene.outputs.unit,
+        na.FunctionArray(
+            inputs=instrument.coordinates_scene,
+            outputs=na.ScalarArray.ones(scene.outputs.shape) * scene.outputs.unit,
+        ),
+    ],
+    ids=["values alone", "with its coordinates"],
+)
+def test_dtype_guess(guess: na.ScalarArray | na.FunctionArray) -> None:
     """
     In single precision, the solution is in the units of the guess, and in
     single precision.
+    A guess which is given with its coordinates is inverted on the
+    operators of the instrument too, which alone provide single precision.
     """
     a = ctis.inverters.MartInverter(
         instrument=instrument,
         threshold_convergence=1e-2,
         dtype=np.float32,
     )
-    guess = na.ScalarArray.ones(scene.outputs.shape) * scene.outputs.unit
+    values = guess.outputs if isinstance(guess, na.FunctionArray) else guess
 
     result = a(images, guess=guess)
 
-    assert result.solution.outputs.unit == guess.unit
+    assert result.solution.outputs.unit == values.unit
     assert result.solution.outputs.ndarray.dtype == np.float32
-    assert guess.ndarray.dtype == np.float64
+    assert values.ndarray.dtype == np.float64
 
 
 @pytest.mark.parametrize("dtype", [np.int32, np.float16, np.complex128])
@@ -939,6 +1017,30 @@ def test__call__axis_iteration() -> None:
 
     with pytest.raises(ValueError, match="the axis of the iterations"):
         inverter(images_iteration)
+
+
+@pytest.mark.parametrize(
+    argnames="function",
+    argvalues=[True, False],
+    ids=["with its coordinates", "values alone"],
+)
+def test__call__guess_axis_iteration(function: bool) -> None:
+    """
+    A guess with the axis of the iterations of the result is refused, as
+    the `solutions` of an earlier inversion are, which are one letter from
+    its `solution`.
+    """
+    a = ctis.inverters.MartInverter(
+        instrument=instrument,
+        threshold_convergence=1e-2,
+    )
+
+    guess = a(images).solutions
+    if not function:
+        guess = guess.outputs
+
+    with pytest.raises(ValueError, match="the guess has an axis"):
+        a(images, guess=guess)
 
 
 def test__call__num_iteration_large() -> None:
