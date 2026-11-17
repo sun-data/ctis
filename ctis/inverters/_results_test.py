@@ -646,7 +646,8 @@ def test_plot_moments_histogram_rows() -> None:
 def test_plot_moments_histogram_frames() -> None:
     """
     The pixels of every frame of a reconstruction are counted, so the same
-    reconstruction in each of three frames has the histograms of one frame.
+    reconstruction in each of three frames has the histograms of one frame,
+    and its correlation with the true scene.
     """
     kwargs = dict(
         truth=scene,
@@ -671,8 +672,15 @@ def test_plot_moments_histogram_frames() -> None:
         assert hist.sum(1).max() <= 1 + 1e-12
         assert np.allclose(hist, _histogram(ax_one))
 
+    # the median and the scatter are percentiles, which are interpolated
+    # between other pixels in three copies of them than in one, so only the
+    # correlation, the first line of a label, is the same to its last digit
     for ax, ax_one in zip(axs[0], axs_one[0]):
-        assert ax.texts[0].get_text() == ax_one.texts[0].get_text()
+        label = ax.texts[0].get_text().splitlines()
+        label_one = ax_one.texts[0].get_text().splitlines()
+
+        assert label[0] == label_one[0]
+        assert len(label) == len(label_one) == 3
 
     plt.close(fig)
     plt.close(fig_one)
