@@ -2,6 +2,7 @@ import dataclasses
 import warnings
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.ticker
 import pytest
 import astropy.units as u
 import named_arrays as na
@@ -204,13 +205,14 @@ def test_plot_moments_frames() -> None:
 def test_plot_moments_truth_unit() -> None:
     """
     A true scene in units which cannot be converted to those of the
-    reconstructed scene is not plotted on its color scales, and the error
-    names the units of both.
+    reconstructed scene is not compared to it, by the maps or by the
+    histograms, and the error names the units of both.
     """
     truth = scene.replace(outputs=scene.outputs / instrument._energy_per_photon)
 
-    with pytest.raises(ValueError, match="true scene is in units of"):
-        inversion.plot_moments(truth)
+    for method in (inversion.plot_moments, inversion.plot_moments_histogram):
+        with pytest.raises(ValueError, match="true scene is in units of"):
+            method(truth)
 
 
 @pytest.mark.parametrize("threshold_snr", [5, np.inf])
@@ -235,21 +237,268 @@ def test_plot_moments_no_runtime_warnings(threshold_snr: float) -> None:
     plt.close(fig)
 
 
-@pytest.mark.parametrize("threshold_snr", [None, 5])
-def test_plot_moments_histogram(threshold_snr: None | float) -> None:
+def _histogram(ax: plt.Axes) -> np.ndarray:
     """
-    The histograms of the moments leave out the pixels whose signal-to-noise
-    ratio is at or below the threshold.
+    The histogram which is drawn in a panel, with its horizontal axis first.
+    """
+    mesh = ax.collections[0]
+    x = mesh.get_coordinates()[..., 0]
+    axis_x = int(x[0, 0] == x[~0, 0])
+    return np.moveaxis(np.asarray(mesh.get_array()), axis_x, 0)
+
+
+@pytest.mark.parametrize("threshold_snr", [None, 5])
+@pytest.mark.parametrize("percentile_radiance", [0, 50])
+def test_plot_moments_histogram(
+    threshold_snr: None | float,
+    percentile_radiance: float,
+) -> None:
+    """
+    The histograms of the errors of the moments have a row against the true
+    moments and a row against the signal-to-noise ratio, with a column for
+    each moment.
+    Every column of a histogram is the distribution of the errors of its
+    pixels, so it sums to no more than one.
     """
     fig, axs = inversion.plot_moments_histogram(
         truth=scene,
         axis="wavelength",
+        percentile_radiance=percentile_radiance,
         threshold_snr=threshold_snr,
     )
 
     assert isinstance(fig, plt.Figure)
-    assert len(axs) == 3
-    for ax in axs:
+    assert axs.shape == (2, 3)
+
+    for ax in axs.flat:
         assert isinstance(ax, plt.Axes)
 
+        hist = _histogram(ax)
+
+        assert hist.shape == (50, 50)
+        assert hist.min() >= 0
+        assert hist.max() > 0
+        assert hist.sum(1).max() <= 1 + 1e-12
+
+    for ax_true, ax_snr in axs.T:
+        labels_true = [line.get_label() for line in ax_true.lines]
+        labels_snr = [line.get_label() for line in ax_snr.lines]
+
+        # no error and a constant reconstruction against the true moment,
+        # and the threshold against the signal-to-noise ratio
+        assert labels_true == ["no error", "constant reconstruction"]
+        assert labels_snr[0] == "no error"
+        assert ("threshold" in labels_snr) == (threshold_snr is not None)
+
+        assert "Pearson" in ax_true.texts[0].get_text()
+        assert ax_snr.get_xscale() == "log"
+
+    # the radiance is on a logarithmic scale, and so is its ratio
+    assert axs[0, 0].get_xscale() == "log"
+    assert axs[0, 0].get_yscale() == "log"
+    assert axs[1, 0].get_yscale() == "log"
+    assert axs[0, 1].get_xscale() == "linear"
+
     plt.close(fig)
+
+
+@pytest.mark.parametrize("threshold_snr", [None, 5])
+@pytest.mark.parametrize("percentile_radiance", [0, 50])
+def test_plot_moments_histogram_perfect(
+    threshold_snr: None | float,
+    percentile_radiance: float,
+) -> None:
+    """
+    A reconstruction which is the true scene has no error in any pixel, so
+    every column of a histogram which has pixels has all of them at no
+    error.
+    The columns of the upper row which have pixels are those of the pixels
+    which are neither too faint nor at or below the threshold of the
+    signal-to-noise ratio.
+    """
+    solutions = inversion.solutions
+    perfect = dataclasses.replace(
+        inversion,
+        solutions=solutions.replace(outputs=scene.outputs + 0 * solutions.outputs),
+    )
+
+    fig, axs = perfect.plot_moments_histogram(
+        truth=scene,
+        range_median=[-300, 300] * kms,
+        percentile_radiance=percentile_radiance,
+        threshold_snr=threshold_snr,
+    )
+
+    for ax in axs.flat:
+        hist = _histogram(ax)
+        total = hist.sum(1)
+
+        # the two bins on either side of no error
+        assert np.all(hist[:, :24] == 0)
+        assert np.all(hist[:, 26:] == 0)
+        assert np.any(total > 0)
+        assert np.all(np.isclose(total, 0) | np.isclose(total, 1))
+
+    for ax in axs[0]:
+        assert "$r = 1.000$" in ax.texts[0].get_text()
+    assert "median error $+0$%" in axs[0, 0].texts[0].get_text()
+
+    # the pixels of the upper row
+    radiance, median, _ = perfect._moments(scene)
+    where = radiance > np.nanpercentile(radiance, percentile_radiance)
+    if threshold_snr is not None:
+        where = where & (instrument.snr(perfect.solution) > threshold_snr)
+    median = np.where(where, median, np.nan).ndarray.to_value(kms)
+    expected, _ = np.histogram(
+        median[np.isfinite(median)],
+        bins=np.linspace(-300, 300, num=51),
+    )
+
+    assert 0 < expected.sum() < median.size
+    assert np.array_equal(_histogram(axs[0, 1]).sum(1) > 0, expected > 0)
+
+    plt.close(fig)
+
+
+@pytest.mark.parametrize(
+    argnames="lower,locator,formatter",
+    argvalues=[
+        (
+            1,
+            matplotlib.ticker.LogLocator,
+            matplotlib.ticker.LogFormatterSciNotation,
+        ),
+        (
+            10,
+            matplotlib.ticker.LogLocator,
+            matplotlib.ticker.FormatStrFormatter,
+        ),
+        (
+            40,
+            matplotlib.ticker.LogLocator,
+            matplotlib.ticker.FormatStrFormatter,
+        ),
+        (
+            100,
+            matplotlib.ticker.MaxNLocator,
+            matplotlib.ticker.FormatStrFormatter,
+        ),
+    ],
+    ids=[
+        "more than two decades",
+        "more than a decade",
+        "less than a decade",
+        "a factor of two",
+    ],
+)
+def test_plot_moments_histogram_ranges(
+    lower: float,
+    locator: type,
+    formatter: type,
+) -> None:
+    """
+    The horizontal scale of each panel of the upper row has the limits it is
+    given, in the unit of those limits, and a limit which is not given is
+    that of the pixels.
+    The scale of the radiance is logarithmic, and it is labeled with plain
+    numbers unless it spans two decades.
+    """
+    unit = u.erg / u.s / u.sr / u.cm**2
+
+    fig, axs = inversion.plot_moments_histogram(
+        truth=scene,
+        range_radiance=(lower * unit, 200 * unit),
+        range_median=[-300, 300] * kms,
+        range_iqr=(None, 0.4 * u.Mm / u.s),
+    )
+
+    assert axs[0, 0].get_xlim() == pytest.approx((lower, 200))
+    assert isinstance(axs[0, 0].xaxis.get_major_locator(), locator)
+    assert isinstance(axs[0, 0].xaxis.get_major_formatter(), formatter)
+
+    assert axs[0, 1].get_xlim() == pytest.approx((-300, 300))
+
+    lower_iqr, upper_iqr = axs[0, 2].get_xlim()
+
+    assert upper_iqr == pytest.approx(0.4)
+    assert 0 < lower_iqr < upper_iqr
+
+    # the errors are in the units of the limits too
+    assert "km" in axs[0, 1].get_ylabel()
+    assert "Mm" in axs[0, 2].get_ylabel()
+
+    plt.close(fig)
+
+
+def test_plot_moments_histogram_range_radiance() -> None:
+    """
+    The radiance is on a logarithmic scale, which has no zero, so a lower
+    limit which is not positive is refused, and the error says why.
+    """
+    limits = [0, 200] * u.erg / u.s / u.sr / u.cm**2
+
+    with pytest.raises(ValueError, match="logarithmic scale"):
+        inversion.plot_moments_histogram(scene, range_radiance=limits)
+
+
+def test_plot_moments_histogram_dark() -> None:
+    """
+    A reconstruction which emits nothing has no ratio to the true radiance,
+    and neither a median nor an interquartile range, so its histograms are
+    empty, and they are plotted without a warning, on scales whose limits
+    are numbers.
+    """
+    solutions = inversion.solutions
+    dark = dataclasses.replace(
+        inversion,
+        solutions=solutions.replace(outputs=0 * solutions.outputs),
+    )
+
+    for threshold_snr in (None, 5):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            fig, axs = dark.plot_moments_histogram(
+                truth=scene,
+                threshold_snr=threshold_snr,
+            )
+
+        for ax in axs.flat:
+            assert _histogram(ax).max() == 0
+            assert np.all(np.isfinite(ax.get_xlim()))
+            assert np.all(np.isfinite(ax.get_ylim()))
+
+        for ax in axs[0]:
+            assert "nan" in ax.texts[0].get_text()
+
+        plt.close(fig)
+
+
+def test_plot_moments_histogram_unsupported() -> None:
+    """
+    The lower row is against the signal-to-noise ratio, which is read from
+    the sparse matrices of the instrument, so the histograms of an
+    instrument which does not provide them are not plotted, and the error
+    says why.
+    """
+
+    @dataclasses.dataclass
+    class Unsupported(ctis.instruments.IdealInstrument):
+        """An ideal instrument which provides no sparse matrices."""
+
+        def _operators(self, dtype: None | type = np.float64) -> None:
+            return None
+
+    unsupported = Unsupported(
+        **{
+            field.name: getattr(instrument, field.name)
+            for field in dataclasses.fields(instrument)
+            if field.init
+        }
+    )
+    result = dataclasses.replace(
+        inversion,
+        inverter=dataclasses.replace(inversion.inverter, instrument=unsupported),
+    )
+
+    with pytest.raises(ValueError, match="pair of sparse matrices"):
+        result.plot_moments_histogram(scene)

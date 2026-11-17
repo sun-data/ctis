@@ -977,17 +977,32 @@ na.plt.stairs(scene.inputs.wavelength,
   <div class="frame">
     <p class="kicker">Step 14 of 15</p>
     <h2>Compare line moments, pixel by pixel</h2>
-    <pre><code class="language-python" data-trim data-noescape>
-inversion.plot_moments_histogram(scene, axis="wavelength")
-    </code></pre>
-    <figure class="fig"><img src="figures/moments.png" alt="Histograms of true against reconstructed radiance, median velocity and interquartile range"></figure>
-    <p class="caption">Column-normalized 2D histograms of radiance, median velocity and interquartile range, with Pearson's $r$. Options: <code>num_bins</code>, <code>range_*</code>, and <code>percentile_radiance</code> to exclude faint pixels.</p>
+    <div class="row">
+      <div class="col" style="flex: 0.6">
+        <pre class="dense"><code class="language-python" data-trim data-noescape>
+inversion.plot_moments_histogram(
+    scene,
+    axis="wavelength",
+)
+        </code></pre>
+        <ul class="points">
+          <li>Column-normalized 2D histograms of the error of the radiance, median velocity and interquartile range.</li>
+          <li>Top: against the true value, with Pearson's $r$. Bottom: against the signal-to-noise ratio.</li>
+          <li>Options: <code>num_bins</code>, <code>range_*</code>, and <code>percentile_radiance</code> and <code>threshold_snr</code> to exclude faint pixels.</li>
+        </ul>
+      </div>
+      <figure class="fig"><img src="figures/moments.png" alt="Histograms of the error of the reconstructed radiance, median velocity and interquartile range, against their true values and against the signal-to-noise ratio"></figure>
+    </div>
   </div>
   <aside class="notes">
     The median and interquartile range are computed from the spectral profile
-    in each pixel with named-arrays' pdf functions. The vertical band at zero
-    true velocity in the middle panel is the background, which has no Doppler
-    shift.
+    in each pixel with named-arrays' pdf functions. The error of the radiance
+    is the ratio of the reconstructed radiance to the true one, and the other
+    two errors are differences. The vertical band at zero true velocity in
+    the top middle panel is the background, which has no Doppler shift. So is
+    the diagonal streak in the bottom left panel: the background has one true
+    radiance, so the brighter it is reconstructed, the higher its
+    signal-to-noise ratio.
   </aside>
 </section>
 
