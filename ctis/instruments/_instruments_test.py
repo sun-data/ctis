@@ -60,6 +60,72 @@ def _scene_frames(
     )
 
 
+def _coordinates_same(
+    a: ctis.instruments.AbstractInstrument,
+) -> dict[str, na.AbstractSpectralPositionalVectorArray]:
+    """
+    The grid of the scene of `a`, written in other ways which leave it the
+    same grid.
+    """
+    c = a.coordinates_scene
+    position = c.position.explicit
+    unit = position.x.unit
+
+    if isinstance(c, na.AbstractDopplerPositionalVectorArray):
+        other = na.SpectralPositionalVectorArray(
+            wavelength=c.wavelength,
+            position=c.position,
+        )
+    else:
+        other = na.DopplerPositionalVectorArray(
+            wavelength=c.wavelength,
+            wavelength_rest=c.wavelength.mean(),
+            position=c.position,
+        )
+
+    return {
+        "another kind of vector": other,
+        "through another unit and back": c.replace(
+            position=position.to(u.rad).to(unit),
+        ),
+        "in other units": c.replace(
+            wavelength=c.wavelength.to(u.m),
+            position=position.to(u.deg),
+        ),
+        "off by the rounding of its arithmetic": c.replace(
+            wavelength=c.wavelength * (1 - 1e-12),
+            position=position * (1 + 1e-12),
+        ),
+    }
+
+
+def _coordinates_other(
+    a: ctis.instruments.AbstractInstrument,
+) -> dict[str, Any]:
+    """
+    Coordinates which are not the grid of the scene of `a`.
+    """
+    c = a.coordinates_scene
+    position = c.position.explicit
+    axis_x, _ = a.axis_scene_xy
+
+    return {
+        "twice the size": c.replace(position=2 * position),
+        "positions off by a millionth": c.replace(
+            position=position * (1 + 1e-6),
+        ),
+        "wavelengths off by a millionth": c.replace(
+            wavelength=c.wavelength * (1 + 1e-6),
+        ),
+        "fewer positions": c.replace(
+            position=position[{axis_x: slice(None, -1)}],
+        ),
+        "wavelengths in other units": c.replace(wavelength=c.wavelength * u.s),
+        "positions alone": c.position,
+        "no coordinates": None,
+    }
+
+
 def _assert_close(result: na.AbstractScalar, expected: na.AbstractScalar) -> None:
     """
     Assert that two named arrays have the same axes, the same unit, and the
@@ -176,6 +242,32 @@ class AbstractTestAbstractInstrument(
         assert isinstance(result, na.FunctionArray)
         assert np.all(result.inputs.position == a.coordinates_sensor.position)
         assert result.outputs.sum() > 0
+
+    @pytest.mark.parametrize("integrate", [False, True])
+    def test_image_coordinates(
+        self,
+        a: ctis.instruments.AbstractInstrument,
+        integrate: bool,
+    ) -> None:
+        """
+        A scene which is given with the grid of the instrument, however
+        the grid is written, is imaged exactly as its values alone are,
+        and a scene which is given with any other coordinates is refused.
+        """
+        scene = _scene(a)
+        kwargs = dict(integrate=integrate, noise=False)
+
+        expected = a.image(scene.outputs, **kwargs)
+
+        for inputs in _coordinates_same(a).values():
+            result = a.image(scene.replace(inputs=inputs), **kwargs)
+
+            assert np.all(result.inputs == expected.inputs)
+            assert np.all(result.outputs == expected.outputs)
+
+        for inputs in _coordinates_other(a).values():
+            with pytest.raises(ValueError, match="are not equal"):
+                a.image(scene.replace(inputs=inputs), **kwargs)
 
     def test_backproject(
         self,
@@ -615,12 +707,18 @@ class AbstractTestAbstractInstrument(
         self,
         a: ctis.instruments.AbstractInstrument,
     ) -> None:
-        # a scene on another grid than that of the instrument has no ratio
+        # a scene which is given with the grid of the instrument, however
+        # the grid is written, has the ratio of its values alone
         scene = _scene(a)
-        inputs = scene.inputs.replace(position=2 * scene.inputs.position)
+        expected = a.snr(scene.outputs)
 
-        with pytest.raises(ValueError, match="are not equal"):
-            a.snr(scene.replace(inputs=inputs))
+        for inputs in _coordinates_same(a).values():
+            assert np.all(a.snr(scene.replace(inputs=inputs)) == expected)
+
+        # a scene on another grid than that of the instrument has no ratio
+        for inputs in _coordinates_other(a).values():
+            with pytest.raises(ValueError, match="are not equal"):
+                a.snr(scene.replace(inputs=inputs))
 
 
 def _psf(a: ctis.instruments.IdealInstrument) -> na.ScalarArray:
