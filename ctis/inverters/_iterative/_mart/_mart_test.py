@@ -408,9 +408,8 @@ def test__call__without_operators() -> None:
     argvalues=[
         na.ScalarArray.ones(scene.outputs.shape),
         na.ScalarArray.ones(scene.outputs.shape) * u.photon / u.s / u.cm**2,
-        na.ScalarArray.ones(dict(scene_x=64, scene_y=64)) * scene.outputs.unit,
     ],
-    ids=["no unit", "another unit", "no wavelength axis"],
+    ids=["no unit", "another unit"],
 )
 def test__call__guess_unsupported(guess: na.ScalarArray) -> None:
     """
@@ -424,8 +423,70 @@ def test__call__guess_unsupported(guess: na.ScalarArray) -> None:
 
     assert not _uses_operators(a, images, guess)
 
-    with pytest.raises((u.UnitConversionError, ValueError)):
+    with pytest.raises(u.UnitConversionError):
         a(images, guess=guess)
+
+
+@pytest.mark.parametrize(
+    argnames="shape_frames,shape_guess",
+    argvalues=[
+        (
+            dict(),
+            {ax: scene.outputs.shape[ax] for ax in ("scene_x", "scene_y")},
+        ),
+        (dict(), scene.outputs.shape | dict(wavelength=1)),
+        (dict(), scene.outputs.shape | dict(scene_x=64)),
+        (dict(), scene.outputs.shape | dict(time=3)),
+        (dict(), scene.outputs.shape | dict(time=1)),
+        (dict(time=3), scene.outputs.shape | dict(time=2)),
+        (dict(time=3), scene.outputs.shape | dict(time=4)),
+        (dict(time=3), scene.outputs.shape | dict(repeat=3)),
+    ],
+    ids=[
+        "without an axis of the scene",
+        "one element along an axis of the scene",
+        "another length along an axis of the scene",
+        "an axis which one frame does not have",
+        "an axis of one element which one frame does not have",
+        "fewer elements than the frames",
+        "more elements than the frames",
+        "an axis which the frames do not have",
+    ],
+)
+def test__call__guess_axes(
+    monkeypatch: pytest.MonkeyPatch,
+    shape_frames: dict[str, int],
+    shape_guess: dict[str, int],
+) -> None:
+    """
+    A guess whose axes are not those of the scene and of the frames is
+    refused, on the operators of the instrument and on its methods, before
+    either images anything.
+    """
+    images_frames = _images_frames(shape_frames) if shape_frames else images
+    guess = na.ScalarArray.ones(shape_guess) * scene.outputs.unit
+
+    def image(
+        self: ctis.instruments.IdealInstrument | Operators,
+        scene: na.AbstractScalar | np.ndarray,
+        **kwargs: bool | np.ndarray,
+    ) -> None:
+        raise AssertionError("The guess was imaged.")  # pragma: nocover
+
+    monkeypatch.setattr(ctis.instruments.IdealInstrument, "image", image)
+    monkeypatch.setattr(Operators, "image", image)
+
+    a = ctis.inverters.MartInverter(
+        instrument=instrument,
+        threshold_convergence=1e-2,
+    )
+
+    with pytest.raises(ValueError, match="The guess should have the axes"):
+        a(images_frames, guess=guess)
+
+    # the iteration on the methods of the instrument refuses it the same way
+    with pytest.raises(ValueError, match="The guess should have the axes"):
+        _reference(a, images_frames, guess)
 
 
 def test__call__images_unsupported() -> None:
@@ -625,13 +686,26 @@ def test__call__frames_unconverged() -> None:
             seed=0,
         )
         * scene.outputs.unit,
+        na.random.uniform(
+            low=1,
+            high=2,
+            shape_random=dict(time=1) | scene.outputs.shape,
+            seed=0,
+        )
+        * scene.outputs.unit,
     ],
-    ids=["one guess", "a guess for each frame"],
+    ids=[
+        "one guess",
+        "a guess for each frame",
+        "one guess along the axis of the frames",
+    ],
 )
 def test__call__frames_guess(guess: na.ScalarArray) -> None:
     """
     A guess is shared by the frames, unless it has their axes, and is not
     overwritten.
+    A guess with one element along an axis of the frames is that of every
+    frame along it, on the operators of the instrument and on its methods.
     """
     shape_frames = dict(time=3)
     images_frames = _images_frames(shape_frames)
@@ -650,8 +724,18 @@ def test__call__frames_guess(guess: na.ScalarArray) -> None:
     assert result.solution.outputs.unit == guess.unit
     assert np.all(guess == guess_original)
 
+    # the guess of each frame
+    shape_guess = guess.shape | {
+        ax: shape_frames[ax] for ax in guess.shape if ax in shape_frames
+    }
+    guess_frames = na.broadcast_to(guess, shape_guess)
+
     for index in na.ndindex(shape_frames):
-        _assert_frame(result, index, a(images_frames[index], guess=guess[index]))
+        expected = a(images_frames[index], guess=guess_frames[index])
+        _assert_frame(result, index, expected)
+
+    _assert_same(_reference(a, images_frames, guess), result)
+    assert np.all(guess == guess_original)
 
 
 @pytest.mark.parametrize(
@@ -874,13 +958,12 @@ def test_dtype_fallback() -> None:
         instrument=instrument,
         dtype=np.float32,
     )
-    shape_guess = scene.outputs.shape | dict(time=1)
-    guess = na.ScalarArray.ones(shape_guess) * scene.outputs.unit
+    images_wavelength = images.replace(outputs=images.outputs.add_axes("wavelength"))
 
-    assert not _uses_operators(a, images, guess)
+    assert not _uses_operators(a, images_wavelength)
 
     with pytest.raises(ValueError, match="only available on the sparse matrices"):
-        a(images, guess=guess)
+        a(images_wavelength)
 
 
 def _assert_close(a: na.AbstractScalar, b: na.AbstractScalar) -> None:
