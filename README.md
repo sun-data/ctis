@@ -44,6 +44,13 @@ along with the versions of named-arrays and numpy that it needs, use
 pip install --upgrade ctis
 ```
 
+`NeuralNetworkInverter` needs [PyTorch](https://pytorch.org), which is an optional
+dependency, installed along with `ctis` by
+
+```shell
+pip install ctis[torch]
+```
+
 ## Features
 
 - [`IdealInstrument`](https://ctis.readthedocs.io/en/latest/_autosummary/ctis.instruments.IdealInstrument.html),
@@ -60,6 +67,10 @@ pip install --upgrade ctis
 - [`MartInverter`](https://ctis.readthedocs.io/en/latest/_autosummary/ctis.inverters.MartInverter.html),
   an implementation of the multiplicative algebraic reconstruction technique (MART),
   which iterates until the mean χ² of the predicted images stops improving.
+- [`NeuralNetworkInverter`](https://ctis.readthedocs.io/en/latest/_autosummary/ctis.inverters.NeuralNetworkInverter.html),
+  a three-dimensional convolutional neural network (a U-Net) trained on scenes whose
+  truth is known, which can be saved to a file and loaded again.
+  It needs PyTorch, which is an optional dependency.
 - [Merit functions](https://ctis.readthedocs.io/en/latest/_autosummary/ctis.inverters.merit.html)
   for judging an inversion: the mean χ², and the correlation between the predicted
   images and the residuals.
