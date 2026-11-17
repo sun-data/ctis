@@ -341,6 +341,8 @@ class NeuralNetworkInverter(
         fraction_validation: float = 0.2,
         num_filter: int = 16,
         num_level: int = 3,
+        norm_gradient: None | float = None,
+        patience: None | int = None,
         seed: None | int = None,
         device: str = "cpu",
         verbose: bool = False,
@@ -386,6 +388,16 @@ class NeuralNetworkInverter(
         num_level
             The number of levels of the network, each of which halves the
             resolution of the scene.
+        norm_gradient
+            The largest norm that the gradient of the error can have in a
+            step of the optimizer, beyond which it is scaled down to this
+            norm, which keeps one bad step from undoing the training.
+            If :obj:`None`, the gradient is used as it is.
+        patience
+            The number of epochs in a row without a new least error on the
+            frames set aside for validation after which the training stops
+            early.
+            If :obj:`None`, the training runs for `num_epoch` epochs.
         seed
             The seed of the random numbers which initialize the network and
             choose the frames, for a reproducible training.
@@ -485,6 +497,11 @@ class NeuralNetworkInverter(
                 if step:
                     optimizer.zero_grad()
                     loss.backward()
+                    if norm_gradient is not None:
+                        torch.nn.utils.clip_grad_norm_(
+                            network.parameters(),
+                            max_norm=norm_gradient,
+                        )
                     optimizer.step()
                 total += loss.item() * len(batch)
             return total / len(index)
@@ -493,6 +510,7 @@ class NeuralNetworkInverter(
         loss_validation = []
         loss_best = np.inf
         state_best = None
+        epoch_best = 0
 
         for epoch in range(num_epoch):
             loss_training.append(loss_mean(rng.permutation(index_training), True))
@@ -507,9 +525,13 @@ class NeuralNetworkInverter(
 
             if loss_validation[-1] < loss_best:
                 loss_best = loss_validation[-1]
+                epoch_best = epoch
                 state_best = {
                     k: v.detach().clone() for k, v in network.state_dict().items()
                 }
+
+            if patience is not None and epoch - epoch_best >= patience:
+                break
 
         if state_best is not None:
             network.load_state_dict(state_best)
@@ -524,6 +546,9 @@ class NeuralNetworkInverter(
             num_epoch=str(num_epoch),
             size_batch=str(size_batch),
             learning_rate=str(learning_rate),
+            norm_gradient=str(norm_gradient),
+            patience=str(patience),
+            epoch_best=str(epoch_best),
             seed=str(seed),
         )
 

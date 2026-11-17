@@ -335,6 +335,48 @@ def test_backprojections_chunks(size_chunk: int):
         assert np.array_equal(x[2 * i + j], x_frame[0])
 
 
+def test_train_norm_gradient():
+    """
+    A gradient which is scaled down to a tiny norm barely trains the network,
+    so its error stays near where it began, unlike that of the same training
+    with the gradient as it is.
+    """
+    a = ctis.inverters.NeuralNetworkInverter.train(
+        instrument=instrument,
+        scenes=scenes,
+        images=images_training,
+        norm_gradient=1e-12,
+        **kwargs_train,
+    )
+    loss = a.loss_training.ndarray
+    loss_free = inverter.loss_training.ndarray
+
+    assert a.metadata["norm_gradient"] == "1e-12"
+    assert np.isclose(loss[0], loss_free[0], rtol=1e-3)
+    assert np.allclose(loss, loss[0], rtol=1e-3)
+    assert loss_free[-1] < 0.99 * loss[-1]
+
+
+def test_train_patience():
+    """
+    The training stops once the error on the frames set aside for validation
+    has gone a given number of epochs without a new minimum, which a network
+    that barely learns does at once.
+    """
+    kwargs = kwargs_train | dict(num_epoch=20)
+    a = ctis.inverters.NeuralNetworkInverter.train(
+        instrument=instrument,
+        scenes=scenes,
+        images=images_training,
+        learning_rate=0,
+        patience=2,
+        **kwargs,
+    )
+    assert a.loss_validation.shape == {a.axis_epoch: 3}
+    assert a.metadata["epoch_best"] == "0"
+    assert a.metadata["patience"] == "2"
+
+
 def test_train_seed():
     """
     The same seed trains the same network, to within the rounding of the
