@@ -395,6 +395,9 @@ class AbstractInversionResult(
         range_radiance: None | tuple[None | u.Quantity, None | u.Quantity] = None,
         range_median: None | tuple[None | u.Quantity, None | u.Quantity] = None,
         range_iqr: None | tuple[None | u.Quantity, None | u.Quantity] = None,
+        range_radiance_error: None | tuple[None | float, None | float] = None,
+        range_median_error: None | tuple[None | u.Quantity, None | u.Quantity] = None,
+        range_iqr_error: None | tuple[None | u.Quantity, None | u.Quantity] = None,
         percentile_radiance: float = 0,
         threshold_snr: None | float = None,
     ) -> tuple[plt.Figure, np.ndarray]:
@@ -427,8 +430,8 @@ class AbstractInversionResult(
         so it is the distribution of their errors.
         A pixel whose error is beyond the limits of the vertical scale is
         still counted, so a column can sum to less than one.
-        Those limits are symmetric about no error, at three times the
-        scatter of the errors of the pixels in the upper row,
+        By default, those limits are symmetric about no error, at three
+        times the scatter of the errors of the pixels in the upper row,
         which is half the width of the central 68% of them.
 
         The signal-to-noise ratio is on a logarithmic scale, from one,
@@ -481,6 +484,27 @@ class AbstractInversionResult(
             of the upper right panel.
             A limit which is :obj:`None` is the 1st or the 99th percentile
             of the pixels in the upper row.
+        range_radiance_error
+            The limits of the error of the radiance, the vertical scale of
+            the left panels, which is logarithmic, so the lower limit is
+            positive.
+            A limit which is :obj:`None` is that of a scale which is
+            symmetric about no error, at three times the scatter of the
+            errors of the pixels in the upper row.
+            Limits which are given keep the scale the same from one figure
+            to the next, to compare two reconstructions.
+        range_median_error
+            The limits of the error of the median, the vertical scale of the
+            middle panels, which is in the unit of the true median,
+            whichever unit these limits are in.
+            A limit which is :obj:`None` is that of a scale which is
+            symmetric about no error, as for the radiance.
+        range_iqr_error
+            The limits of the error of the interquartile range, the vertical
+            scale of the right panels, which is in the unit of the true
+            interquartile range, whichever unit these limits are in.
+            A limit which is :obj:`None` is that of a scale which is
+            symmetric about no error, as for the radiance.
         percentile_radiance
             Spatial locations where the true radiance is at or below this
             percentile of it are left out of both rows.
@@ -499,7 +523,8 @@ class AbstractInversionResult(
         ValueError
             If the units of the true scene cannot be converted to those of
             the reconstructed scene,
-            if the lower limit of the radiance is not positive,
+            if the lower limit of the radiance or of its error is not
+            positive,
             or if the instrument cannot be expressed as a pair of sparse
             matrices, which its signal-to-noise ratio is read from.
         """
@@ -569,6 +594,36 @@ class AbstractInversionResult(
 
             return result
 
+        def given(
+            limits: None | tuple[None | u.Quantity, None | u.Quantity],
+            unit: None | u.UnitBase = None,
+        ) -> tuple[None | float, None | float, None | u.UnitBase]:
+            """
+            The limits of a scale as numbers, each of which is :obj:`None`
+            if it is not given, and the unit they are in: the one they are
+            converted to, or the one they are given in.
+            """
+            lower, upper = (None, None) if limits is None else limits
+            if lower is None and upper is None:
+                return None, None, unit
+
+            # a limit which is not given is a plain zero for now, which
+            # leaves the unit of the scale to the other limit
+            vmin, vmax, unit_given, _ = _scale(
+                (0 if lower is None else lower, 0 if upper is None else upper),
+            )
+            if vmin == 0 and vmax == 0:
+                # a zero is all that is given, which has no unit of its own
+                unit_given = unit
+
+            factor = 1.0 if unit is None else unit_given.to(unit)
+
+            return (
+                None if lower is None else factor * vmin,
+                None if upper is None else factor * vmax,
+                unit_given if unit is None else unit,
+            )
+
         def scale_log(axis: matplotlib.axis.Axis) -> None:
             """
             Label a logarithmic scale with plain numbers if it spans less
@@ -609,6 +664,7 @@ class AbstractInversionResult(
 
         names = ("radiance", "median", "IQR")
         ranges = (range_radiance, range_median, range_iqr)
+        ranges_error = (range_radiance_error, range_median_error, range_iqr_error)
 
         kwargs_none = dict(color="tab:red", linestyle="dashed")
         kwargs_reference = dict(color="white", linestyle="dotted")
@@ -631,36 +687,30 @@ class AbstractInversionResult(
             # is on a logarithmic scale and its error is a ratio
             log = col == 0
 
-            lower, upper = (None, None) if ranges[col] is None else ranges[col]
-
-            # a limit which is not given is a plain zero for now, which
-            # leaves the unit of the scale to the other limit
-            vmin, vmax, unit, _ = _scale(
-                (0 if lower is None else lower, 0 if upper is None else upper),
-            )
-            if lower is None and upper is None:
+            vmin, vmax, unit = given(ranges[col])
+            if unit is None:
                 unit = na.unit_normalized(moments_truth[col])
 
             true = _values(moments_truth[col], unit)
             reconstructed = _values(moments_solution[col], unit)
 
+            # a limit which is not given is that of the pixels
+            default = vmin is None or vmax is None
             true_upper = selected(true, where_upper)
-            if lower is None:
-                vmin = float(_percentile(true_upper, percentiles[0]))
-            if upper is None:
+            if vmax is None:
                 vmax = float(_percentile(true_upper, percentiles[1]))
-
-            if log:
-                if lower is None:
+            if vmin is None:
+                vmin = float(_percentile(true_upper, percentiles[0]))
+                if log:
                     vmin = max(vmin, vmax / 1000)
-                elif not vmin > 0:
-                    raise ValueError(
-                        f"The radiance is on a logarithmic scale, so the "
-                        f"lower limit of `range_radiance` should be "
-                        f"positive, but it is {lower}."
-                    )
+            elif log and not vmin > 0:
+                raise ValueError(
+                    f"The radiance is on a logarithmic scale, so the lower "
+                    f"limit of `range_radiance` should be positive, but it "
+                    f"is {range_radiance[0]}."
+                )
 
-            if (lower is None or upper is None) and not vmin < vmax:
+            if default and not vmin < vmax:
                 # every pixel in the upper row has the same true moment, or
                 # there are none
                 if log:
@@ -669,6 +719,15 @@ class AbstractInversionResult(
                     vmin, vmax = vmin - 0.5, vmax + 0.5
 
             if log:
+                emin, emax, _ = given(ranges_error[col], u.dimensionless_unscaled)
+                if emin is not None and not emin > 0:
+                    raise ValueError(
+                        f"The error of the radiance is on a logarithmic "
+                        f"scale, so the lower limit of "
+                        f"`range_radiance_error` should be positive, but it "
+                        f"is {range_radiance_error[0]}."
+                    )
+
                 # a pixel which emits nothing has no ratio
                 with np.errstate(divide="ignore", invalid="ignore"):
                     error = reconstructed / true
@@ -683,6 +742,8 @@ class AbstractInversionResult(
                     f"scatter ${100 * scatter:.0f}$%"
                 )
             else:
+                emin, emax, _ = given(ranges_error[col], unit)
+
                 error = reconstructed - true
                 bias, scatter = statistics(selected(error, where_upper))
                 half = 3 * scatter if scatter > 0 else 1.0
@@ -695,6 +756,12 @@ class AbstractInversionResult(
                     f"median error ${bias:+.3g}${suffix}\n"
                     f"scatter ${scatter:.3g}${suffix}"
                 )
+
+            # the limits of the errors which are given
+            limits_error = (
+                limits_error[0] if emin is None else emin,
+                limits_error[1] if emax is None else emax,
+            )
 
             space = na.geomspace if log else na.linspace
             bins_true = space(vmin, vmax, axis="true", num=num_bins + 1)

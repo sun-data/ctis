@@ -430,15 +430,48 @@ def test_plot_moments_histogram_ranges(
     plt.close(fig)
 
 
-def test_plot_moments_histogram_range_radiance() -> None:
+def test_plot_moments_histogram_ranges_error() -> None:
     """
-    The radiance is on a logarithmic scale, which has no zero, so a lower
-    limit which is not positive is refused, and the error says why.
+    The vertical scale of each column of panels has the limits it is given,
+    converted to the unit of the true moment, and a limit which is not
+    given is that of a scale which is symmetric about no error.
+    """
+    fig, axs = inversion.plot_moments_histogram(
+        truth=scene,
+        range_radiance_error=(0.5, 2),
+        range_median_error=[-0.03, 0.03] * u.Mm / u.s,
+        range_iqr_error=(0, None),
+    )
+    fig_default, axs_default = inversion.plot_moments_histogram(truth=scene)
+
+    for row in range(2):
+        assert axs[row, 0].get_ylim() == pytest.approx((0.5, 2))
+        assert axs[row, 1].get_ylim() == pytest.approx((-30, 30))
+
+        lower, upper = axs[row, 2].get_ylim()
+        lower_default, upper_default = axs_default[row, 2].get_ylim()
+
+        assert lower == 0
+        assert upper == pytest.approx(upper_default)
+        assert lower_default == pytest.approx(-upper_default)
+
+    plt.close(fig)
+    plt.close(fig_default)
+
+
+@pytest.mark.parametrize("argument", ["range_radiance", "range_radiance_error"])
+def test_plot_moments_histogram_range_radiance(argument: str) -> None:
+    """
+    The radiance and its error are on logarithmic scales, which have no
+    zero, so a lower limit which is not positive is refused, and the error
+    says why.
     """
     limits = [0, 200] * u.erg / u.s / u.sr / u.cm**2
+    if argument == "range_radiance_error":
+        limits = (0, 2)
 
-    with pytest.raises(ValueError, match="logarithmic scale"):
-        inversion.plot_moments_histogram(scene, range_radiance=limits)
+    with pytest.raises(ValueError, match=f"`{argument}` should be positive"):
+        inversion.plot_moments_histogram(scene, **{argument: limits})
 
 
 def test_plot_moments_histogram_dark() -> None:
