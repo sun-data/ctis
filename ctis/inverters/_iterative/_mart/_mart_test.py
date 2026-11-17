@@ -234,7 +234,7 @@ class TestMartInverter(
         fig, axs = result.plot_moments_histogram(scene, axis="wavelength")
 
         assert isinstance(fig, plt.Figure)
-        for ax in axs:
+        for ax in axs.flat:
             assert isinstance(ax, plt.Axes)
 
         plt.close(fig)

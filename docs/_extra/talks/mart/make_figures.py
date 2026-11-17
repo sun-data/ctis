@@ -392,12 +392,13 @@ def main():
         fig.savefig(directory / "spectrum_comparison.png")
         plt.close(fig)
 
-        # The line moments of every pixel
+        # The errors of the line moments of every pixel, in two rows of
+        # panels, which the slide scales down to fit beside the code
         with np.errstate(divide="ignore", invalid="ignore"):
             fig, axs = inversion.plot_moments_histogram(scene, axis="wavelength")
-        fig.set_size_inches(17.6, 6.6)
+        fig.set_size_inches(17.6, 13.2)
         # separate the colorbar labels from their tick labels
-        for cax in fig.axes[len(axs) :]:
+        for cax in fig.axes[axs.size :]:
             cax.xaxis.labelpad = 12
         fig.savefig(directory / "moments.png")
         plt.close(fig)
