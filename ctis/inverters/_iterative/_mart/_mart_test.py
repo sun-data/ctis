@@ -231,11 +231,13 @@ class TestMartInverter(
             guess=guess,
         )
 
-        fig, axs = result.plot_moments(scene, axis="wavelength")
+        fig, axs = result.plot_moments_histogram(scene, axis="wavelength")
 
         assert isinstance(fig, plt.Figure)
-        for ax in axs:
+        for ax in axs.flat:
             assert isinstance(ax, plt.Axes)
+
+        plt.close(fig)
 
     @pytest.mark.parametrize("images", [images])
     @pytest.mark.parametrize(
@@ -312,7 +314,7 @@ def test__call__no_runtime_warnings():
     assert result.success
 
 
-def test_plot_moments_no_runtime_warnings():
+def test_plot_moments_histogram_no_runtime_warnings():
     """
     The columns of each histogram which contain no pixels are expected to
     divide by zero, so plotting the moments must not warn about them.
@@ -331,7 +333,10 @@ def test_plot_moments_no_runtime_warnings():
 
     with warnings.catch_warnings():
         warnings.simplefilter("error", RuntimeWarning)
-        fig, axs = result.plot_moments(scene_background, axis="wavelength")
+        fig, axs = result.plot_moments_histogram(
+            truth=scene_background,
+            axis="wavelength",
+        )
 
     plt.close(fig)
 

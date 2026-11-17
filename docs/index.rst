@@ -50,6 +50,9 @@ Features
   which maps the spectral radiance of a scene to the electrons measured by the sensor,
   optionally with the uncertainty of each pixel,
   and its transpose, :meth:`~ctis.instruments.AbstractInstrument.backproject`.
+- :meth:`~ctis.instruments.AbstractInstrument.snr`,
+  the signal-to-noise ratio of the line profile in every pixel of a scene,
+  as if that pixel were alone in the scene.
 - :class:`~ctis.inverters.MartInverter`,
   an implementation of the multiplicative algebraic reconstruction technique (MART)
   :cite:p:`Gordon1970`,
@@ -59,9 +62,10 @@ Features
   and the correlation between the predicted images and the residuals.
 - :func:`~ctis.scenes.gaussians`,
   a synthetic test scene of Gaussian blobs with different Doppler shifts,
-  and :meth:`~ctis.inverters.AbstractInversionResult.plot_moments`,
-  which compares the radiance, Doppler shift, and line width of a reconstruction against the
-  true scene.
+  :meth:`~ctis.inverters.AbstractInversionResult.plot_moments`,
+  which maps the radiance, Doppler shift, and line width of a reconstruction,
+  and :meth:`~ctis.inverters.AbstractInversionResult.plot_moments_histogram`,
+  which compares them against the true scene pixel by pixel.
 
 Key concepts
 ============

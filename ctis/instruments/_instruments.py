@@ -109,6 +109,81 @@ class AbstractInstrument(
             units of the backprojection and is not converted.
         """
 
+    @abc.abstractmethod
+    def snr(
+        self,
+        scene: na.AbstractScalar | na.AbstractFunctionArray,
+    ) -> na.AbstractScalar:
+        r"""
+        The signal-to-noise ratio of the spectral line profile in every pixel
+        of a scene, as if that pixel were alone in the scene.
+
+        It is that of the images which the pixel would give if the rest of
+        the scene were dark: the signal :math:`s` of every pixel of the
+        sensor which its light lands on, against the shot noise of that
+        signal and the read noise of that pixel, :math:`\sigma`,
+        summed in quadrature over the pixels :math:`i` of every channel
+        :math:`c`,
+
+        .. math::
+
+            \text{SNR}^2 = \sum_{c, i}
+            \frac{s_{c i}^2}{F_c \, s_{c i} + \sigma_{c i}^2},
+
+        where :math:`F_c` is the variance of the shot noise of a channel for
+        each unit of its signal.
+
+        The light which the rest of the scene sends to the same pixels of the
+        sensor is left out, so this ratio is an upper limit to how well the
+        line profile of a pixel can be measured, and how far below it an
+        inversion lands depends on the scene.
+        Light which misses the sensor adds nothing to it.
+
+        If the scene has several spectral lines, the ratio is that of each
+        line of a pixel alone.
+
+        The result has the two spatial axes of the scene, the axis of its
+        spectral lines, if it has several, and any axis that the scene has
+        beyond those of :attr:`coordinates_scene`.
+
+        The images of every pixel alone are read off the sparse matrix of the
+        forward model, which :class:`~ctis.inverters.MartInverter` describes.
+        If nothing has assembled the matrices of this instrument yet, this
+        does, as an inversion would, and they are kept for the next one.
+        An instrument which computes :meth:`image` from weights releases
+        those when its matrices are assembled, and computes them again the
+        next time it needs them.
+
+        Parameters
+        ----------
+        scene
+            The spectral radiance of the scene,
+            evaluated on :attr:`coordinates_scene`,
+            in the units that the matrices of this instrument take a scene
+            in, which are those that :meth:`image` takes but for the
+            exception below.
+            A negative radiance is taken to be zero, and a pixel with a
+            radiance which is not a number has a ratio which is not a number
+            either.
+
+        Raises
+        ------
+        ValueError
+            If this instrument cannot be expressed as a pair of sparse
+            matrices, since the images of every pixel alone are read off the
+            matrix of the forward model.
+
+            If the scene is in units which the matrices cannot take.
+            Those of an :class:`OptikaInstrument` take a scene in photons,
+            and one in units of energy only if they hold the energy of the
+            photons of each voxel.
+            They hold none if the wavelengths of the scene are given for
+            each channel, or if the sensor does not divide a scene in units
+            of energy by the energy of a photon at each wavelength, so such
+            an instrument takes a scene in photons here, whichever
+            :meth:`image` takes.
+        """
+
     @property
     @abc.abstractmethod
     def coordinates_scene(self) -> na.AbstractSpectralPositionalVectorArray:
@@ -240,7 +315,10 @@ class AbstractInstrument(
         """
         return (*self._shape_line, self.axis_wavelength)
 
-    def _operators(self, dtype: type = np.float64) -> None | Operators:
+    def _operators(
+        self,
+        dtype: None | type = np.float64,
+    ) -> None | Operators:
         """
         This instrument as a pair of sparse matrices which act on plain
         arrays, or :obj:`None` if it does not provide them.
@@ -252,7 +330,9 @@ class AbstractInstrument(
         ----------
         dtype
             The precision of the matrices and of the arrays they act on,
-            :obj:`numpy.float64` or :obj:`numpy.float32`.
+            :obj:`numpy.float64` or :obj:`numpy.float32`, or :obj:`None` for
+            the precision that the matrices are kept in, which is
+            :obj:`numpy.float64` if none are kept.
         """
         return None
 
@@ -356,7 +436,10 @@ class AbstractLinearInstrument(
             getattr(cls, name, None) is not getattr(owner, name, None) for name in names
         )
 
-    def _operators(self, dtype: type = np.float64) -> None | Operators:
+    def _operators(
+        self,
+        dtype: None | type = np.float64,
+    ) -> None | Operators:
         """
         This instrument as a pair of sparse matrices which act on plain
         arrays, or :obj:`None` if it cannot be expressed as one.
@@ -385,8 +468,13 @@ class AbstractLinearInstrument(
         ----------
         dtype
             The precision of the matrices and of the arrays they act on,
-            :obj:`numpy.float64` or :obj:`numpy.float32`.
+            :obj:`numpy.float64` or :obj:`numpy.float32`, or :obj:`None` for
+            the precision that the matrices are kept in, which is
+            :obj:`numpy.float64` if none are kept.
         """
+        if dtype is None:
+            kept = self._operators_kept
+            dtype = np.float64 if kept is None else kept[0]
         dtype = np.dtype(dtype)
 
         if self._overridden():
@@ -783,6 +871,88 @@ class AbstractLinearInstrument(
             inputs=coordinates,
             outputs=values_output,
         )
+
+    def snr(
+        self,
+        scene: na.AbstractScalar | na.AbstractFunctionArray,
+    ) -> na.AbstractScalar:
+
+        # the images of every pixel of the scene alone are read off the
+        # matrix of the forward model, in whichever precision the matrices
+        # are kept in, since another precision would assemble them again
+        operators = self._operators(None)
+        if operators is None:
+            raise ValueError(
+                "The signal-to-noise ratio is computed from the instrument as "
+                "a pair of sparse matrices, which this instrument does not "
+                "provide."
+            )
+
+        if isinstance(scene, na.AbstractFunctionArray):
+            if not np.all(scene.inputs == self.coordinates_scene):
+                raise ValueError(
+                    "`scene.inputs` and `self.coordinates_scene` are not equal."
+                )
+            scene = scene.outputs
+
+        scene = na.as_named_array(scene)
+        if not isinstance(scene, na.AbstractScalarArray):
+            raise ValueError(
+                f"The scene should be an array of scalars, but it is a "
+                f"`{type(scene).__name__}`."
+            )
+
+        # a scene in units of energy, for operators which take a scene in
+        # photons, is divided by the energy of the photons of each voxel,
+        # if the operators have it, as an inversion divides its first guess
+        unit = na.unit_normalized(scene)
+        unit_scene = operators.unit_scene
+        units = f"{unit_scene}"
+        energy = None
+        if not unit.is_equivalent(unit_scene):
+            energy = operators.energy
+            if energy is not None:
+                unit_scene = unit_scene * operators.unit_energy
+                units = f"{units}, or of {unit_scene}"
+        if not unit.is_equivalent(unit_scene):
+            raise ValueError(
+                f"The scene is in units of {unit}, but the sparse matrices of "
+                f"this instrument take a scene in units of {units}."
+            )
+
+        # every other axis of the scene is an axis of the frames
+        shape_scene = operators.shape_scene
+        shape_frames = frames(
+            shape=na.shape(scene),
+            shape_own=shape_scene,
+            shape_other=operators.shape_images,
+        )
+        values = None
+        if shape_frames is not None:
+            values = framed(
+                a=scene,
+                shape=shape_scene,
+                shape_frames=shape_frames,
+                unit=unit_scene,
+                dtype=operators.dtype,
+            )
+        if values is None:
+            raise ValueError(
+                f"The scene should have the axes of `coordinates_scene`, "
+                f"{shape_scene}, and any axes of its own beyond those which "
+                f"are not axes of the images, but its axes are "
+                f"{na.shape(scene)}."
+            )
+        if energy is not None:
+            values = values / energy
+
+        # a voxel cannot send less than no light
+        result = operators.snr(np.maximum(values, 0))
+
+        axes = tuple(ax for ax in shape_scene if ax != self.axis_wavelength)
+        result = result.reshape(result.shape[:~0] + tuple(shape_frames.values()))
+
+        return na.ScalarArray(result, axes=(*axes, *shape_frames))
 
 
 @dataclasses.dataclass

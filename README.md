@@ -55,6 +55,8 @@ pip install --upgrade ctis
 - A forward model, `image()`, which maps the spectral radiance of a scene to the electrons
   measured by the sensor, optionally with the uncertainty of each pixel,
   and its transpose, `backproject()`.
+- `snr()`, the signal-to-noise ratio of the line profile in every pixel of a scene,
+  as if that pixel were alone in the scene.
 - [`MartInverter`](https://ctis.readthedocs.io/en/latest/_autosummary/ctis.inverters.MartInverter.html),
   an implementation of the multiplicative algebraic reconstruction technique (MART),
   which iterates until the mean χ² of the predicted images stops improving.
@@ -63,9 +65,9 @@ pip install --upgrade ctis
   images and the residuals.
 - [`gaussians()`](https://ctis.readthedocs.io/en/latest/_autosummary/ctis.scenes.gaussians.html),
   a synthetic test scene of Gaussian blobs with different Doppler shifts,
-  and [`plot_moments()`](https://ctis.readthedocs.io/en/latest/_autosummary/ctis.inverters.AbstractInversionResult.html),
-  which compares the radiance, Doppler shift, and line width of a reconstruction against the
-  true scene.
+  [`plot_moments()`](https://ctis.readthedocs.io/en/latest/_autosummary/ctis.inverters.AbstractInversionResult.html),
+  which maps the radiance, Doppler shift, and line width of a reconstruction,
+  and `plot_moments_histogram()`, which compares them against the true scene pixel by pixel.
 
 ## Key concepts
 
