@@ -950,7 +950,7 @@ The rest are questions to settle before the milestone that needs them.
   The matrices of :class:`~ctis.instruments.OptikaInstrument` are assembled,
   and the weights released, before the guess is looked at.
   So an inversion whose guess the matrices cannot take,
-  such as one which is not a plain array of the scene,
+  such as one in units which they cannot convert to their own,
   is left to the reference path,
   which computes the weights a second time and holds them beside the matrices.
   So does imaging a solution with the instrument afterward,
