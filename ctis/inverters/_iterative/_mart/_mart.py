@@ -41,8 +41,9 @@ class MartInverter(
     The scene of each frame is reconstructed on its own, and stops at its
     own iteration, exactly as it would alone, and the result has the axes of
     the frames, see :class:`~ctis.inverters.IterativeInversionResult`.
-    A first guess is the same for every frame, unless it has the axes of
-    the frames too.
+    A first guess is broadcast to the scene of every frame.
+    One without the axes of the frames is the guess of every frame, and
+    one without the axis of the wavelengths is the same at every wavelength.
     On the matrices, the frames are iterated on together and share each pass
     over them, which takes less time for each frame than a pass of its own.
 
@@ -156,11 +157,13 @@ class MartInverter(
         guess
             The initial guess at the reconstructed scene, the same for every
             frame, or one for each frame.
-            It should have every axis of the scene, and any other axis
-            of it should be an axis of the frames, with as many elements
-            as the frames, or with one, which is then the guess of every
-            frame along that axis.
-            A guess with any other axes is refused.
+            It is broadcast to the scene of every frame: each of its axes
+            should be an axis of the scene or of the frames, with as many
+            elements as there, or with one, and it is the same along an
+            axis which it does not have, or has one element along.
+            So a single value is a guess, and so is a map without the axis
+            of the wavelengths, which is the same at every wavelength.
+            A guess with any other axis, or any other length, is refused.
             Must be evaluated on the same coordinates as
             :attr:`~ctis.instruments.AbstractInstrument.coordinates_scene`
             attribute of :attr:`instrument`.
@@ -233,11 +236,12 @@ class MartInverter(
 
         # the backprojection of one frame has every axis of the instrument
         # and of the scene, and none of the frames, and it is only needed
-        # for images with axes of their own, or to check a guess
+        # for images with axes of their own
         shape_frames = dict()
         shape_scene = None
-        if shape_extra or guess is not None:
-            shape_scene = self._shape_scene(images, shape_extra)
+        if shape_extra:
+            frame = images[{ax: 0 for ax in shape_extra}]
+            shape_scene = self._shape_scene(instrument.backproject(frame).outputs)
             shape_frames = {
                 ax: num for ax, num in shape_extra.items() if ax not in shape_scene
             }
@@ -256,11 +260,8 @@ class MartInverter(
                 f"element at a time along them."
             )
 
-        if guess is not None:
-            self._check_guess(guess, shape_scene, shape_frames)
-
         if shape_frames:
-            return self._call_frames(images, guess, verbose, shape_frames)
+            return self._call_frames(images, guess, verbose, shape_scene, shape_frames)
 
         return self._call_named(images, guess, verbose)
 
@@ -282,38 +283,27 @@ class MartInverter(
 
         return {ax: shape[ax] for ax in shape if ax not in axis_images}
 
-    def _shape_scene(
-        self,
-        images: na.FunctionArray[na.SpectralPositionalVectorArray, na.ScalarArray],
-        shape_extra: dict[str, int],
-    ) -> dict[str, int]:
+    def _shape_scene(self, backprojected: na.AbstractScalar) -> dict[str, int]:
         """
         The axes of the scene of one frame and their lengths, for an
         inversion which runs on the methods of the instrument, with any axes
         which the instrument itself has, such as a time that its exposure
         varies along.
 
-        The instrument is asked through the backprojection of one frame,
-        which has every axis of the instrument and of the scene, and none of
-        the frames.
+        They are the axes of the backprojection of the frame, which has
+        every axis of the instrument and of the scene, and none of the
+        frames, without those of the channels.
         The axes of the frames are therefore those of the images, beyond
         those of the channels and the sensor, which are not among these.
 
         Parameters
         ----------
-        images
-            The observed images.
-        shape_extra
-            The axes of the images beyond those of the channels and the
-            sensor, and their lengths.
+        backprojected
+            The values of the backprojection of the images of one frame.
         """
-        instrument = self.instrument
+        axis_channel = self.instrument._axis_channel
 
-        frame = images[{ax: 0 for ax in shape_extra}]
-
-        shape = na.shape(instrument.backproject(frame).outputs)
-
-        axis_channel = instrument._axis_channel
+        shape = na.shape(backprojected)
 
         return {ax: num for ax, num in shape.items() if ax not in axis_channel}
 
@@ -324,12 +314,12 @@ class MartInverter(
         shape_frames: dict[str, int],
     ) -> None:
         """
-        Check that a guess has every axis of the scene, with its length, and
-        that any other axis it has is an axis of the frames, with one element
-        or with as many as the frames.
+        Check that a guess can be broadcast to the scene of every frame:
+        that each of its axes is an axis of the scene or of the frames, with
+        one element or with as many as there.
 
-        Neither path of the inverter can invert any other guess, so both
-        check it here, before they invert anything.
+        Both paths of the inverter broadcast such a guess, and neither can
+        invert any other, so both check it here, before they image anything.
 
         Parameters
         ----------
@@ -342,28 +332,21 @@ class MartInverter(
         """
         shape = na.shape(guess)
 
-        shape_others = {ax: num for ax, num in shape.items() if ax not in shape_scene}
+        shape_all = shape_scene | shape_frames
 
-        valid = all(shape.get(ax) == num for ax, num in shape_scene.items())
-        valid = valid and all(
-            ax in shape_frames and num in (1, shape_frames[ax])
-            for ax, num in shape_others.items()
+        valid = all(
+            ax in shape_all and num in (1, shape_all[ax]) for ax, num in shape.items()
         )
 
         if valid:
             return
 
-        if shape_frames:
-            others = (
-                f"and any others should be those of the frames, "
-                f"{shape_frames}, with one element or with as many"
-            )
-        else:
-            others = "and no others, since the images are one frame"
+        frames = f" or of the frames, {shape_frames}" if shape_frames else ""
 
         raise ValueError(
-            f"The guess should have the axes of the scene, {shape_scene}, "
-            f"{others}, but its axes are {shape}."
+            f"Every axis of the guess should be an axis of the scene, "
+            f"{shape_scene}{frames}, with one element or with as many, but "
+            f"its axes are {shape}."
         )
 
     def _arrays(
@@ -397,8 +380,9 @@ class MartInverter(
         That energy is the last of the results, for the solution to be
         multiplied by, and it is :obj:`None` for any other guess.
 
-        A guess whose axes are not those of the scene and of the frames
-        raises an error, see :meth:`_check_guess`.
+        A guess which cannot be broadcast to the scene of every frame raises
+        an error, see :meth:`_check_guess`, since the methods of the
+        instrument cannot invert it either.
 
         Parameters
         ----------
@@ -430,8 +414,9 @@ class MartInverter(
         if shape_frames is None:
             return None
 
-        # a guess with other axes than those of the scene and of the frames
-        # cannot be inverted on the methods of the instrument either
+        # a guess which cannot be broadcast to the scene of every frame is
+        # refused here, since the methods of the instrument cannot invert
+        # it either, and would backproject a frame before they refused it
         if guess is not None:
             self._check_guess(guess, operators.shape_scene, shape_frames)
 
@@ -475,6 +460,9 @@ class MartInverter(
 
             if scene is None:
                 return None
+
+            # the guess is the same along an axis of the scene or of the
+            # frames which it does not vary along
             scene = np.broadcast_to(scene, shape_scene + tuple(shape_frames.values()))
             scene = np.array(scene, dtype=operators.dtype, order="C")
             scene = scene.reshape(shape_scene + (num_frame,))
@@ -688,6 +676,7 @@ class MartInverter(
         images: na.FunctionArray[na.SpectralPositionalVectorArray, na.ScalarArray],
         guess: None | na.ScalarArray,
         verbose: bool,
+        shape_scene: dict[str, int],
         shape_frames: dict[str, int],
     ) -> IterativeInversionResult:
         """
@@ -702,19 +691,20 @@ class MartInverter(
             The initial guess at the reconstructed scene.
         verbose
             Whether to print the progress of the iteration.
+        shape_scene
+            The axes of the scene of one frame and their lengths, see
+            :meth:`_shape_scene`.
         shape_frames
             The axes of the frames and their lengths.
         """
         axis_iteration = self.axis_iteration
 
         if guess is not None:
-            # a guess with one element along an axis of the frames is the
-            # guess of every frame along it
-            shape_guess = na.shape(guess)
-            shape_guess = shape_guess | {
-                ax: shape_frames[ax] for ax in shape_guess if ax in shape_frames
-            }
-            guess = na.broadcast_to(guess, shape_guess)
+            # the guess is checked before any frame is inverted, and it is
+            # the guess of every frame along an axis of the frames which it
+            # does not have, or has one element along
+            self._check_guess(guess, shape_scene, shape_frames)
+            guess = na.broadcast_to(guess, na.shape(guess) | shape_frames)
 
         results = [
             self._call_named(
@@ -909,18 +899,22 @@ class MartInverter(
         images_inputs = images.inputs
         images = images.outputs
 
+        backprojected = instrument.backproject(images).outputs
+
         if guess is None:
-            scene = instrument.backproject(images).outputs
-            scene = scene.mean(axis_channel)
+            scene = backprojected.mean(axis_channel)
             scene.ndarray[:] = scene.ndarray.mean()
         else:
-            scene = guess.copy()
+            # the guess is broadcast to the scene, which the backprojection
+            # has every axis of, into an array of its own, which the
+            # iteration is free to overwrite
+            shape_scene = self._shape_scene(backprojected)
+            self._check_guess(guess, shape_scene, dict())
+            scene = na.broadcast_to(guess, na.shape(guess) | shape_scene).copy()
 
         num_channel = instrument.num_channel
 
         gamma = self.gamma
-
-        backprojected = instrument.backproject(images).outputs
 
         backprojected = np.maximum(backprojected, 0)
 

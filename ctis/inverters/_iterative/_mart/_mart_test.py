@@ -430,11 +430,6 @@ def test__call__guess_unsupported(guess: na.ScalarArray) -> None:
 @pytest.mark.parametrize(
     argnames="shape_frames,shape_guess",
     argvalues=[
-        (
-            dict(),
-            {ax: scene.outputs.shape[ax] for ax in ("scene_x", "scene_y")},
-        ),
-        (dict(), scene.outputs.shape | dict(wavelength=1)),
         (dict(), scene.outputs.shape | dict(scene_x=64)),
         (dict(), scene.outputs.shape | dict(time=3)),
         (dict(), scene.outputs.shape | dict(time=1)),
@@ -443,8 +438,6 @@ def test__call__guess_unsupported(guess: na.ScalarArray) -> None:
         (dict(time=3), scene.outputs.shape | dict(repeat=3)),
     ],
     ids=[
-        "without an axis of the scene",
-        "one element along an axis of the scene",
         "another length along an axis of the scene",
         "an axis which one frame does not have",
         "an axis of one element which one frame does not have",
@@ -459,9 +452,11 @@ def test__call__guess_axes(
     shape_guess: dict[str, int],
 ) -> None:
     """
-    A guess whose axes are not those of the scene and of the frames is
+    A guess which cannot be broadcast to the scene of every frame is
     refused, on the operators of the instrument and on its methods, before
-    either images anything.
+    either images anything: one with an axis which is neither of the scene
+    nor of the frames, or with neither one element nor all of them along
+    one which is.
     """
     images_frames = _images_frames(shape_frames) if shape_frames else images
     guess = na.ScalarArray.ones(shape_guess) * scene.outputs.unit
@@ -481,12 +476,76 @@ def test__call__guess_axes(
         threshold_convergence=1e-2,
     )
 
-    with pytest.raises(ValueError, match="The guess should have the axes"):
+    with pytest.raises(ValueError, match="Every axis of the guess"):
         a(images_frames, guess=guess)
 
     # the iteration on the methods of the instrument refuses it the same way
-    with pytest.raises(ValueError, match="The guess should have the axes"):
+    with pytest.raises(ValueError, match="Every axis of the guess"):
         _reference(a, images_frames, guess)
+
+
+@pytest.mark.parametrize("intermediate", [False, True])
+@pytest.mark.parametrize(
+    argnames="shape_frames,shape_guess",
+    argvalues=[
+        (dict(), dict()),
+        (
+            dict(),
+            {ax: scene.outputs.shape[ax] for ax in ("scene_x", "scene_y")},
+        ),
+        (dict(), scene.outputs.shape | dict(wavelength=1)),
+        (dict(time=3), dict(time=3)),
+    ],
+    ids=[
+        "one value",
+        "without the axis of the wavelengths",
+        "one element along the axis of the wavelengths",
+        "one value for each frame",
+    ],
+)
+def test__call__guess_broadcast(
+    shape_frames: dict[str, int],
+    shape_guess: dict[str, int],
+    intermediate: bool,
+) -> None:
+    """
+    A guess is broadcast to the scene of every frame: it is the same along
+    an axis of the scene or of the frames which it does not have, or has
+    one element along.
+    It is inverted bit for bit as the guess with every axis is, and the
+    methods of the instrument give the same, whether or not the solution of
+    every iteration is kept, and it is not overwritten.
+    """
+    images_frames = _images_frames(shape_frames) if shape_frames else images
+    shape = scene.outputs.shape | shape_frames
+
+    guess = na.random.uniform(low=1, high=2, shape_random=shape_guess, seed=0)
+    guess = guess * scene.outputs.unit
+    guess_original = guess.copy()
+
+    # the same guess with every axis, which a product with ones gives
+    guess_whole = guess * na.ScalarArray.ones(shape)
+
+    a = ctis.inverters.MartInverter(
+        instrument=instrument,
+        threshold_convergence=1e-2,
+        intermediate=intermediate,
+    )
+
+    assert guess.shape == shape_guess
+    assert guess_whole.shape == shape
+    assert _uses_operators(a, images_frames, guess)
+
+    result = a(images_frames, guess=guess)
+    expected = a(images_frames, guess=guess_whole)
+
+    assert np.all(result.solutions.outputs == expected.solutions.outputs)
+    _assert_same(result, expected)
+
+    # the iteration on the methods of the instrument broadcasts it the same way
+    _assert_same(_reference(a, images_frames, guess), expected)
+
+    assert np.all(guess == guess_original)
 
 
 def test__call__images_unsupported() -> None:
@@ -724,11 +783,8 @@ def test__call__frames_guess(guess: na.ScalarArray) -> None:
     assert result.solution.outputs.unit == guess.unit
     assert np.all(guess == guess_original)
 
-    # the guess of each frame
-    shape_guess = guess.shape | {
-        ax: shape_frames[ax] for ax in guess.shape if ax in shape_frames
-    }
-    guess_frames = na.broadcast_to(guess, shape_guess)
+    # the guess of each frame, which a product with ones gives
+    guess_frames = guess * na.ScalarArray.ones(shape_frames)
 
     for index in na.ndindex(shape_frames):
         expected = a(images_frames[index], guess=guess_frames[index])
@@ -949,21 +1005,37 @@ def test_dtype_without_operators() -> None:
         a(images)
 
 
-def test_dtype_fallback() -> None:
+@pytest.mark.parametrize(
+    argnames="images_fallback,guess",
+    argvalues=[
+        (images.replace(outputs=images.outputs.add_axes("wavelength")), None),
+        (images, na.ScalarArray.ones(scene.outputs.shape)),
+        (images, na.ScalarArray.ones(scene.outputs.shape) * u.photon / u.s / u.cm**2),
+    ],
+    ids=[
+        "images with an axis of the scene",
+        "a guess without a unit",
+        "a guess in another unit",
+    ],
+)
+def test_dtype_fallback(
+    images_fallback: na.FunctionArray[na.SpectralPositionalVectorArray, na.ScalarArray],
+    guess: None | na.ScalarArray,
+) -> None:
     """
     Single precision is refused whenever the iteration cannot run on the
-    operators, and not only when the instrument does not provide them.
+    operators, and not only when the instrument does not provide them:
+    here because of the images, or because of the guess.
     """
     a = ctis.inverters.MartInverter(
         instrument=instrument,
         dtype=np.float32,
     )
-    images_wavelength = images.replace(outputs=images.outputs.add_axes("wavelength"))
 
-    assert not _uses_operators(a, images_wavelength)
+    assert not _uses_operators(a, images_fallback, guess)
 
     with pytest.raises(ValueError, match="only available on the sparse matrices"):
-        a(images_wavelength)
+        a(images_fallback, guess=guess)
 
 
 def _assert_close(a: na.AbstractScalar, b: na.AbstractScalar) -> None:
@@ -1046,6 +1118,52 @@ def test__call__instrument_axis_frames() -> None:
     )(images_frames)
 
     assert result.num_iteration.shape == shape_frames
+    assert np.all(result.num_iteration == expected.num_iteration)
+    assert np.all(result.success == expected.success)
+    assert result.solution.outputs.shape["time"] == 1
+    _assert_close(result.solution.outputs[dict(time=0)], expected.solution.outputs)
+
+
+@pytest.mark.parametrize("intermediate", [False, True])
+@pytest.mark.parametrize(
+    argnames="shape_frames",
+    argvalues=[dict(), dict(repeat=2)],
+    ids=["one frame", "a guess for each frame"],
+)
+def test__call__instrument_axis_guess(
+    shape_frames: dict[str, int],
+    intermediate: bool,
+) -> None:
+    """
+    A guess need not have an axis which the instrument itself varies along:
+    it is broadcast along it, as it is along an axis of the scene, and the
+    images are inverted to the solution they have without that axis,
+    whether or not the solution of every iteration is kept.
+    """
+    images_frames = _images_frames(shape_frames) if shape_frames else images
+    images_time = images_frames.replace(
+        outputs=images_frames.outputs.add_axes("time"),
+    )
+
+    guess = na.random.uniform(
+        low=1,
+        high=2,
+        shape_random=scene.outputs.shape | shape_frames,
+        seed=0,
+    )
+    guess = guess * scene.outputs.unit
+
+    kwargs = dict(threshold_convergence=1e-2, intermediate=intermediate)
+    a = ctis.inverters.MartInverter(instrument=_instrument_time(1), **kwargs)
+
+    assert not _uses_operators(a, images_time, guess)
+
+    result = a(images_time, guess=guess)
+    expected = ctis.inverters.MartInverter(instrument=instrument, **kwargs)(
+        images_frames,
+        guess=guess,
+    )
+
     assert np.all(result.num_iteration == expected.num_iteration)
     assert np.all(result.success == expected.success)
     assert result.solution.outputs.shape["time"] == 1
