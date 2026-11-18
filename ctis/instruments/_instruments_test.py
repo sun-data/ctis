@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, ClassVar
 import pytest
 import abc
 import math
@@ -83,11 +83,13 @@ def _coordinates_same(
             position=c.position,
         )
 
-    return {
+    # another unit and back leaves the rounding which the check is for
+    position_back = position.to(u.rad).to(unit)
+    assert not np.all(position_back == position)
+
+    result = {
         "another kind of vector": other,
-        "through another unit and back": c.replace(
-            position=position.to(u.rad).to(unit),
-        ),
+        "through another unit and back": c.replace(position=position_back),
         "in other units": c.replace(
             wavelength=c.wavelength.to(u.m),
             position=position.to(u.deg),
@@ -97,6 +99,14 @@ def _coordinates_same(
             position=position * (1 + 1e-12),
         ),
     }
+
+    # the rest wavelength of a Doppler grid is part of it
+    if isinstance(c, na.AbstractDopplerPositionalVectorArray):
+        result["a rest wavelength in other units"] = c.replace(
+            wavelength_rest=c.wavelength_rest.to(u.nm),
+        )
+
+    return result
 
 
 def _coordinates_other(
@@ -109,7 +119,7 @@ def _coordinates_other(
     position = c.position.explicit
     axis_x, _ = a.axis_scene_xy
 
-    return {
+    result = {
         "twice the size": c.replace(position=2 * position),
         "positions off by a millionth": c.replace(
             position=position * (1 + 1e-6),
@@ -121,9 +131,22 @@ def _coordinates_other(
             position=position[{axis_x: slice(None, -1)}],
         ),
         "wavelengths in other units": c.replace(wavelength=c.wavelength * u.s),
+        "no wavelengths": c.replace(wavelength=None),
+        "no positions": c.replace(position=None),
+        "one component of the positions": c.replace(
+            position=na.Cartesian2dVectorArray(x=position.x, y=None),
+        ),
         "positions alone": c.position,
         "no coordinates": None,
     }
+
+    # the rest wavelength of a Doppler grid is part of it
+    if isinstance(c, na.AbstractDopplerPositionalVectorArray):
+        result["another rest wavelength"] = c.replace(
+            wavelength_rest=2 * c.wavelength_rest,
+        )
+
+    return result
 
 
 def _assert_close(result: na.AbstractScalar, expected: na.AbstractScalar) -> None:
@@ -259,15 +282,16 @@ class AbstractTestAbstractInstrument(
 
         expected = a.image(scene.outputs, **kwargs)
 
-        for inputs in _coordinates_same(a).values():
+        for name, inputs in _coordinates_same(a).items():
             result = a.image(scene.replace(inputs=inputs), **kwargs)
 
-            assert np.all(result.inputs == expected.inputs)
-            assert np.all(result.outputs == expected.outputs)
+            assert np.all(result.inputs == expected.inputs), name
+            assert np.all(result.outputs == expected.outputs), name
 
-        for inputs in _coordinates_other(a).values():
+        for name, inputs in _coordinates_other(a).items():
             with pytest.raises(ValueError, match="are not equal"):
                 a.image(scene.replace(inputs=inputs), **kwargs)
+                pytest.fail(f"imaged a scene with {name}")  # pragma: nocover
 
     def test_backproject(
         self,
@@ -712,13 +736,14 @@ class AbstractTestAbstractInstrument(
         scene = _scene(a)
         expected = a.snr(scene.outputs)
 
-        for inputs in _coordinates_same(a).values():
-            assert np.all(a.snr(scene.replace(inputs=inputs)) == expected)
+        for name, inputs in _coordinates_same(a).items():
+            assert np.all(a.snr(scene.replace(inputs=inputs)) == expected), name
 
         # a scene on another grid than that of the instrument has no ratio
-        for inputs in _coordinates_other(a).values():
+        for name, inputs in _coordinates_other(a).items():
             with pytest.raises(ValueError, match="are not equal"):
                 a.snr(scene.replace(inputs=inputs))
+                pytest.fail(f"gave a ratio to a scene with {name}")  # pragma: nocover
 
 
 def _psf(a: ctis.instruments.IdealInstrument) -> na.ScalarArray:
@@ -1806,6 +1831,108 @@ class TestIdealInstrument(
         assert imaged._operators(None) is None
         with pytest.raises(ValueError, match="pair of sparse matrices"):
             imaged.snr(scene)
+
+
+def test_image_coordinates_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    The coordinates which a scene is given with are checked once for each
+    image, whichever computations image it: here the matrices, which leave
+    a scene with an axis of the images to the weights, and the weights,
+    which image it a second time for its uncertainty.
+    """
+    a = instrument_ideal
+    scene = _scene(a)
+    scene = scene.replace(
+        outputs=scene.outputs * na.ScalarArray.ones(dict(channel=a.num_channel)),
+    )
+
+    count = 0
+    check = ctis.instruments._instruments._check_coordinates
+
+    def counted(*args: Any, **kwargs: Any) -> None:
+        nonlocal count
+        count += 1
+        check(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "ctis.instruments._instruments._check_coordinates",
+        counted,
+    )
+
+    assert a._image_matrices(scene.outputs, noise=True, uncertainty=True) is None
+
+    a.image(scene, noise=True, uncertainty=True)
+
+    assert count == 1
+
+
+def test_check_coordinates_not_finite() -> None:
+    """
+    A grid with a vertex which is not finite is the same as coordinates
+    which are equal to it, and as no others, since it has no largest for a
+    tolerance to be a fraction of.
+    Neither gives a warning, for the difference of two infinities.
+    """
+    check = ctis.instruments._instruments._check_coordinates
+    kwargs = dict(tolerance=1e-9, name="`scene.inputs`")
+
+    c = instrument_ideal.coordinates_scene
+    axis = instrument_ideal.axis_wavelength
+
+    wavelength = c.wavelength.explicit.copy()
+    wavelength[{axis: ~0}] = np.inf * wavelength.unit
+    grid = c.replace(wavelength=wavelength)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+
+        check(c.replace(wavelength=wavelength.copy()), grid, **kwargs)
+
+        with pytest.raises(ValueError, match="their wavelengths are further apart"):
+            check(c.replace(wavelength=wavelength * (1 + 1e-12)), grid, **kwargs)
+
+        with pytest.raises(ValueError, match="their wavelengths are further apart"):
+            check(c, grid, **kwargs)
+
+
+@dataclasses.dataclass
+class _IdealInstrumentSingle(
+    ctis.instruments.IdealInstrument,
+):
+    """
+    An ideal instrument which takes a scene to be on its grid to within the
+    rounding of single precision.
+    """
+
+    _tolerance_coordinates: ClassVar[float] = 1e-6
+
+
+def test_tolerance_coordinates() -> None:
+    """
+    Coordinates in single precision are further from the grid than the
+    rounding of double precision, so a scene which is given with them is
+    refused, unless the instrument has a tolerance for them.
+    """
+    a = instrument_ideal
+    scene = _scene(a)
+
+    c = a.coordinates_scene
+    inputs = c.replace(
+        wavelength=c.wavelength.astype(np.float32),
+        position=c.position.explicit.astype(np.float32),
+    )
+    scene_single = scene.replace(inputs=inputs)
+
+    with pytest.raises(ValueError, match="are further apart than 1e-09"):
+        a.image(scene_single, noise=False)
+
+    kwargs = {f.name: getattr(a, f.name) for f in dataclasses.fields(a) if f.init}
+    b = _IdealInstrumentSingle(**kwargs)
+
+    result = b.image(scene_single, noise=False)
+    expected = b.image(scene.outputs, noise=False)
+
+    assert np.all(result.outputs == expected.outputs)
 
 
 def test_num_channel_axes_shared() -> None:

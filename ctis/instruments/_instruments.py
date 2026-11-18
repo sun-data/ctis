@@ -1,5 +1,5 @@
 import numpy as np
-from typing import Callable, ClassVar
+from typing import Any, Callable, ClassVar
 import abc
 import math
 import functools
@@ -24,49 +24,119 @@ ProjectionCallable = Callable[
 ]
 
 
-def _coordinates_equal(
-    a: None | na.AbstractArray,
-    b: na.AbstractSpectralPositionalVectorArray,
-    tolerance: float = 1e-9,
-) -> bool:
+def _incomplete(a: Any) -> bool:
     """
-    Whether coordinates are a given grid of wavelengths and positions, to
-    within the rounding of their arithmetic.
-
-    The two can be different kinds of vector, such as one which knows the
-    rest wavelength of its Doppler shifts and one which does not, as long
-    as their wavelengths and their positions are the same.
-    Two wavelengths, or two positions, are the same if they are no further
-    apart than `tolerance` times the largest of those of the grid, so a
-    grid which has been through another unit and back is the same grid,
-    and one which is displaced by a small fraction of a pixel is not.
+    Whether a coordinate, or a component of one which is a vector, is
+    missing.
 
     Parameters
     ----------
     a
-        The coordinates to compare, which can be anything: whatever cannot
-        be compared with the grid is not equal to it.
+        The coordinate, which can be anything.
+    """
+    if isinstance(a, na.AbstractVectorArray):
+        return any(_incomplete(component) for component in a.components.values())
+
+    return a is None
+
+
+def _check_coordinates(
+    a: Any,
+    b: (
+        na.AbstractSpectralPositionalVectorArray
+        | na.AbstractDopplerPositionalVectorArray
+    ),
+    tolerance: float,
+    name: str,
+) -> None:
+    """
+    Check that coordinates are a given grid of wavelengths and positions.
+
+    The two can be different kinds of vector, such as one which knows the
+    rest wavelength of its Doppler shifts and one which does not.
+    Each is read through its ``spectral_positional``, as an instrument reads
+    its own grid, so their wavelengths and their positions are compared.
+    So are the rest wavelengths of two vectors which both have one.
+
+    Two wavelengths, two positions or two rest wavelengths are the same if
+    they are equal, or no further apart than `tolerance` times the largest
+    of those of the grid.
+    So a grid which has been through another unit and back is the same grid,
+    and one which is displaced by a small fraction of a pixel is not.
+    A grid with a vertex which is not finite has no largest, and is only the
+    same as coordinates which are equal to it.
+
+    Parameters
+    ----------
+    a
+        The coordinates to check, which can be anything.
     b
         The grid to compare them with.
     tolerance
         The largest distance between two coordinates which are the same,
         as a fraction of the largest magnitude of that coordinate in `b`.
+    name
+        What the error calls `a`.
+
+    Raises
+    ------
+    ValueError
+        If `a` is not the grid, with what sets the two apart.
     """
-    kinds = (na.AbstractSpectralVectorArray, na.AbstractPositionalVectorArray)
-    if not all(isinstance(a, kind) for kind in kinds):
-        return False
+    # the grid itself, as the solutions of an inversion are given with
+    if a is b:
+        return
 
-    try:
-        for x, y in ((a.wavelength, b.wavelength), (a.position, b.position)):
-            distance = na.as_named_array(x - y).length
-            scale = na.as_named_array(y).length.max()
-            if not np.all(distance <= tolerance * scale):
-                return False
-    except (TypeError, ValueError):
-        # another kind of position, other units, or other axes
-        return False
+    message = f"{name} and the `coordinates_scene` of the instrument are not equal"
 
-    return True
+    spectral = na.AbstractSpectralPositionalVectorArray
+    doppler = na.AbstractDopplerPositionalVectorArray
+    if not isinstance(a, (spectral, doppler)):
+        raise ValueError(
+            f"{message}: {name} is a `{type(a).__name__}`, which is neither "
+            f"a spectral nor a Doppler vector of wavelengths and positions."
+        )
+
+    # a grid which is not explicit is evaluated once
+    a = a.explicit
+    b = b.explicit
+
+    grid_a = a.spectral_positional
+    grid_b = b.spectral_positional
+
+    components = {
+        "wavelengths": (grid_a.wavelength, grid_b.wavelength),
+        "positions": (grid_a.position, grid_b.position),
+    }
+
+    # two Doppler vectors each have a rest wavelength to compare as well
+    if isinstance(a, doppler) and isinstance(b, doppler):
+        components["rest wavelengths"] = (a.wavelength_rest, b.wavelength_rest)
+
+    for component, (x, y) in components.items():
+        if x is y:
+            continue
+
+        if _incomplete(x) or _incomplete(y):
+            raise ValueError(f"{message}: one of them has no {component}.")
+
+        try:
+            close = bool(np.all(x == y))
+            if not close:
+                # a vertex which is not finite has no distance to itself
+                with np.errstate(invalid="ignore"):
+                    distance = na.as_named_array(x - y).length
+                    scale = na.as_named_array(y).length.max()
+                    close = np.isfinite(scale) and np.all(distance <= tolerance * scale)
+        except (TypeError, ValueError) as e:
+            # another kind of position, other units, or other axes
+            raise ValueError(f"{message}: their {component} cannot be compared.") from e
+
+        if not close:
+            raise ValueError(
+                f"{message}: their {component} are further apart than "
+                f"{tolerance:g} of the largest of the grid."
+            )
 
 
 @dataclasses.dataclass
@@ -83,6 +153,20 @@ class AbstractInstrument(
     The other important method of this interface is :meth:`deproject`,
     which is the transpose of image and maps detector counts from an
     observed image to the corresponding spectral radiance on the skyplane.
+    """
+
+    _tolerance_coordinates: ClassVar[float] = 1e-9
+    """
+    The furthest that the wavelengths and the positions which a scene is
+    given with can be from those of :attr:`coordinates_scene`, as a fraction
+    of the largest of them, for the scene to be on the grid of this
+    instrument.
+
+    It is far above the rounding which another unit and back leaves in
+    double precision, and far below a pixel of any grid.
+    Coordinates in single precision are rounded more coarsely than this, so
+    a scene which is given with them is only on the grid if they are equal
+    to it, unless a subclass raises this.
     """
 
     @abc.abstractmethod
@@ -106,7 +190,7 @@ class AbstractInstrument(
             :math:`\text{erg} \, \text{cm}^{-2} \, \text{sr}^{-1} \, \AA^{-1} \, \text{s}^{-1}`.
             If it is given with its coordinates, they should be the
             wavelengths and the positions of :attr:`coordinates_scene`,
-            to within the rounding of their arithmetic.
+            to within the rounding of double precision.
         integrate
             Whether to integrate along the wavelength axis.
             A real CTIS instrument integrates along wavelength,
@@ -215,7 +299,7 @@ class AbstractInstrument(
             either.
             If it is given with its coordinates, they should be the
             wavelengths and the positions of :attr:`coordinates_scene`,
-            to within the rounding of their arithmetic.
+            to within the rounding of double precision.
 
         Raises
         ------
@@ -376,8 +460,8 @@ class AbstractInstrument(
 
         The coordinates of such a scene are checked here, for every method
         which takes a scene: they should be the wavelengths and the
-        positions of :attr:`coordinates_scene`, to within the rounding of
-        their arithmetic, in whichever kind of vector.
+        positions of :attr:`coordinates_scene`, to within
+        :attr:`_tolerance_coordinates`, in a spectral or a Doppler vector.
 
         Parameters
         ----------
@@ -397,11 +481,12 @@ class AbstractInstrument(
         if not isinstance(scene, na.AbstractFunctionArray):
             return scene
 
-        if not _coordinates_equal(scene.inputs, self.coordinates_scene):
-            raise ValueError(
-                f"`{name}.inputs` and the `coordinates_scene` of the "
-                f"instrument are not equal."
-            )
+        _check_coordinates(
+            a=scene.inputs,
+            b=self.coordinates_scene,
+            tolerance=self._tolerance_coordinates,
+            name=f"`{name}.inputs`",
+        )
 
         return scene.outputs
 
@@ -1469,6 +1554,10 @@ class IdealInstrument(
         noise: bool = True,
         uncertainty: bool = False,
     ) -> na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar]:
+
+        # a scene which is given with its coordinates has them checked
+        # here, once, whichever of the computations below images it
+        scene = self._values_scene(scene)
 
         # the matrices sum over wavelength, so they only give the image
         # which is integrated along it

@@ -170,7 +170,7 @@ class MartInverter(
             It can be given with its coordinates, as the
             :attr:`~ctis.inverters.IterativeInversionResult.solution` of
             an earlier inversion is, and they must then be those of the
-            instrument, to within the rounding of their arithmetic.
+            instrument, to within the rounding of double precision.
             A voxel which is zero in the guess is zero in the solution.
             It can be in any unit that the
             :meth:`~ctis.instruments.AbstractInstrument.image` method of
