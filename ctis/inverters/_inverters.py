@@ -38,10 +38,12 @@ class AbstractInverter(
         Parameters
         ----------
         images
-            The observed images used to calculate the reconstruction.
-            Must be evaluated on the same coordinates as
+            The observed images used to calculate the reconstruction,
+            as a function of their coordinates.
+            Must be evaluated on the same position coordinates as
             :attr:`~ctis.instruments.AbstractInstrument.coordinates_sensor`
-            attribute of :attr:`instrument`.
+            attribute of :attr:`instrument`, to within the rounding of
+            double precision.
         kwargs
             Additional keyword arguments which can be used by subclass
             implementations.

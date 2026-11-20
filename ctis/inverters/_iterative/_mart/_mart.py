@@ -143,7 +143,8 @@ class MartInverter(
         Parameters
         ----------
         images
-            The observed images used to calculate the reconstruction.
+            The observed images used to calculate the reconstruction,
+            as a function of their coordinates.
             Must be evaluated on the same position coordinates as
             :attr:`~ctis.instruments.AbstractInstrument.coordinates_sensor`
             attribute of :attr:`instrument`, to within the rounding of
@@ -181,9 +182,14 @@ class MartInverter(
 
         instrument = self.instrument
 
-        # the images are given with their coordinates, whose positions are
-        # checked here, once
-        instrument._values_image(images, name="images")
+        # the images are given with their coordinates, which are checked
+        # here, once, and the iteration takes their values alone
+        if not isinstance(images, na.AbstractFunctionArray):
+            raise TypeError(
+                f"The images should be given with their coordinates, as a "
+                f"`FunctionArray`, but they are a `{type(images).__name__}`."
+            )
+        instrument._values_image(images, integrate=True, name="images")
 
         # a guess which is given with its coordinates, as the solution of an
         # earlier inversion is, has them checked here, once, and is inverted
@@ -232,7 +238,7 @@ class MartInverter(
         shape_frames = dict()
         shape_scene = None
         if shape_extra:
-            frame = images[{ax: 0 for ax in shape_extra}]
+            frame = images.outputs[{ax: 0 for ax in shape_extra}]
             shape_scene = self._shape_scene(instrument.backproject(frame).outputs)
             shape_frames = {
                 ax: num for ax, num in shape_extra.items() if ax not in shape_scene

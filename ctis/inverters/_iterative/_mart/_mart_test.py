@@ -12,6 +12,7 @@ import optika
 import ctis
 from ctis.instruments._operators import Operators
 from ctis.instruments._instruments_test import (
+    _count_checks,
     _instrument_optika,
     _instrument_optika_lines,
     _MaterialPhotons,
@@ -570,35 +571,65 @@ def test__call__images_unsupported() -> None:
         a(images_bare)
 
 
-def test__call__images_coordinates() -> None:
+@pytest.mark.parametrize(
+    argnames="shape_frames",
+    argvalues=[dict(), dict(time=2)],
+    ids=["one frame", "two frames"],
+)
+def test__call__images_coordinates(
+    monkeypatch: pytest.MonkeyPatch,
+    shape_frames: dict[str, int],
+) -> None:
     """
     Images which are given with the positions of the sensor of the
     instrument, to within rounding, are inverted exactly as images on the
-    positions themselves are, and images on other positions are refused.
+    positions themselves are, on the operators of the instrument and on its
+    methods, which check them once for each inversion, and images on other
+    positions are refused.
     """
     a = ctis.inverters.MartInverter(
         instrument=instrument,
         threshold_convergence=1e-2,
     )
-    inputs = images.inputs
+    images_frames = _images_frames(shape_frames) if shape_frames else images
+    inputs = images_frames.inputs
     position = inputs.position.explicit
 
-    images_rounded = images.replace(
+    images_rounded = images_frames.replace(
         inputs=inputs.replace(position=position * (1 + 1e-12)),
     )
 
     assert not np.all(images_rounded.inputs.position == inputs.position)
 
+    expected = a(images_frames)
+    expected_reference = _reference(a, images_frames)
+
+    count = _count_checks(monkeypatch)
+
     result = a(images_rounded)
-    expected = a(images)
+    result_reference = _reference(a, images_rounded)
 
-    assert result.num_iteration == expected.num_iteration
-    assert np.all(result.solutions.outputs == expected.solutions.outputs)
+    assert count["num"] == 2
 
-    images_other = images.replace(inputs=inputs.replace(position=2 * position))
+    for r, e in ((result, expected), (result_reference, expected_reference)):
+        assert np.all(r.num_iteration == e.num_iteration)
+        assert np.all(r.solutions.outputs == e.solutions.outputs)
+
+    images_other = images_frames.replace(
+        inputs=inputs.replace(position=2 * position),
+    )
 
     with pytest.raises(ValueError, match="`images.inputs`"):
         a(images_other)
+
+
+def test__call__images_without_coordinates() -> None:
+    """
+    Images which are given without their coordinates are refused, with an
+    error which says so.
+    """
+    with pytest.raises(TypeError, match="with their coordinates"):
+        inverter(images.outputs)
 
 
 def _images_frames(

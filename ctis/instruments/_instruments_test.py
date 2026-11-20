@@ -61,8 +61,11 @@ def _scene_frames(
 
 
 def _coordinates_kind(
-    c: na.AbstractSpectralPositionalVectorArray,
-) -> na.AbstractSpectralPositionalVectorArray:
+    c: (
+        na.AbstractSpectralPositionalVectorArray
+        | na.AbstractDopplerPositionalVectorArray
+    ),
+) -> na.AbstractSpectralPositionalVectorArray | na.AbstractDopplerPositionalVectorArray:
     """
     The coordinates `c` in the other kind of vector: a spectral one for a
     Doppler one, and the reverse.
@@ -82,7 +85,10 @@ def _coordinates_kind(
 
 def _coordinates_same(
     a: ctis.instruments.AbstractInstrument,
-) -> dict[str, na.AbstractSpectralPositionalVectorArray]:
+) -> dict[
+    str,
+    na.AbstractSpectralPositionalVectorArray | na.AbstractDopplerPositionalVectorArray,
+]:
     """
     The grid of the scene of `a`, written in other ways which leave it the
     same grid.
@@ -118,76 +124,31 @@ def _coordinates_same(
 
 
 def _coordinates_other(
-    a: ctis.instruments.AbstractInstrument,
+    c: (
+        na.AbstractSpectralPositionalVectorArray
+        | na.AbstractDopplerPositionalVectorArray
+    ),
+    axis: str,
+    wavelengths: bool = True,
 ) -> dict[str, Any]:
     """
-    Coordinates which are not the grid of the scene of `a`.
+    Coordinates which are not the grid `c`: whose positions are not those of
+    `c`, and, if `wavelengths`, those whose wavelengths are not its own
+    either.
+
+    Parameters
+    ----------
+    c
+        The grid.
+    axis
+        An axis of the positions of `c`.
+    wavelengths
+        Whether the wavelengths are compared too, as they are for a scene and
+        for images which are not integrated along wavelength.
     """
-    c = a.coordinates_scene
     position = c.position.explicit
-    axis_x, _ = a.axis_scene_xy
 
     result = {
-        "twice the size": c.replace(position=2 * position),
-        "positions off by a millionth": c.replace(
-            position=position * (1 + 1e-6),
-        ),
-        "wavelengths off by a millionth": c.replace(
-            wavelength=c.wavelength * (1 + 1e-6),
-        ),
-        "fewer positions": c.replace(
-            position=position[{axis_x: slice(None, -1)}],
-        ),
-        "wavelengths in other units": c.replace(wavelength=c.wavelength * u.s),
-        "no wavelengths": c.replace(wavelength=None),
-        "no positions": c.replace(position=None),
-        "one component of the positions": c.replace(
-            position=na.Cartesian2dVectorArray(x=position.x, y=None),
-        ),
-        "positions alone": c.position,
-        "no coordinates": None,
-    }
-
-    # the rest wavelength of a Doppler grid is part of it
-    if isinstance(c, na.AbstractDopplerPositionalVectorArray):
-        result["another rest wavelength"] = c.replace(
-            wavelength_rest=2 * c.wavelength_rest,
-        )
-
-    return result
-
-
-def _coordinates_image_same(
-    c: na.AbstractSpectralPositionalVectorArray,
-) -> dict[str, na.AbstractPositionalVectorArray]:
-    """
-    The coordinates `c` of images, written in other ways which leave their
-    positions the same.
-    """
-    position = c.position.explicit
-
-    return {
-        "another kind of vector": _coordinates_kind(c),
-        "off by the rounding of its arithmetic": c.replace(
-            position=position * (1 + 1e-12),
-        ),
-        "other wavelengths": c.replace(wavelength=2 * c.wavelength),
-        "positions without wavelengths": na.PositionalVectorArray(
-            position=c.position,
-        ),
-    }
-
-
-def _coordinates_image_other(
-    c: na.AbstractSpectralPositionalVectorArray,
-    axis: str,
-) -> dict[str, Any]:
-    """
-    Coordinates of images whose positions are not those of `c`.
-    """
-    position = c.position.explicit
-
-    return {
         "twice the size": c.replace(position=2 * position),
         "positions off by a millionth": c.replace(
             position=position * (1 + 1e-6),
@@ -203,6 +164,69 @@ def _coordinates_image_other(
         "positions alone": c.position,
         "no coordinates": None,
     }
+
+    if wavelengths:
+        result |= {
+            "wavelengths off by a millionth": c.replace(
+                wavelength=c.wavelength * (1 + 1e-6),
+            ),
+            "wavelengths in other units": c.replace(wavelength=c.wavelength * u.s),
+            "no wavelengths": c.replace(wavelength=None),
+        }
+
+        # the rest wavelength of a Doppler grid is part of it
+        if isinstance(c, na.AbstractDopplerPositionalVectorArray):
+            result["another rest wavelength"] = c.replace(
+                wavelength_rest=2 * c.wavelength_rest,
+            )
+
+    return result
+
+
+def _coordinates_image_same(
+    c: (
+        na.AbstractSpectralPositionalVectorArray
+        | na.AbstractDopplerPositionalVectorArray
+    ),
+    integrate: bool,
+) -> dict[str, na.AbstractPositionalVectorArray]:
+    """
+    The coordinates `c` of images, written in other ways which leave them
+    those of the same images: in the other kind of vector, and off by the
+    rounding of their arithmetic.
+    The wavelengths of images which are integrated along wavelength are the
+    edges of their band, and are not compared, so for those any wavelengths
+    leave them the same, or none.
+
+    Parameters
+    ----------
+    c
+        The coordinates of the images.
+    integrate
+        Whether the images are integrated along wavelength.
+    """
+    position = c.position.explicit
+
+    result = {
+        "another kind of vector": _coordinates_kind(c),
+        "positions off by the rounding of their arithmetic": c.replace(
+            position=position * (1 + 1e-12),
+        ),
+    }
+
+    if integrate:
+        result |= {
+            "other wavelengths": c.replace(wavelength=2 * c.wavelength),
+            "positions without wavelengths": na.PositionalVectorArray(
+                position=c.position,
+            ),
+        }
+    else:
+        result["wavelengths off by the rounding of their arithmetic"] = c.replace(
+            wavelength=c.wavelength * (1 - 1e-12),
+        )
+
+    return result
 
 
 def _count_checks(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
@@ -364,7 +388,8 @@ class AbstractTestAbstractInstrument(
             assert np.all(result.inputs == expected.inputs), name
             assert np.all(result.outputs == expected.outputs), name
 
-        for name, inputs in _coordinates_other(a).items():
+        others = _coordinates_other(a.coordinates_scene, a.axis_scene_xy[0])
+        for name, inputs in others.items():
             with pytest.raises(ValueError, match="are not equal"):
                 a.image(scene.replace(inputs=inputs), **kwargs)
                 pytest.fail(f"imaged a scene with {name}")  # pragma: nocover
@@ -382,31 +407,37 @@ class AbstractTestAbstractInstrument(
         assert np.all(np.isfinite(na.as_named_array(result.outputs).value))
         assert result.outputs.sum() > 0
 
+    @pytest.mark.parametrize("integrate", [False, True])
     def test_backproject_coordinates(
         self,
         a: ctis.instruments.AbstractInstrument,
+        integrate: bool,
     ) -> None:
         """
-        Images which are given with the positions of the sensor, however
+        Images which are given with the coordinates of the sensor, however
         they are written, are backprojected exactly as their values alone
-        are, whatever their wavelengths, and images which are given with
-        any other positions are refused.
+        are, and images which are given with any other coordinates are
+        refused.
+        The wavelengths of images which are integrated along wavelength are
+        the edges of their band, and are not compared.
         """
         scene = _scene(a)
-        image = a.image(scene.outputs, noise=False)
+        kwargs = dict(integrate=integrate)
+        image = a.image(scene.outputs, noise=False, **kwargs)
         axis, _ = a.axis_sensor_xy
 
-        expected = a.backproject(image.outputs)
+        expected = a.backproject(image.outputs, **kwargs)
 
-        for name, inputs in _coordinates_image_same(image.inputs).items():
-            result = a.backproject(image.replace(inputs=inputs))
+        for name, inputs in _coordinates_image_same(image.inputs, integrate).items():
+            result = a.backproject(image.replace(inputs=inputs), **kwargs)
 
             assert np.all(result.inputs == expected.inputs), name
             assert np.all(result.outputs == expected.outputs), name
 
-        for name, inputs in _coordinates_image_other(image.inputs, axis).items():
+        others = _coordinates_other(image.inputs, axis, wavelengths=not integrate)
+        for name, inputs in others.items():
             with pytest.raises(ValueError, match="are not equal"):
-                a.backproject(image.replace(inputs=inputs))
+                a.backproject(image.replace(inputs=inputs), **kwargs)
                 pytest.fail(f"backprojected images with {name}")  # pragma: nocover
 
     def test_backproject_scalar(
@@ -843,7 +874,8 @@ class AbstractTestAbstractInstrument(
             assert np.all(a.snr(scene.replace(inputs=inputs)) == expected), name
 
         # a scene on another grid than that of the instrument has no ratio
-        for name, inputs in _coordinates_other(a).items():
+        others = _coordinates_other(a.coordinates_scene, a.axis_scene_xy[0])
+        for name, inputs in others.items():
             with pytest.raises(ValueError, match="are not equal"):
                 a.snr(scene.replace(inputs=inputs))
                 pytest.fail(f"gave a ratio to a scene with {name}")  # pragma: nocover
@@ -2888,8 +2920,10 @@ def test_axis_line_unknown(
     with pytest.raises(ValueError, match="`axis_line` is 'line'"):
         a.image(scene, integrate=integrate, noise=False)
 
+    # the values of the images, whose coordinates can be those of a sensor
+    # which the instrument no longer has
     with pytest.raises(ValueError, match="`axis_line` is 'line'"):
-        a.backproject(image, integrate=integrate)
+        a.backproject(image.outputs, integrate=integrate)
 
     with pytest.raises(ValueError, match="`axis_line` is 'line'"):
         a._operators()
