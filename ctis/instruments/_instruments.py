@@ -48,6 +48,8 @@ def _check_coordinates(
     ),
     tolerance: float,
     name: str,
+    grid: str,
+    wavelengths: bool = True,
 ) -> None:
     """
     Check that coordinates are a given grid of wavelengths and positions.
@@ -57,12 +59,17 @@ def _check_coordinates(
     Each is read through its ``spectral_positional``, as an instrument reads
     its own grid, so their wavelengths and their positions are compared.
     So are the rest wavelengths of two vectors which both have one.
+    Without `wavelengths`, the positions alone are compared, in any vector
+    which has positions, as they are for images which are integrated along
+    wavelength, whose wavelengths are the edges of their band and not those
+    of the sensor.
 
     Two wavelengths, two positions or two rest wavelengths are the same if
     they are equal, or no further apart than `tolerance` times the largest
     of those of the grid.
     So a grid which has been through another unit and back is the same grid,
-    and one which is displaced by a small fraction of a pixel is not.
+    and one which is displaced by more than a thousandth of a pixel is not,
+    for a grid which is within a million pixels of its origin.
     A grid with a vertex which is not finite has no largest, and is only the
     same as coordinates which are equal to it.
 
@@ -77,6 +84,11 @@ def _check_coordinates(
         as a fraction of the largest magnitude of that coordinate in `b`.
     name
         What the error calls `a`.
+    grid
+        What the error calls `b`.
+    wavelengths
+        Whether to compare the wavelengths, and the rest wavelengths, or the
+        positions alone.
 
     Raises
     ------
@@ -87,31 +99,44 @@ def _check_coordinates(
     if a is b:
         return
 
-    message = f"{name} and the `coordinates_scene` of the instrument are not equal"
+    message = f"{name} and the {grid} of the instrument are not equal"
 
     spectral = na.AbstractSpectralPositionalVectorArray
     doppler = na.AbstractDopplerPositionalVectorArray
-    if not isinstance(a, (spectral, doppler)):
-        raise ValueError(
-            f"{message}: {name} is a `{type(a).__name__}`, which is neither "
-            f"a spectral nor a Doppler vector of wavelengths and positions."
-        )
 
-    # a grid which is not explicit is evaluated once
-    a = a.explicit
-    b = b.explicit
+    if wavelengths:
+        if not isinstance(a, (spectral, doppler)):
+            raise ValueError(
+                f"{message}: {name} is a `{type(a).__name__}`, which is neither "
+                f"a spectral nor a Doppler vector of wavelengths and positions."
+            )
 
-    grid_a = a.spectral_positional
-    grid_b = b.spectral_positional
+        # a grid which is not explicit is evaluated once
+        a = a.explicit
+        b = b.explicit
 
-    components = {
-        "wavelengths": (grid_a.wavelength, grid_b.wavelength),
-        "positions": (grid_a.position, grid_b.position),
-    }
+        grid_a = a.spectral_positional
+        grid_b = b.spectral_positional
 
-    # two Doppler vectors each have a rest wavelength to compare as well
-    if isinstance(a, doppler) and isinstance(b, doppler):
-        components["rest wavelengths"] = (a.wavelength_rest, b.wavelength_rest)
+        components = {
+            "wavelengths": (grid_a.wavelength, grid_b.wavelength),
+            "positions": (grid_a.position, grid_b.position),
+        }
+
+        # two Doppler vectors each have a rest wavelength to compare as well
+        if isinstance(a, doppler) and isinstance(b, doppler):
+            components["rest wavelengths"] = (a.wavelength_rest, b.wavelength_rest)
+
+    else:
+        if not isinstance(a, na.AbstractPositionalVectorArray):
+            raise ValueError(
+                f"{message}: {name} is a `{type(a).__name__}`, which is not a "
+                f"vector with a `position` component, such as a "
+                f"`SpectralPositionalVectorArray`."
+            )
+
+        # the positions alone, without evaluating the other components
+        components = {"positions": (a.position, b.position)}
 
     for component, (x, y) in components.items():
         if x is y:
@@ -161,12 +186,16 @@ class AbstractInstrument(
     given with can be from those of :attr:`coordinates_scene`, as a fraction
     of the largest of them, for the scene to be on the grid of this
     instrument.
+    It is also the furthest that the coordinates which images are given
+    with can be from those of :attr:`coordinates_sensor`.
 
     It is far above the rounding which another unit and back leaves in
-    double precision, and far below a pixel of any grid.
+    double precision, and, since it is a fraction of the largest
+    coordinate, no more than a thousandth of a pixel of a grid which is
+    within a million pixels of its origin.
     Coordinates in single precision are rounded more coarsely than this, so
-    a scene which is given with them is only on the grid if they are equal
-    to it, unless a subclass raises this.
+    a scene or images which are given with them are only on the grid if
+    they are equal to it, unless a subclass raises this.
     """
 
     @abc.abstractmethod
@@ -229,6 +258,12 @@ class AbstractInstrument(
             A series of images captured by a CTIS instrument,
             evaluated on :attr:`coordinates_sensor`,
             in units of photons.
+            If they are given with their coordinates, the positions
+            should be those of :attr:`coordinates_sensor`, to within the
+            rounding of double precision, and so should the wavelengths
+            of images which are not integrated along wavelength.
+            Those of integrated images are the edges of their band, and
+            are not compared.
         integrate
             Complement of the `integrate` keyword of :meth:`image`.
         unit
@@ -486,9 +521,59 @@ class AbstractInstrument(
             b=self.coordinates_scene,
             tolerance=self._tolerance_coordinates,
             name=f"`{name}.inputs`",
+            grid="`coordinates_scene`",
         )
 
         return scene.outputs
+
+    def _values_image(
+        self,
+        image: na.AbstractScalar | na.AbstractFunctionArray,
+        integrate: bool,
+        name: str = "image",
+    ) -> na.AbstractScalar:
+        """
+        The values of images, which can be given with their coordinates.
+
+        The coordinates of such images are checked here, for every method
+        which takes images: their positions should be those of
+        :attr:`coordinates_sensor`, to within :attr:`_tolerance_coordinates`.
+        So should the wavelengths of images which are not integrated along
+        wavelength, in a spectral or a Doppler vector.
+        The wavelengths of integrated images are the edges of their band,
+        and are not compared, so their coordinates can be any vector which
+        has positions.
+
+        Parameters
+        ----------
+        image
+            The images, as an array of their values, or as a function of
+            their coordinates.
+        integrate
+            Whether the images are integrated along wavelength.
+        name
+            What the error calls the images, for a caller which knows them
+            by another name.
+
+        Raises
+        ------
+        ValueError
+            If the images are given with other coordinates than those of
+            :attr:`coordinates_sensor`.
+        """
+        if not isinstance(image, na.AbstractFunctionArray):
+            return image
+
+        _check_coordinates(
+            a=image.inputs,
+            b=self.coordinates_sensor,
+            tolerance=self._tolerance_coordinates,
+            name=f"`{name}.inputs`",
+            grid="`coordinates_sensor`",
+            wavelengths=not integrate,
+        )
+
+        return image.outputs
 
     def _operators(
         self,
@@ -1007,12 +1092,7 @@ class AbstractLinearInstrument(
         integrate: bool = True,
     ) -> na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar]:
 
-        if isinstance(image, na.AbstractFunctionArray):
-            if not np.all(image.inputs.position == self.coordinates_sensor.position):
-                raise ValueError(
-                    "`image.inputs` and `self.coordinates_sensor` are not equal."
-                )
-            image = image.outputs
+        image = self._values_image(image, integrate=integrate)
 
         coordinates = self.coordinates_scene
 
@@ -1823,6 +1903,10 @@ class IdealInstrument(
         unit: None | u.UnitBase = None,
     ) -> na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar]:
 
+        # images which are given with their coordinates have them checked
+        # here, once, whichever of the computations below backprojects them
+        image = self._values_image(image, integrate=integrate)
+
         # the matrices spread an image over every wavelength, so they only
         # give the backprojection of an image integrated along wavelength
         result = None
@@ -1860,12 +1944,7 @@ class IdealInstrument(
         if operators is None:
             return None
 
-        if isinstance(image, na.AbstractFunctionArray):
-            if not np.all(image.inputs.position == self.coordinates_sensor.position):
-                raise ValueError(
-                    "`image.inputs` and `self.coordinates_sensor` are not equal."
-                )
-            image = image.outputs
+        image = self._values_image(image, integrate=True)
 
         shape_voxels = operators.shape_channel | operators.shape_scene
 
@@ -2468,14 +2547,7 @@ class OptikaInstrument(
         unit: None | u.UnitBase = None,
     ) -> na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar]:
 
-        if isinstance(image, na.AbstractFunctionArray):
-            if not np.all(image.inputs.position == self.coordinates_sensor.position):
-                raise ValueError(
-                    "`image.inputs` and `self.coordinates_sensor` are not equal."
-                )
-            values = image.outputs
-        else:
-            values = image
+        values = self._values_image(image, integrate=integrate)
 
         # read ahead of the backprojection, so that an instrument whose
         # `axis_line` is not an axis of its scene says so before the work
