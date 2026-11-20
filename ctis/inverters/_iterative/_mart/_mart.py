@@ -169,8 +169,8 @@ class MartInverter(
             attribute of :attr:`instrument`.
             It can be given with its coordinates, as the
             :attr:`~ctis.inverters.IterativeInversionResult.solution` of
-            an earlier inversion is, and they must then be equal to those
-            of the instrument.
+            an earlier inversion is, and they must then be those of the
+            instrument, to within the rounding of double precision.
             A voxel which is zero in the guess is zero in the solution.
             It can be in any unit that the
             :meth:`~ctis.instruments.AbstractInstrument.image` method of
@@ -191,13 +191,8 @@ class MartInverter(
         # a guess which is given with its coordinates, as the solution of an
         # earlier inversion is, has them checked here, once, and is inverted
         # as its values are
-        if isinstance(guess, na.AbstractFunctionArray):
-            if not np.all(guess.inputs == instrument.coordinates_scene):
-                raise ValueError(
-                    "`guess.inputs` and `self.instrument.coordinates_scene` "
-                    "are not equal."
-                )
-            guess = guess.outputs
+        if guess is not None:
+            guess = instrument._values_scene(guess, name="guess")
 
         # the axes of the images beyond those of the channels and the sensor
         shape_extra = self._shape_extra(images.outputs)

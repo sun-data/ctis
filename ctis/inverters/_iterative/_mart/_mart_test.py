@@ -839,6 +839,34 @@ def test__call__guess_function(shape_frames: dict[str, int]) -> None:
     assert np.all(guess.outputs == values)
 
 
+def test__call__guess_function_rounding() -> None:
+    """
+    A guess which is given with the grid of the scene of the instrument,
+    in another kind of vector and through another unit and back, is
+    inverted exactly as its values are.
+    """
+    a = ctis.inverters.MartInverter(
+        instrument=instrument,
+        threshold_convergence=1e-2,
+    )
+    inputs = instrument.coordinates_scene
+    guess = na.FunctionArray(
+        inputs=na.SpectralPositionalVectorArray(
+            wavelength=inputs.wavelength.to(u.nm),
+            position=inputs.position.to(u.rad).to(u.arcsec),
+        ),
+        outputs=na.ScalarArray.ones(scene.outputs.shape) * scene.outputs.unit,
+    )
+
+    assert not np.all(guess.inputs.position == inputs.position)
+
+    result = a(images, guess=guess)
+    expected = a(images, guess=guess.outputs)
+
+    assert np.all(result.solutions.outputs == expected.solutions.outputs)
+    _assert_same(result, expected)
+
+
 def test__call__guess_function_coordinates() -> None:
     """
     A guess which is given with coordinates other than those of the scene

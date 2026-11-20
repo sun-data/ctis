@@ -1,5 +1,5 @@
 import numpy as np
-from typing import Callable, ClassVar
+from typing import Any, Callable, ClassVar
 import abc
 import math
 import functools
@@ -24,6 +24,121 @@ ProjectionCallable = Callable[
 ]
 
 
+def _incomplete(a: Any) -> bool:
+    """
+    Whether a coordinate, or a component of one which is a vector, is
+    missing.
+
+    Parameters
+    ----------
+    a
+        The coordinate, which can be anything.
+    """
+    if isinstance(a, na.AbstractVectorArray):
+        return any(_incomplete(component) for component in a.components.values())
+
+    return a is None
+
+
+def _check_coordinates(
+    a: Any,
+    b: (
+        na.AbstractSpectralPositionalVectorArray
+        | na.AbstractDopplerPositionalVectorArray
+    ),
+    tolerance: float,
+    name: str,
+) -> None:
+    """
+    Check that coordinates are a given grid of wavelengths and positions.
+
+    The two can be different kinds of vector, such as one which knows the
+    rest wavelength of its Doppler shifts and one which does not.
+    Each is read through its ``spectral_positional``, as an instrument reads
+    its own grid, so their wavelengths and their positions are compared.
+    So are the rest wavelengths of two vectors which both have one.
+
+    Two wavelengths, two positions or two rest wavelengths are the same if
+    they are equal, or no further apart than `tolerance` times the largest
+    of those of the grid.
+    So a grid which has been through another unit and back is the same grid,
+    and one which is displaced by a small fraction of a pixel is not.
+    A grid with a vertex which is not finite has no largest, and is only the
+    same as coordinates which are equal to it.
+
+    Parameters
+    ----------
+    a
+        The coordinates to check, which can be anything.
+    b
+        The grid to compare them with.
+    tolerance
+        The largest distance between two coordinates which are the same,
+        as a fraction of the largest magnitude of that coordinate in `b`.
+    name
+        What the error calls `a`.
+
+    Raises
+    ------
+    ValueError
+        If `a` is not the grid, with what sets the two apart.
+    """
+    # the grid itself, as the solutions of an inversion are given with
+    if a is b:
+        return
+
+    message = f"{name} and the `coordinates_scene` of the instrument are not equal"
+
+    spectral = na.AbstractSpectralPositionalVectorArray
+    doppler = na.AbstractDopplerPositionalVectorArray
+    if not isinstance(a, (spectral, doppler)):
+        raise ValueError(
+            f"{message}: {name} is a `{type(a).__name__}`, which is neither "
+            f"a spectral nor a Doppler vector of wavelengths and positions."
+        )
+
+    # a grid which is not explicit is evaluated once
+    a = a.explicit
+    b = b.explicit
+
+    grid_a = a.spectral_positional
+    grid_b = b.spectral_positional
+
+    components = {
+        "wavelengths": (grid_a.wavelength, grid_b.wavelength),
+        "positions": (grid_a.position, grid_b.position),
+    }
+
+    # two Doppler vectors each have a rest wavelength to compare as well
+    if isinstance(a, doppler) and isinstance(b, doppler):
+        components["rest wavelengths"] = (a.wavelength_rest, b.wavelength_rest)
+
+    for component, (x, y) in components.items():
+        if x is y:
+            continue
+
+        if _incomplete(x) or _incomplete(y):
+            raise ValueError(f"{message}: one of them has no {component}.")
+
+        try:
+            close = bool(np.all(x == y))
+            if not close:
+                # a vertex which is not finite has no distance to itself
+                with np.errstate(invalid="ignore"):
+                    distance = na.as_named_array(x - y).length
+                    scale = na.as_named_array(y).length.max()
+                    close = np.isfinite(scale) and np.all(distance <= tolerance * scale)
+        except (TypeError, ValueError) as e:
+            # another kind of position, other units, or other axes
+            raise ValueError(f"{message}: their {component} cannot be compared.") from e
+
+        if not close:
+            raise ValueError(
+                f"{message}: their {component} are further apart than "
+                f"{tolerance:g} of the largest of the grid."
+            )
+
+
 @dataclasses.dataclass
 class AbstractInstrument(
     abc.ABC,
@@ -38,6 +153,20 @@ class AbstractInstrument(
     The other important method of this interface is :meth:`deproject`,
     which is the transpose of image and maps detector counts from an
     observed image to the corresponding spectral radiance on the skyplane.
+    """
+
+    _tolerance_coordinates: ClassVar[float] = 1e-9
+    """
+    The furthest that the wavelengths and the positions which a scene is
+    given with can be from those of :attr:`coordinates_scene`, as a fraction
+    of the largest of them, for the scene to be on the grid of this
+    instrument.
+
+    It is far above the rounding which another unit and back leaves in
+    double precision, and far below a pixel of any grid.
+    Coordinates in single precision are rounded more coarsely than this, so
+    a scene which is given with them is only on the grid if they are equal
+    to it, unless a subclass raises this.
     """
 
     @abc.abstractmethod
@@ -59,6 +188,9 @@ class AbstractInstrument(
             evaluated on :attr:`coordinates_scene`,
             in units equivalent to
             :math:`\text{erg} \, \text{cm}^{-2} \, \text{sr}^{-1} \, \AA^{-1} \, \text{s}^{-1}`.
+            If it is given with its coordinates, they should be the
+            wavelengths and the positions of :attr:`coordinates_scene`,
+            to within the rounding of double precision.
         integrate
             Whether to integrate along the wavelength axis.
             A real CTIS instrument integrates along wavelength,
@@ -165,6 +297,9 @@ class AbstractInstrument(
             A negative radiance is taken to be zero, and a pixel with a
             radiance which is not a number has a ratio which is not a number
             either.
+            If it is given with its coordinates, they should be the
+            wavelengths and the positions of :attr:`coordinates_scene`,
+            to within the rounding of double precision.
 
         Raises
         ------
@@ -314,6 +449,46 @@ class AbstractInstrument(
         :attr:`axis_wavelength`.
         """
         return (*self._shape_line, self.axis_wavelength)
+
+    def _values_scene(
+        self,
+        scene: na.AbstractScalar | na.AbstractFunctionArray,
+        name: str = "scene",
+    ) -> na.AbstractScalar:
+        """
+        The values of a scene, which can be given with its coordinates.
+
+        The coordinates of such a scene are checked here, for every method
+        which takes a scene: they should be the wavelengths and the
+        positions of :attr:`coordinates_scene`, to within
+        :attr:`_tolerance_coordinates`, in a spectral or a Doppler vector.
+
+        Parameters
+        ----------
+        scene
+            The scene, as an array of its values, or as a function of its
+            coordinates.
+        name
+            What the error calls the scene, for a caller which knows it by
+            another name.
+
+        Raises
+        ------
+        ValueError
+            If the scene is given with other coordinates than
+            :attr:`coordinates_scene`.
+        """
+        if not isinstance(scene, na.AbstractFunctionArray):
+            return scene
+
+        _check_coordinates(
+            a=scene.inputs,
+            b=self.coordinates_scene,
+            tolerance=self._tolerance_coordinates,
+            name=f"`{name}.inputs`",
+        )
+
+        return scene.outputs
 
     def _operators(
         self,
@@ -786,12 +961,7 @@ class AbstractLinearInstrument(
             The spectral radiance of the observed scene.
         """
 
-        if isinstance(scene, na.AbstractFunctionArray):
-            if not np.all(scene.inputs == self.coordinates_scene):
-                raise ValueError(
-                    "`scene.inputs` and `self.coordinates_scene` are not equal."
-                )
-            scene = scene.outputs
+        scene = self._values_scene(scene)
 
         values_input = scene * self._volume_scene
 
@@ -888,12 +1058,7 @@ class AbstractLinearInstrument(
                 "provide."
             )
 
-        if isinstance(scene, na.AbstractFunctionArray):
-            if not np.all(scene.inputs == self.coordinates_scene):
-                raise ValueError(
-                    "`scene.inputs` and `self.coordinates_scene` are not equal."
-                )
-            scene = scene.outputs
+        scene = self._values_scene(scene)
 
         scene = na.as_named_array(scene)
         if not isinstance(scene, na.AbstractScalarArray):
@@ -1390,6 +1555,10 @@ class IdealInstrument(
         uncertainty: bool = False,
     ) -> na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar]:
 
+        # a scene which is given with its coordinates has them checked
+        # here, once, whichever of the computations below images it
+        scene = self._values_scene(scene)
+
         # the matrices sum over wavelength, so they only give the image
         # which is integrated along it
         if integrate:
@@ -1444,12 +1613,7 @@ class IdealInstrument(
         if operators is None:
             return None
 
-        if isinstance(scene, na.AbstractFunctionArray):
-            if not np.all(scene.inputs == self.coordinates_scene):
-                raise ValueError(
-                    "`scene.inputs` and `self.coordinates_scene` are not equal."
-                )
-            scene = scene.outputs
+        scene = self._values_scene(scene)
 
         shape_images = operators.shape_images
 
@@ -2243,13 +2407,12 @@ class OptikaInstrument(
         uncertainty: bool = False,
     ) -> na.FunctionArray[na.SpectralPositionalVectorArray, na.AbstractScalar]:
 
-        if isinstance(scene, na.AbstractFunctionArray):
-            if not np.all(scene.inputs == self.coordinates_scene):
-                raise ValueError(
-                    "`scene.inputs` and `self.coordinates_scene` are not equal."
-                )
-        else:
-            scene = na.FunctionArray(inputs=self.coordinates_scene, outputs=scene)
+        # optika takes a scene with its coordinates, which are those of this
+        # instrument, whichever the scene was given with
+        scene = na.FunctionArray(
+            inputs=self.coordinates_scene,
+            outputs=self._values_scene(scene),
+        )
 
         # optika integrates an image over the wavelengths of one line, and
         # adds the read noise of the sensor to it, so the lines of a scene
