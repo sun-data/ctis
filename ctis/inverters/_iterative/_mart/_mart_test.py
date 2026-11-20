@@ -570,6 +570,37 @@ def test__call__images_unsupported() -> None:
         a(images_bare)
 
 
+def test__call__images_coordinates() -> None:
+    """
+    Images which are given with the positions of the sensor of the
+    instrument, to within rounding, are inverted exactly as images on the
+    positions themselves are, and images on other positions are refused.
+    """
+    a = ctis.inverters.MartInverter(
+        instrument=instrument,
+        threshold_convergence=1e-2,
+    )
+    inputs = images.inputs
+    position = inputs.position.explicit
+
+    images_rounded = images.replace(
+        inputs=inputs.replace(position=position * (1 + 1e-12)),
+    )
+
+    assert not np.all(images_rounded.inputs.position == inputs.position)
+
+    result = a(images_rounded)
+    expected = a(images)
+
+    assert result.num_iteration == expected.num_iteration
+    assert np.all(result.solutions.outputs == expected.solutions.outputs)
+
+    images_other = images.replace(inputs=inputs.replace(position=2 * position))
+
+    with pytest.raises(ValueError, match="`images.inputs`"):
+        a(images_other)
+
+
 def _images_frames(
     shape_frames: dict[str, int],
 ) -> na.FunctionArray[na.SpectralPositionalVectorArray, na.ScalarArray]:

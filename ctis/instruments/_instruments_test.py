@@ -60,6 +60,26 @@ def _scene_frames(
     )
 
 
+def _coordinates_kind(
+    c: na.AbstractSpectralPositionalVectorArray,
+) -> na.AbstractSpectralPositionalVectorArray:
+    """
+    The coordinates `c` in the other kind of vector: a spectral one for a
+    Doppler one, and the reverse.
+    """
+    if isinstance(c, na.AbstractDopplerPositionalVectorArray):
+        return na.SpectralPositionalVectorArray(
+            wavelength=c.wavelength,
+            position=c.position,
+        )
+
+    return na.DopplerPositionalVectorArray(
+        wavelength=c.wavelength,
+        wavelength_rest=c.wavelength.mean(),
+        position=c.position,
+    )
+
+
 def _coordinates_same(
     a: ctis.instruments.AbstractInstrument,
 ) -> dict[str, na.AbstractSpectralPositionalVectorArray]:
@@ -71,24 +91,12 @@ def _coordinates_same(
     position = c.position.explicit
     unit = position.x.unit
 
-    if isinstance(c, na.AbstractDopplerPositionalVectorArray):
-        other = na.SpectralPositionalVectorArray(
-            wavelength=c.wavelength,
-            position=c.position,
-        )
-    else:
-        other = na.DopplerPositionalVectorArray(
-            wavelength=c.wavelength,
-            wavelength_rest=c.wavelength.mean(),
-            position=c.position,
-        )
-
     # another unit and back leaves the rounding which the check is for
     position_back = position.to(u.rad).to(unit)
     assert not np.all(position_back == position)
 
     result = {
-        "another kind of vector": other,
+        "another kind of vector": _coordinates_kind(c),
         "through another unit and back": c.replace(position=position_back),
         "in other units": c.replace(
             wavelength=c.wavelength.to(u.m),
@@ -147,6 +155,74 @@ def _coordinates_other(
         )
 
     return result
+
+
+def _coordinates_image_same(
+    c: na.AbstractSpectralPositionalVectorArray,
+) -> dict[str, na.AbstractPositionalVectorArray]:
+    """
+    The coordinates `c` of images, written in other ways which leave their
+    positions the same.
+    """
+    position = c.position.explicit
+
+    return {
+        "another kind of vector": _coordinates_kind(c),
+        "off by the rounding of its arithmetic": c.replace(
+            position=position * (1 + 1e-12),
+        ),
+        "other wavelengths": c.replace(wavelength=2 * c.wavelength),
+        "positions without wavelengths": na.PositionalVectorArray(
+            position=c.position,
+        ),
+    }
+
+
+def _coordinates_image_other(
+    c: na.AbstractSpectralPositionalVectorArray,
+    axis: str,
+) -> dict[str, Any]:
+    """
+    Coordinates of images whose positions are not those of `c`.
+    """
+    position = c.position.explicit
+
+    return {
+        "twice the size": c.replace(position=2 * position),
+        "positions off by a millionth": c.replace(
+            position=position * (1 + 1e-6),
+        ),
+        "fewer positions": c.replace(
+            position=position[{axis: slice(None, -1)}],
+        ),
+        "positions in other units": c.replace(position=position * u.s),
+        "no positions": c.replace(position=None),
+        "one component of the positions": c.replace(
+            position=na.Cartesian2dVectorArray(x=position.x, y=None),
+        ),
+        "positions alone": c.position,
+        "no coordinates": None,
+    }
+
+
+def _count_checks(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
+    """
+    Count the checks of the coordinates of scenes and of images, from here
+    to the end of the test, as the `num` of the result.
+    """
+    count = dict(num=0)
+    check = ctis.instruments._instruments._check_coordinates
+
+    def counted(*args: Any, **kwargs: Any) -> None:
+        count["num"] += 1
+        check(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "ctis.instruments._instruments._check_coordinates",
+        counted,
+    )
+
+    return count
 
 
 def _assert_close(result: na.AbstractScalar, expected: na.AbstractScalar) -> None:
@@ -305,6 +381,33 @@ class AbstractTestAbstractInstrument(
         assert np.all(result.inputs == a.coordinates_scene)
         assert np.all(np.isfinite(na.as_named_array(result.outputs).value))
         assert result.outputs.sum() > 0
+
+    def test_backproject_coordinates(
+        self,
+        a: ctis.instruments.AbstractInstrument,
+    ) -> None:
+        """
+        Images which are given with the positions of the sensor, however
+        they are written, are backprojected exactly as their values alone
+        are, whatever their wavelengths, and images which are given with
+        any other positions are refused.
+        """
+        scene = _scene(a)
+        image = a.image(scene.outputs, noise=False)
+        axis, _ = a.axis_sensor_xy
+
+        expected = a.backproject(image.outputs)
+
+        for name, inputs in _coordinates_image_same(image.inputs).items():
+            result = a.backproject(image.replace(inputs=inputs))
+
+            assert np.all(result.inputs == expected.inputs), name
+            assert np.all(result.outputs == expected.outputs), name
+
+        for name, inputs in _coordinates_image_other(image.inputs, axis).items():
+            with pytest.raises(ValueError, match="are not equal"):
+                a.backproject(image.replace(inputs=inputs))
+                pytest.fail(f"backprojected images with {name}")  # pragma: nocover
 
     def test_backproject_scalar(
         self,
@@ -1846,24 +1949,32 @@ def test_image_coordinates_once(monkeypatch: pytest.MonkeyPatch) -> None:
         outputs=scene.outputs * na.ScalarArray.ones(dict(channel=a.num_channel)),
     )
 
-    count = 0
-    check = ctis.instruments._instruments._check_coordinates
-
-    def counted(*args: Any, **kwargs: Any) -> None:
-        nonlocal count
-        count += 1
-        check(*args, **kwargs)
-
-    monkeypatch.setattr(
-        "ctis.instruments._instruments._check_coordinates",
-        counted,
-    )
+    count = _count_checks(monkeypatch)
 
     assert a._image_matrices(scene.outputs, noise=True, uncertainty=True) is None
 
     a.image(scene, noise=True, uncertainty=True)
 
-    assert count == 1
+    assert count["num"] == 1
+
+
+def test_backproject_coordinates_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    The coordinates which images are given with are checked once for each
+    backprojection, whichever computations backproject them: here the
+    matrices, which leave images with an axis of the scene to the weights.
+    """
+    a = instrument_ideal
+    image = a.image(_scene(a).outputs, noise=False)
+    image = image.replace(outputs=image.outputs.add_axes(a.axis_wavelength))
+
+    count = _count_checks(monkeypatch)
+
+    assert a._backproject_matrices(image.outputs) is None
+
+    a.backproject(image)
+
+    assert count["num"] == 1
 
 
 def test_check_coordinates_not_finite() -> None:
@@ -1874,7 +1985,11 @@ def test_check_coordinates_not_finite() -> None:
     Neither gives a warning, for the difference of two infinities.
     """
     check = ctis.instruments._instruments._check_coordinates
-    kwargs = dict(tolerance=1e-9, name="`scene.inputs`")
+    kwargs = dict(
+        tolerance=1e-9,
+        name="`scene.inputs`",
+        grid="`coordinates_scene`",
+    )
 
     c = instrument_ideal.coordinates_scene
     axis = instrument_ideal.axis_wavelength

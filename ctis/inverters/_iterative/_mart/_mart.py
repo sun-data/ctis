@@ -146,7 +146,8 @@ class MartInverter(
             The observed images used to calculate the reconstruction.
             Must be evaluated on the same position coordinates as
             :attr:`~ctis.instruments.AbstractInstrument.coordinates_sensor`
-            attribute of :attr:`instrument`.
+            attribute of :attr:`instrument`, to within the rounding of
+            double precision.
             Any axes beyond those of the channels and the sensor are those of
             independent frames, sets of images of the same instrument.
             The scene of each frame is reconstructed on its own, and stops
@@ -180,13 +181,9 @@ class MartInverter(
 
         instrument = self.instrument
 
-        position_images = images.inputs.position
-        position_sensor = instrument.coordinates_sensor.position
-        if not np.all(position_images == position_sensor):
-            raise ValueError(
-                "`images.inputs.position` and `self.coordinates_sensor.position` "
-                "are not equal."
-            )
+        # the images are given with their coordinates, whose positions are
+        # checked here, once
+        instrument._values_image(images, name="images")
 
         # a guess which is given with its coordinates, as the solution of an
         # earlier inversion is, has them checked here, once, and is inverted
