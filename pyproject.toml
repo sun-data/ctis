@@ -29,8 +29,12 @@ dependencies = [
 dynamic = ["version"]
 
 [project.optional-dependencies]
+torch = [
+    "torch",
+]
 test = [
     "pytest",
+    "torch",
 ]
 doc = [
     "pytest",
