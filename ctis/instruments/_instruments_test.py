@@ -557,6 +557,11 @@ class AbstractTestAbstractInstrument(
         # `backproject` methods on plain arrays
         operators = a._operators()
 
+        # an instrument which provides its operators gives no reason that it
+        # does not
+        assert a._operators_reason() is None
+        assert ctis.instruments.AbstractInstrument._operators_reason(a) is None
+
         # an instrument provides none unless its class says how
         assert ctis.instruments.AbstractInstrument._operators(a) is None
         assert (
@@ -568,7 +573,7 @@ class AbstractTestAbstractInstrument(
                 shape_sensor=operators.shape_sensor,
                 dtype=operators.dtype,
             )
-            is None
+            == "it does not define any"
         )
         assert ctis.instruments.AbstractLinearInstrument._weights_input(a) is None
         assert ctis.instruments.AbstractLinearInstrument._fields_factors.fget(a) == ()
@@ -1087,17 +1092,28 @@ class TestIdealInstrument(
         _assert_backproject_matrices(a, shape_frames=dict(time=2))
 
     @pytest.mark.parametrize(
-        argnames="kwargs",
+        argnames="kwargs,reason",
         argvalues=[
-            dict(
-                quantum_yield=na.ScalarArray(np.ones(20), axes="wavelength")
-                * u.electron
-                / u.photon,
+            (
+                dict(
+                    quantum_yield=na.ScalarArray(np.ones(20), axes="wavelength")
+                    * u.electron
+                    / u.photon,
+                ),
+                "its quantum yield has the axis 'wavelength'",
             ),
-            dict(
-                plate_scale=na.linspace(2, 2.1, axis="time", num=2) * u.arcsec / u.pix,
+            (
+                dict(
+                    plate_scale=na.linspace(2, 2.1, axis="time", num=2)
+                    * u.arcsec
+                    / u.pix,
+                ),
+                "its weights have the axes",
             ),
-            dict(read_noise=0),
+            (
+                dict(read_noise=0),
+                "its read noise is dimensionless, which cannot be converted to",
+            ),
         ],
         ids=[
             "quantum yield for each wavelength",
@@ -1109,14 +1125,17 @@ class TestIdealInstrument(
         self,
         a: ctis.instruments.IdealInstrument,
         kwargs: dict,
+        reason: str,
     ) -> None:
         """
         An instrument which the operators cannot express does not provide
-        them, which leaves its images and backprojections to its weights.
+        them, and gives the reason, which leaves its images and
+        backprojections to its weights.
         """
         a = dataclasses.replace(a, **kwargs)
 
         assert a._operators() is None
+        assert reason in a._operators_reason()
 
         scene = _scene(a)
 
@@ -1629,10 +1648,16 @@ class TestIdealInstrument(
 
         assert a._operators() is None
         assert a._operators() is None
+        assert "its quantum yield has the axis 'wavelength'" in a._operators_reason()
+
+        # without a precision, the reason is that of the precision kept
+        assert a._operators(np.float32) is None
+        assert a._operators_reason(None) == a._operators_reason(np.float32)
 
         a.quantum_yield = quantum_yield
 
         assert a._operators() is not None
+        assert a._operators_reason() is None
 
     def test__operators_subclass(
         self,
@@ -1680,6 +1705,7 @@ class TestIdealInstrument(
         assert Dimmed._overridden()
         assert dimmed._operators() is None
         assert dimmed._operators(np.float32) is None
+        assert "its class, `Dimmed`, replaces" in dimmed._operators_reason()
         _assert_close(dimmed.image(scene, noise=False).outputs, image / 2)
 
         renamed = Renamed(**kwargs)
@@ -1740,12 +1766,19 @@ class TestIdealInstrument(
         image = a.image(scene, noise=False)
         backprojected = a.backproject(image).outputs
 
+        reasons = {
+            Scene: "the vertices of its scene cannot be plain arrays: their",
+            Sensor: "the vertices of its sensor cannot be plain arrays: their",
+            Weight: "the weight of the cells of its scene has the axis 'time'",
+        }
+
         for cls in (Scene, Sensor, Weight):
             b = cls(**kwargs)
 
             assert not cls._overridden()
             assert b._operators() is None
             assert b._operators(np.float32) is None
+            assert reasons[cls] in b._operators_reason()
             assert "weights" in vars(b)
 
             assert b._image_matrices(scene, noise=False, uncertainty=False) is None
@@ -2161,6 +2194,7 @@ def test_operators_weights_unit() -> None:
 
     assert not Area._overridden()
     assert b._operators() is None
+    assert "its weights are in a unit of their own" in b._operators_reason()
     assert "weights" in vars(b)
     assert b._image_matrices(scene, noise=False, uncertainty=False) is None
     _assert_close(
@@ -2498,6 +2532,7 @@ def test_optika_operators_band() -> None:
 
     assert a._operators() is None
     assert a._operators(np.float32) is None
+    assert "strays further than 0.2% from the middle" in a._operators_reason()
 
 
 def test_optika_num_channel() -> None:
@@ -2555,6 +2590,7 @@ def test_optika_operators_subclass() -> None:
     assert Dimmed._overridden()
     assert not ctis.instruments.OptikaInstrument._overridden()
     assert dimmed._operators() is None
+    assert "its class, `Dimmed`, replaces" in dimmed._operators_reason()
     _assert_close(
         dimmed.image(scene, noise=False).outputs,
         a.image(scene, noise=False).outputs / 2,
@@ -2574,6 +2610,31 @@ def test_optika_operators_unsupported() -> None:
     )
 
     assert a._operators() is None
+    assert "the read noise of its sensor is dimensionless" in a._operators_reason()
+
+
+def test_optika_operators_response_axis() -> None:
+    """
+    An instrument whose sensor has a response with an axis of its own,
+    here an exposure time for each of two times, provides no operators,
+    and names the axis.
+    """
+    a = _instrument_optika()
+    sensor = a.system.sensor
+    sensor = dataclasses.replace(
+        sensor,
+        timedelta_exposure=sensor.timedelta_exposure
+        * na.ScalarArray(np.ones(2), axes="time"),
+    )
+    a = dataclasses.replace(
+        a,
+        system=dataclasses.replace(a.system, sensor=sensor),
+    )
+
+    reason = "the response of its sensor to the voxels of its scene has the axis 'time'"
+
+    assert a._operators() is None
+    assert reason in a._operators_reason()
 
 
 @pytest.mark.parametrize(
@@ -2591,8 +2652,8 @@ def test_optika_operators_unexposed(kwargs: dict) -> None:
     """
     An instrument whose sensor does not respond to the light, here one with
     no exposure time, which is the default of :mod:`optika`, provides no
-    operators, and says nothing: such a sensor has neither a
-    variance-to-mean ratio nor an inverse.
+    operators, and warns of nothing as it finds that out: such a sensor
+    has neither a variance-to-mean ratio nor an inverse.
     """
     a = _instrument_optika(**kwargs)
 
@@ -2607,6 +2668,8 @@ def test_optika_operators_unexposed(kwargs: dict) -> None:
     with warnings.catch_warnings():
         warnings.simplefilter("error", RuntimeWarning)
         assert a._operators() is None
+
+    assert "or was not exposed" in a._operators_reason()
 
 
 class _MaterialOffset(
@@ -2637,12 +2700,19 @@ class _MaterialFloor(
 
 
 @pytest.mark.parametrize(
-    argnames="material",
-    argvalues=[_MaterialOffset(), _MaterialFloor()],
+    argnames="material,reason",
+    argvalues=[
+        (_MaterialOffset(), "the signal of its sensor is not proportional"),
+        (
+            _MaterialFloor(),
+            "the variance of the noise of its sensor is not proportional",
+        ),
+    ],
     ids=["signal with an offset", "noise with a floor"],
 )
 def test_optika_operators_proportional(
     material: optika.sensors.materials.AbstractSensorMaterial,
+    reason: str,
 ) -> None:
     """
     An instrument whose sensor gives a signal, or a variance of its noise,
@@ -2652,6 +2722,7 @@ def test_optika_operators_proportional(
     a = _instrument_optika(material=material)
 
     assert a._operators() is None
+    assert reason in a._operators_reason()
     assert a.image(_scene(a), noise=False).outputs.sum() > 0
 
 
@@ -2782,6 +2853,7 @@ def test_optika_operators_pixels(kwargs: dict) -> None:
     )
 
     assert b._operators() is None
+    assert "differently from pixel to pixel" in b._operators_reason()
 
     expected = a.image(_scene(a), noise=False).outputs * ramp
 
@@ -2851,10 +2923,12 @@ def test_optika_operators_assigned_unsupported() -> None:
 
     assert a._operators() is None
     assert a._operators() is None
+    assert "the read noise of its sensor is dimensionless" in a._operators_reason()
 
     a.system = system
 
     assert a._operators() is not None
+    assert a._operators_reason() is None
     TestOptikaInstrument().test__operators(a)
 
 
@@ -2941,6 +3015,7 @@ def test_image_lines() -> None:
 
     assert a._operators() is not None
     assert separate._operators() is None
+    assert "its weights have the axes" in separate._operators_reason()
 
     # a scene which is dim enough for its noise to be drawn
     scene = _scene_frames(a, shape_frames=dict()).outputs
@@ -3036,6 +3111,7 @@ def test_optika_image_lines() -> None:
     assert operators is not None
     assert operators.shape_line == dict(line=2)
     assert separate._operators() is None
+    assert "its weights have the axes" in separate._operators_reason()
 
     # a scene which is dim enough for its noise to be drawn
     scene = _scene_frames(a, shape_frames=dict()).outputs

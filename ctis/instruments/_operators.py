@@ -17,6 +17,7 @@ __all__ = [
     "framed",
     "frames",
     "regridder",
+    "unaligned",
     "vertices",
 ]
 
@@ -38,7 +39,8 @@ def aligned(
 
     It is :obj:`None` if `a` cannot be expressed this way: if it is not an
     array of scalars, if it has an axis which `shape` does not have or one of
-    another length, or if it cannot be converted to `unit`.
+    another length, or if it cannot be converted to `unit`, and
+    :func:`unaligned`, which makes those checks, says which.
     The caller is expected to fall back on the named arrays themselves, which
     then handle `a` or raise the error it deserves.
 
@@ -55,25 +57,62 @@ def aligned(
     """
     a = na.as_named_array(a)
 
-    if not isinstance(a, na.AbstractScalarArray):
-        return None
-
-    a = a.explicit
-
-    if any(ax not in shape or n not in (1, shape[ax]) for ax, n in a.shape.items()):
+    if unaligned(a, shape=shape, unit=unit) is not None:
         return None
 
     # a view of the values, where the unit and the precision allow one
-    result = a.ndarray_aligned(tuple(shape))
+    result = a.explicit.ndarray_aligned(tuple(shape))
     if not isinstance(result, u.Quantity):
         result = result << u.dimensionless_unscaled
 
-    try:
-        result = result.to_value(unit)
-    except u.UnitConversionError:
-        return None
+    return np.asarray(result.to_value(unit), dtype=dtype)
 
-    return np.asarray(result, dtype=dtype)
+
+def unaligned(
+    a: Any,
+    shape: dict[str, int],
+    unit: u.UnitBase,
+) -> None | str:
+    """
+    Why :func:`aligned` cannot express a named array as a plain array,
+    or :obj:`None` if it can.
+
+    These are the checks of :func:`aligned`, which makes them here.
+
+    The reason is what is said of the array, such as
+    ``"has the axis 'time', which is not one of ('channel', 'x')"``,
+    for the caller to name the array in front of.
+
+    Parameters
+    ----------
+    a
+        The array, or anything which can be converted to one.
+    shape
+        The axes that the array can have and the lengths it can have along
+        them.
+    unit
+        The unit that the array has to be convertible to.
+    """
+    a = na.as_named_array(a)
+
+    if not isinstance(a, na.AbstractScalarArray):
+        return f"is a `{type(a).__name__}`, and not an array of scalars"
+
+    a = a.explicit
+
+    for ax, num in a.shape.items():
+        if ax not in shape:
+            return f"has the axis {ax!r}, which is not one of {tuple(shape)}"
+        if num not in (1, shape[ax]):
+            return f"has {num} elements along {ax!r}, and not {shape[ax]}"
+
+    unit_a = na.unit_normalized(a)
+    if not unit_a.is_equivalent(unit):
+        name_a = f"in units of `{unit_a}`" if str(unit_a) else "dimensionless"
+        name = f"`{unit}`" if str(unit) else "a dimensionless number"
+        return f"is {name_a}, which cannot be converted to {name}"
+
+    return None
 
 
 def framed(
@@ -154,11 +193,12 @@ def vertices(
     coordinates: na.AbstractVectorArray,
     shape: dict[str, int],
     unit: u.UnitBase,
-) -> None | tuple[np.ndarray, ...]:
+) -> str | tuple[np.ndarray, ...]:
     """
     The components of the vertices of a grid as plain arrays of a given
-    shape, or :obj:`None` if any of them cannot be expressed that way,
-    see :func:`aligned`.
+    shape, or the reason that one of them cannot be expressed that way,
+    such as ``"their component 'x' has the axis 'time', which is not one
+    of ('x', 'y')"``, see :func:`aligned` and :func:`unaligned`.
 
     Parameters
     ----------
@@ -170,11 +210,12 @@ def vertices(
         The unit of the result.
     """
     result = []
-    for component in coordinates.components.values():
-        component = aligned(component, shape=shape, unit=unit)
-        if component is None:
-            return None
-        result.append(np.broadcast_to(component, tuple(shape.values())))
+    for name, component in coordinates.components.items():
+        values = aligned(component, shape=shape, unit=unit)
+        if values is None:
+            reason = unaligned(component, shape=shape, unit=unit)
+            return f"their component {name!r} {reason}"
+        result.append(np.broadcast_to(values, tuple(shape.values())))
     return tuple(result)
 
 

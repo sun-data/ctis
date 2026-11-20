@@ -8,7 +8,15 @@ import astropy.units as u
 import astropy.constants
 import named_arrays as na
 import optika
-from ._operators import Operators, aligned, framed, frames, regridder, vertices
+from ._operators import (
+    Operators,
+    aligned,
+    framed,
+    frames,
+    regridder,
+    unaligned,
+    vertices,
+)
 
 __all__ = [
     "AbstractInstrument",
@@ -585,6 +593,7 @@ class AbstractInstrument(
 
         The inverters iterate on these, in place of :meth:`image` and
         :meth:`backproject`, if they are provided.
+        If they are not, :meth:`_operators_reason` says why.
 
         Parameters
         ----------
@@ -596,6 +605,28 @@ class AbstractInstrument(
         """
         return None
 
+    def _operators_reason(self, dtype: None | type = np.float64) -> None | str:
+        """
+        Why this instrument does not provide :meth:`_operators`,
+        or :obj:`None` if it provides them.
+
+        The reason is what is said of the instrument, such as
+        ``"its sensor responds differently from pixel to pixel"``,
+        for an inverter to tell why it iterates on :meth:`image` and
+        :meth:`backproject` instead.
+
+        Parameters
+        ----------
+        dtype
+            The precision of the matrices and of the arrays they act on,
+            :obj:`numpy.float64` or :obj:`numpy.float32`, or :obj:`None` for
+            the precision that they are kept in, as for :meth:`_operators`.
+        """
+        if self._operators(dtype) is not None:
+            return None
+
+        return "it does not define any"
+
 
 @dataclasses.dataclass
 class AbstractLinearInstrument(
@@ -606,18 +637,16 @@ class AbstractLinearInstrument(
     matrix multiplication.
     """
 
-    _operators_kept: None | tuple[np.dtype, tuple, None | Operators] = (
-        dataclasses.field(
-            default=None,
-            init=False,
-            repr=False,
-            compare=False,
-        )
+    _operators_kept: None | tuple[np.dtype, tuple, Operators | str] = dataclasses.field(
+        default=None,
+        init=False,
+        repr=False,
+        compare=False,
     )
     """
     The operators of this instrument as :meth:`_operators` last assembled
-    them, with the precision they are in and the fields of this instrument
-    that their factors were computed from.
+    them, or the reason that it could not, with the precision they are in
+    and the fields of this instrument that their factors were computed from.
     """
 
     @property
@@ -646,7 +675,7 @@ class AbstractLinearInstrument(
         # operators which have been assembled hold the count, and have
         # released the weights, which counting on them would compute again
         kept = self._operators_kept
-        if kept is not None and kept[2] is not None:
+        if kept is not None and isinstance(kept[2], Operators):
             return kept[2].num_channel
 
         shape = self.weights[0].shape
@@ -724,6 +753,9 @@ class AbstractLinearInstrument(
         A subclass which replaces a method that the operators stand in for
         does not provide them, see :meth:`_overridden`.
 
+        If the instrument cannot be expressed as one, the reason is kept in
+        place of the operators, for :meth:`_operators_reason` to give.
+
         Parameters
         ----------
         dtype
@@ -747,14 +779,14 @@ class AbstractLinearInstrument(
             _, fields_kept, operators = kept
 
             if all(a is b for a, b in zip(fields, fields_kept)):
-                return operators
+                return operators if isinstance(operators, Operators) else None
 
             # only the factors depend on those fields, so the matrices,
             # which are the expensive part, are kept
-            if operators is not None:
+            if isinstance(operators, Operators):
                 operators = self._operators_refreshed(operators)
                 self._operators_kept = (dtype, fields, operators)
-                return operators
+                return operators if isinstance(operators, Operators) else None
 
         # matrices kept in another precision are released first, so that the
         # two never have to fit in memory together
@@ -765,12 +797,29 @@ class AbstractLinearInstrument(
 
         self._operators_kept = (dtype, fields, operators)
 
-        return operators
+        return operators if isinstance(operators, Operators) else None
 
-    def _operators_refreshed(self, operators: Operators) -> None | Operators:
+    def _operators_reason(self, dtype: None | type = np.float64) -> None | str:
+        if self._operators(dtype) is not None:
+            return None
+
+        if self._overridden():
+            name = type(self).__name__
+            return f"its class, `{name}`, replaces a method which they stand in for"
+
+        # the reason which was kept in place of the operators, in the
+        # precision asked for, or in the one kept if none is
+        kept = self._operators_kept
+        if kept is not None and (dtype is None or kept[0] == np.dtype(dtype)):
+            if isinstance(kept[2], str):
+                return kept[2]
+
+        return super()._operators_reason(dtype)
+
+    def _operators_refreshed(self, operators: Operators) -> Operators | str:
         """
         Operators on the same matrices, with the factors around them computed
-        again from the fields of this instrument, or :obj:`None` if the
+        again from the fields of this instrument, or the reason that the
         fields can no longer be expressed as those factors.
 
         Parameters
@@ -785,8 +834,8 @@ class AbstractLinearInstrument(
             shape_sensor=operators.shape_sensor,
             dtype=operators.dtype,
         )
-        if factors is None:
-            return None
+        if isinstance(factors, str):
+            return factors
 
         result = dataclasses.replace(operators, **factors)
 
@@ -802,13 +851,13 @@ class AbstractLinearInstrument(
         shape_scene: dict[str, int],
         shape_sensor: dict[str, int],
         dtype: np.dtype,
-    ) -> None | dict[str, np.ndarray | u.UnitBase]:
+    ) -> str | dict[str, np.ndarray | u.UnitBase]:
         """
         The factors around the matrices of the operators of this instrument,
         and the units of the arrays they act on, as the fields of
         :class:`~ctis.instruments._operators.Operators` of the same names,
-        or :obj:`None` if this instrument cannot be expressed as those
-        factors.
+        or the reason that this instrument cannot be expressed as those
+        factors, see :meth:`_operators_reason`.
 
         An instrument provides operators by defining this method,
         :meth:`_grids_weights` and, if :attr:`weights` weighs the cells of
@@ -829,7 +878,7 @@ class AbstractLinearInstrument(
         dtype
             The precision of the factors.
         """
-        return None
+        return "it does not define any"
 
     def _grids_weights(
         self,
@@ -852,9 +901,11 @@ class AbstractLinearInstrument(
         """
         return None
 
-    def _operators_new(self, dtype: np.dtype) -> None | Operators:
+    def _operators_new(self, dtype: np.dtype) -> Operators | str:
         """
-        Assemble the operators of this instrument, see :meth:`_operators`.
+        Assemble the operators of this instrument, see :meth:`_operators`,
+        or give the reason that it cannot be expressed as them,
+        see :meth:`_operators_reason`.
 
         Parameters
         ----------
@@ -871,8 +922,12 @@ class AbstractLinearInstrument(
 
         # an instrument which varies along any other axis, such as time,
         # is left to the named arrays
-        if set(array.shape) != {*axis_channel, *axis_line, axis_wavelength}:
-            return None
+        axes = (*axis_channel, *axis_line, axis_wavelength)
+        if set(array.shape) != set(axes):
+            return (
+                f"its weights have the axes {tuple(array.shape)}, and not those "
+                f"of its channels and its wavelengths alone, {axes}"
+            )
 
         shape_channel = {ax: array.shape[ax] for ax in axis_channel}
         shape_line = {ax: array.shape[ax] for ax in axis_line}
@@ -895,8 +950,8 @@ class AbstractLinearInstrument(
             shape_sensor=shape_sensor,
             dtype=dtype,
         )
-        if factors is None:
-            return None
+        if isinstance(factors, str):
+            return factors
 
         # the vertices of the two grids that the weights were computed from
         position_scene, position_sensor = self._grids_weights()
@@ -921,23 +976,26 @@ class AbstractLinearInstrument(
         # grids which cannot be expressed as plain arrays of positions on the
         # sensor, such as those with an axis of their own, are left to the
         # named arrays
-        if vertices_scene is None or vertices_sensor is None:
-            return None
+        for name, values in (("scene", vertices_scene), ("sensor", vertices_sensor)):
+            if isinstance(values, str):
+                return f"the vertices of its {name} cannot be plain arrays: {values}"
 
         # the weight of every cell of the scene, if the weights have one,
         # kept as it broadcasts against the voxels, which is all that the
         # matrix of the backprojection needs of it
         weights_scene = self._weights_input()
         if weights_scene is not None:
-            weights_scene = aligned(
+            kwargs_weight = dict(
                 a=weights_scene,
                 shape=shape_voxels,
                 unit=u.dimensionless_unscaled,
             )
+            weights_scene = aligned(**kwargs_weight)
 
             # and so is a weight which cannot be expressed as a plain array
             if weights_scene is None:
-                return None
+                reason = unaligned(**kwargs_weight)
+                return f"the weight of the cells of its scene {reason}"
 
         # the matrix takes a scene for each channel, rather than one shared
         # by the channels, so that its transpose gives a backprojection
@@ -956,7 +1014,10 @@ class AbstractLinearInstrument(
         # and so are weights in a unit of their own, which a matrix that
         # acts on plain arrays cannot carry
         if forward is None:
-            return None
+            return (
+                "its weights are in a unit of their own, which a matrix that "
+                "acts on plain arrays cannot carry"
+            )
 
         # the weights are released, so that the matrix of the backprojection,
         # which is derived from the one above when it is first needed,
@@ -1542,13 +1603,13 @@ class IdealInstrument(
         shape_scene: dict[str, int],
         shape_sensor: dict[str, int],
         dtype: np.dtype,
-    ) -> None | dict[str, np.ndarray | u.UnitBase]:
+    ) -> str | dict[str, np.ndarray | u.UnitBase]:
         """
         The factors around the matrices of the operators of this instrument,
         and the units of the arrays they act on, as the fields of
         :class:`~ctis.instruments._operators.Operators` of the same names,
-        or :obj:`None` if the fields of this instrument cannot be expressed
-        as those factors.
+        or the reason that the fields of this instrument cannot be
+        expressed as those factors, see :meth:`_operators_reason`.
 
         Parameters
         ----------
@@ -1585,24 +1646,47 @@ class IdealInstrument(
         scale_backproject = (1 * unit_images) / self.quantum_yield / num_wavelength
         scale_backproject = scale_backproject * energy / volume / exposure
 
-        scale = aligned(scale, shape=shape_voxels, unit=u.photon)
-        scale_backproject = aligned(
+        kwargs_scale = dict(a=scale, shape=shape_voxels, unit=u.photon)
+        kwargs_scale_backproject = dict(
             a=scale_backproject,
             shape=shape_voxels,
             unit=unit_scene,
         )
-        gain = aligned(
+        kwargs_gain = dict(
             a=self.quantum_yield,
             shape=shape_channel | shape_line,
             unit=unit_images / u.photon,
         )
-        read_noise = aligned(self.read_noise, shape=shape_pixels, unit=unit_images)
+        kwargs_read_noise = dict(
+            a=self.read_noise,
+            shape=shape_pixels,
+            unit=unit_images,
+        )
+
+        scale = aligned(**kwargs_scale)
+        scale_backproject = aligned(**kwargs_scale_backproject)
+        gain = aligned(**kwargs_gain)
+        read_noise = aligned(**kwargs_read_noise)
 
         # a quantum yield which varies with wavelength or across the sensor
         # cannot be applied after the sum over wavelength, and anything
         # with other axes or units is left to the named arrays
-        if any(a is None for a in (scale, scale_backproject, gain, read_noise)):
-            return None
+        if gain is None:
+            reason = unaligned(**kwargs_gain)
+            return (
+                f"its quantum yield {reason}, where the matrices apply one "
+                f"for each channel and each line, after the sum over wavelength"
+            )
+        if read_noise is None:
+            reason = unaligned(**kwargs_read_noise)
+            return f"its read noise {reason}"
+        if scale is None or scale_backproject is None:
+            reason = unaligned(**kwargs_scale)
+            reason = reason or unaligned(**kwargs_scale_backproject)
+            return (
+                f"the product of its effective area, its exposure time and "
+                f"the volume of its voxels {reason}"
+            )
 
         # the factors of the voxels are given one more axis, which the
         # frames are broadcast along, and every factor the precision of the
@@ -2202,13 +2286,13 @@ class OptikaInstrument(
         shape_scene: dict[str, int],
         shape_sensor: dict[str, int],
         dtype: np.dtype,
-    ) -> None | dict[str, np.ndarray | u.UnitBase]:
+    ) -> str | dict[str, np.ndarray | u.UnitBase]:
         """
         The factors around the matrices of the operators of this instrument,
         and the units of the arrays they act on, as the fields of
         :class:`~ctis.instruments._operators.Operators` of the same names,
-        or :obj:`None` if this instrument cannot be expressed as those
-        factors.
+        or the reason that this instrument cannot be expressed as those
+        factors, see :meth:`_operators_reason`.
 
         The response of the sensor is not derived here: the sensor is asked
         for it, by exposing one pixel to one photon a second at each
@@ -2313,7 +2397,10 @@ class OptikaInstrument(
         # which was not exposed, has neither a ratio nor an inverse there,
         # and is left to the named arrays
         if not np.all(exposed.nominal > 0):
-            return None
+            return (
+                "its sensor does not respond to one of the wavelengths of its "
+                "scene, or was not exposed"
+            )
 
         gain = exposed.nominal / rate
         vmr = np.square(exposed.width) / exposed.nominal
@@ -2326,11 +2413,14 @@ class OptikaInstrument(
 
         gain_bright = exposed_bright.nominal / rate_bright
         if not np.all(np.abs(gain_bright - gain) <= tolerance * gain):
-            return None
+            return "the signal of its sensor is not proportional to the light"
 
         vmr_bright = np.square(exposed_bright.width) / exposed_bright.nominal
         if not np.all(np.abs(vmr_bright - vmr) <= tolerance * vmr):
-            return None
+            return (
+                "the variance of the noise of its sensor is not proportional "
+                "to the light"
+            )
 
         # the energy of the photons of each voxel, which a scene in units of
         # energy is divided by on its way to the matrices.
@@ -2374,7 +2464,7 @@ class OptikaInstrument(
         # other
         shape_exposed = na.shape_broadcasted(gain, vmr, absorbed)
         if any(shape_exposed[ax] != 1 for ax in axis_pixel):
-            return None
+            return "its sensor responds differently from pixel to pixel"
 
         # the axes of the one pixel are dropped, since they can be named like
         # the spatial axes of the scene, which the factors of the voxels
@@ -2399,18 +2489,33 @@ class OptikaInstrument(
         scale_backproject = absorbed / area / volume
         scale_backproject = scale_backproject / math.prod(shape_line.values())
 
-        scale = aligned(scale, shape=shape_voxels, unit=unit_images)
-        scale_backproject = aligned(
+        kwargs_scale = dict(a=scale, shape=shape_voxels, unit=unit_images)
+        kwargs_scale_backproject = dict(
             a=scale_backproject,
             shape=shape_voxels,
             unit=unit_scene,
         )
-        vmr = aligned(vmr, shape=shape_response, unit=unit_images)
-        read_noise = aligned(sensor.read_noise, shape=shape_pixels, unit=unit_images)
+        kwargs_vmr = dict(a=vmr, shape=shape_response, unit=unit_images)
+        kwargs_read_noise = dict(
+            a=sensor.read_noise,
+            shape=shape_pixels,
+            unit=unit_images,
+        )
+
+        scale = aligned(**kwargs_scale)
+        scale_backproject = aligned(**kwargs_scale_backproject)
+        vmr = aligned(**kwargs_vmr)
+        read_noise = aligned(**kwargs_read_noise)
 
         # anything with other axes or units is left to the named arrays
-        if any(a is None for a in (scale, scale_backproject, vmr, read_noise)):
-            return None
+        if read_noise is None:
+            reason = unaligned(**kwargs_read_noise)
+            return f"the read noise of its sensor {reason}"
+        if scale is None or scale_backproject is None or vmr is None:
+            reason = unaligned(**kwargs_scale)
+            reason = reason or unaligned(**kwargs_scale_backproject)
+            reason = reason or unaligned(**kwargs_vmr)
+            return f"the response of its sensor to the voxels of its scene {reason}"
 
         # so is a scene in units of energy, if the energy of its photons
         # cannot be expressed for each voxel, as that of a scene whose
@@ -2426,7 +2531,11 @@ class OptikaInstrument(
         axis = len(shape_channel) + len(shape_line)
         middle = (vmr.max(axis, keepdims=True) + vmr.min(axis, keepdims=True)) / 2
         if not np.all(np.abs(vmr - middle) <= self._tolerance_vmr * middle):
-            return None
+            return (
+                f"the ratio of the variance of the noise of its sensor to its "
+                f"signal strays further than {100 * self._tolerance_vmr:.2g}% from "
+                f"the middle of its range across the wavelengths of a line"
+            )
 
         vmr = middle.reshape(middle.shape[:axis])
 

@@ -5,7 +5,13 @@ import numpy as np
 import astropy.units as u
 import named_arrays as na
 import ctis
-from ctis.instruments._operators import Operators, aligned, framed, frames
+from ctis.instruments._operators import (
+    Operators,
+    aligned,
+    framed,
+    frames,
+    unaligned,
+)
 from .. import AbstractIterativeInverter, IterativeInversionResult
 from . import _kernels
 
@@ -29,7 +35,7 @@ class MartInverter(
     those, using plain arrays and compiled code.
     Otherwise, it runs on the :meth:`~ctis.instruments.AbstractInstrument.image`
     and :meth:`~ctis.instruments.AbstractInstrument.backproject` methods of
-    the instrument, which is slower.
+    the instrument, which is slower, and a warning says so, with the reason.
     The two give the same result.
     A subclass of this inverter which replaces :meth:`mean_chi_squared` or
     :meth:`correlation_residual` runs on the methods of the instrument too,
@@ -116,12 +122,14 @@ class MartInverter(
 
     Single precision is only available where the iteration runs on the
     sparse matrices of the instrument, and an inversion which cannot run on
-    them raises an error rather than running in double precision.
+    them raises an error, which says why it cannot, rather than running in
+    double precision.
     """
 
     def __post_init__(self):
 
-        if np.dtype(self.dtype) not in (np.float32, np.float64):
+        # `None` is not a precision, though `numpy.dtype` takes it for one
+        if self.dtype is None or np.dtype(self.dtype) not in (np.float32, np.float64):
             raise ValueError(
                 f"`dtype` must be `numpy.float32` or `numpy.float64`, "
                 f"got {self.dtype}."
@@ -216,8 +224,11 @@ class MartInverter(
 
         arrays = self._arrays(images.outputs, guess)
 
-        if arrays is not None:
+        if not isinstance(arrays, str):
             return self._call_arrays(images, guess, verbose, *arrays)
+
+        # the reason that this inversion cannot run on the matrices
+        reason = arrays
 
         # the methods of an instrument compute in the precision of its own
         # arrays, whatever precision is asked for here
@@ -226,11 +237,19 @@ class MartInverter(
             raise ValueError(
                 f"`dtype` is {dtype}, which is only available on the sparse "
                 f"matrices of the instrument, and this inversion cannot run on "
-                f"them: the instrument, the images or the guess cannot be "
-                f"expressed as plain arrays, or the inverter replaces a merit "
-                f"function. It would run on the `image` and `backproject` "
-                f"methods of the instrument, in double precision."
+                f"them: {reason}. It would run on the `image` and "
+                f"`backproject` methods of the instrument, in double precision."
             )
+
+        # the iteration on the methods of the instrument is much the slower
+        # of the two, so it is never run without saying so, and why, before
+        # the backprojection below, which is on those methods too
+        warnings.warn(
+            f"This inversion runs on the `image` and `backproject` methods of "
+            f"the instrument, which is slower than on its sparse matrices: "
+            f"{reason}.",
+            stacklevel=2,
+        )
 
         # the backprojection of one frame has every axis of the instrument
         # and of the scene, and none of the frames, and it is only needed
@@ -253,9 +272,10 @@ class MartInverter(
             raise ValueError(
                 f"the images have the axes {shape_own}, which are also axes of "
                 f"the instrument or of the scene, so they are not those of "
-                f"independent frames, and an instrument which cannot be "
-                f"expressed as a pair of sparse matrices is inverted one "
-                f"element at a time along them."
+                f"independent frames, and the iteration on the methods of the "
+                f"instrument, which cannot stop them one element at a time, can "
+                f"take no more than one element along them. It runs on those "
+                f"methods since it cannot run on the sparse matrices: {reason}."
             )
 
         if shape_frames:
@@ -352,7 +372,7 @@ class MartInverter(
         images: na.AbstractScalar,
         guess: None | na.AbstractScalar,
     ) -> (
-        None
+        str
         | tuple[
             dict[str, int],
             Operators,
@@ -364,8 +384,9 @@ class MartInverter(
         """
         The axes of the frames, and the operators of the instrument with the
         observed images and the initial guess as the plain arrays that the
-        operators act on, or :obj:`None` if any of them cannot be expressed
-        that way.
+        operators act on, or the reason that any of them cannot be
+        expressed that way, which is said in the warning that the
+        inversion then runs on the methods of the instrument.
 
         Each array has the frames along one last axis.
         The guess is a copy, which the iteration is free to overwrite, or
@@ -396,11 +417,17 @@ class MartInverter(
             cls.mean_chi_squared is not MartInverter.mean_chi_squared
             or cls.correlation_residual is not MartInverter.correlation_residual
         ):
-            return None
+            return (
+                f"the inverter, a `{cls.__name__}`, replaces a merit function, "
+                f"which the iteration on the matrices computes itself"
+            )
 
-        operators = self.instrument._operators(self.dtype)
+        instrument = self.instrument
+
+        operators = instrument._operators(self.dtype)
         if operators is None:
-            return None
+            reason = instrument._operators_reason(self.dtype)
+            return f"the instrument provides none, since {reason}"
 
         # every axis of the images beyond their own is an axis of the frames,
         # unless it is one of those of the scene
@@ -410,7 +437,15 @@ class MartInverter(
             shape_other=operators.shape_scene,
         )
         if shape_frames is None:
-            return None
+            axes = tuple(
+                ax
+                for ax in na.shape(images)
+                if ax in operators.shape_scene and ax not in operators.shape_images
+            )
+            return (
+                f"the images have the axes {axes}, which are axes of the scene, "
+                f"so they are not a stack of frames"
+            )
 
         # a guess which cannot be broadcast to the scene of every frame is
         # refused here, since the methods of the instrument cannot invert
@@ -430,12 +465,18 @@ class MartInverter(
             dtype=operators.dtype,
         )
         if observed is None:
-            return None
+            reason = unaligned(
+                a=images,
+                shape=operators.shape_images | shape_frames,
+                unit=operators.unit_images,
+            )
+            return f"the array of the images {reason}"
 
         scene = None
         energy = None
         if guess is not None:
             shape_guess = operators.shape_scene | shape_frames
+            unit_energy = operators.unit_scene * operators.unit_energy
 
             scene = aligned(
                 a=guess,
@@ -452,12 +493,24 @@ class MartInverter(
                 scene = aligned(
                     a=guess,
                     shape=shape_guess,
-                    unit=operators.unit_scene * operators.unit_energy,
+                    unit=unit_energy,
                     dtype=operators.dtype,
                 )
 
+            # a guess which is not a plain array of the scene, in a unit
+            # that the operators take one in, is left to the named arrays
             if scene is None:
-                return None
+                if unaligned(guess, shape=shape_guess, unit=unit_energy) is None:
+                    return (
+                        "the guess is in units of energy, which the matrices of "
+                        "the instrument do not take a scene in"
+                    )
+                reason = unaligned(
+                    a=guess,
+                    shape=shape_guess,
+                    unit=operators.unit_scene,
+                )
+                return f"the guess {reason}"
 
             # the guess is the same along an axis of the scene or of the
             # frames which it does not vary along

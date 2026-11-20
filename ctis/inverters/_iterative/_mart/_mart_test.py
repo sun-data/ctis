@@ -1,3 +1,4 @@
+import re
 import warnings
 import weakref
 import tracemalloc
@@ -90,7 +91,7 @@ def _uses_operators(
     Whether an inversion iterates on the operators of the instrument, instead
     of its `image` and `backproject` methods.
     """
-    return a._arrays(images.outputs, guess) is not None
+    return not isinstance(a._arrays(images.outputs, guess), str)
 
 
 @dataclasses.dataclass
@@ -150,7 +151,11 @@ def _reference(
 
     assert not _uses_operators(reference, images, guess)
 
-    result = reference(images, guess=guess)
+    # the reference is the slower iteration by design, which the inverter
+    # warns of
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="This inversion runs on the")
+        result = reference(images, guess=guess)
 
     return dataclasses.replace(result, inverter=a)
 
@@ -380,7 +385,8 @@ def test__call__two_channel_axes() -> None:
 def test__call__without_operators() -> None:
     """
     An instrument which does not provide operators is inverted by the
-    iteration on its methods, with the same result.
+    iteration on its methods, with the same result, and with a warning
+    which gives the reason and points to the call of the inverter.
     """
     quantum_yield = na.ScalarArray(np.ones(velocity.size - 1), axes="wavelength")
     instrument_named = dataclasses.replace(
@@ -394,7 +400,15 @@ def test__call__without_operators() -> None:
 
     assert not _uses_operators(a, images)
 
-    result = a(images)
+    with pytest.warns(UserWarning, match="slower than on its sparse") as record:
+        result = a(images)
+
+    (warning,) = [w for w in record if "slower than on its sparse" in str(w.message)]
+    reason = "since its quantum yield has the axis 'wavelength'"
+
+    assert reason in str(warning.message)
+    assert warning.filename == __file__
+
     expected = ctis.inverters.MartInverter(
         instrument=instrument,
         threshold_convergence=1e-2,
@@ -404,18 +418,76 @@ def test__call__without_operators() -> None:
     _assert_same(result, expected)
 
 
+def test__call__operators_silent() -> None:
+    """
+    An inversion which runs on the matrices of the instrument does not
+    warn that it runs on its methods.
+    """
+    a = ctis.inverters.MartInverter(
+        instrument=instrument,
+        threshold_convergence=1e-2,
+    )
+
+    assert _uses_operators(a, images)
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings("error", message="This inversion runs on the")
+        result = a(images)
+
+    assert result.success
+
+
+def test__call__operators_undefined() -> None:
+    """
+    An instrument which defines no operators is inverted by the iteration
+    on its methods, with a warning which says that it defines none.
+    """
+    kwargs = {
+        field.name: getattr(instrument, field.name)
+        for field in dataclasses.fields(instrument)
+        if field.init
+    }
+    a = ctis.inverters.MartInverter(
+        instrument=_IdealInstrumentWeights(**kwargs),
+        num_iteration=2,
+        threshold_convergence=-np.inf,
+    )
+
+    reason = "the instrument provides none, since it does not define any."
+
+    with pytest.warns(UserWarning) as record:
+        a(images)
+
+    # the warnings of the inverter, and not any other which the named
+    # arrays give
+    prefixes = ("This inversion runs on the", "Max number of iterations")
+    messages = [str(w.message) for w in record]
+    messages = [message for message in messages if message.startswith(prefixes)]
+
+    assert len(messages) == 2
+    assert messages[0].endswith(reason)
+    assert messages[1].startswith("Max number of iterations")
+
+
 @pytest.mark.parametrize(
-    argnames="guess",
+    argnames="guess,reason",
     argvalues=[
-        na.ScalarArray.ones(scene.outputs.shape),
-        na.ScalarArray.ones(scene.outputs.shape) * u.photon / u.s / u.cm**2,
+        (
+            na.ScalarArray.ones(scene.outputs.shape),
+            "the guess is dimensionless, which cannot be converted to",
+        ),
+        (
+            na.ScalarArray.ones(scene.outputs.shape) * u.photon / u.s / u.cm**2,
+            "the guess is in units of `ph",
+        ),
     ],
     ids=["no unit", "another unit"],
 )
-def test__call__guess_unsupported(guess: na.ScalarArray) -> None:
+def test__call__guess_unsupported(guess: na.ScalarArray, reason: str) -> None:
     """
     A guess which cannot be expressed as a plain array is left to the
-    iteration on named arrays, which raises the error it always has.
+    iteration on named arrays, with a warning which says why, and that
+    iteration raises the error it always has.
     """
     a = ctis.inverters.MartInverter(
         instrument=instrument,
@@ -424,8 +496,9 @@ def test__call__guess_unsupported(guess: na.ScalarArray) -> None:
 
     assert not _uses_operators(a, images, guess)
 
-    with pytest.raises(u.UnitConversionError):
-        a(images, guess=guess)
+    with pytest.warns(UserWarning, match=re.escape(reason)):
+        with pytest.raises(u.UnitConversionError):
+            a(images, guess=guess)
 
 
 @pytest.mark.parametrize(
@@ -567,8 +640,9 @@ def test__call__images_unsupported() -> None:
 
     assert not _uses_operators(a, images_bare)
 
-    with pytest.raises(u.UnitConversionError):
-        a(images_bare)
+    with pytest.warns(UserWarning, match="the array of the images is dimension"):
+        with pytest.raises(u.UnitConversionError):
+            a(images_bare)
 
 
 @pytest.mark.parametrize(
@@ -971,7 +1045,8 @@ def test__call__frames_without_operators(intermediate: bool) -> None:
 
     assert not _uses_operators(a, images_frames)
 
-    result = a(images_frames)
+    with pytest.warns(UserWarning, match="its quantum yield has the axis 'wav"):
+        result = a(images_frames)
     expected = ctis.inverters.MartInverter(
         instrument=instrument,
         threshold_convergence=1e-2,
@@ -1070,8 +1145,8 @@ def test_dtype_guess(guess: na.ScalarArray | na.FunctionArray) -> None:
     assert values.ndarray.dtype == np.float64
 
 
-@pytest.mark.parametrize("dtype", [np.int32, np.float16, np.complex128])
-def test_dtype_invalid(dtype: type) -> None:
+@pytest.mark.parametrize("dtype", [np.int32, np.float16, np.complex128, None])
+def test_dtype_invalid(dtype: None | type) -> None:
     with pytest.raises(ValueError, match="dtype"):
         ctis.inverters.MartInverter(instrument=instrument, dtype=dtype)
 
@@ -1091,16 +1166,28 @@ def test_dtype_without_operators() -> None:
         dtype=np.float32,
     )
 
-    with pytest.raises(ValueError, match="dtype"):
+    with pytest.raises(ValueError, match="its quantum yield has the axis 'wav"):
         a(images)
 
 
 @pytest.mark.parametrize(
-    argnames="images_fallback,guess",
+    argnames="images_fallback,guess,reason",
     argvalues=[
-        (images.replace(outputs=images.outputs.add_axes("wavelength")), None),
-        (images, na.ScalarArray.ones(scene.outputs.shape)),
-        (images, na.ScalarArray.ones(scene.outputs.shape) * u.photon / u.s / u.cm**2),
+        (
+            images.replace(outputs=images.outputs.add_axes("wavelength")),
+            None,
+            "the images have the axes ('wavelength',), which are axes of the",
+        ),
+        (
+            images,
+            na.ScalarArray.ones(scene.outputs.shape),
+            "the guess is dimensionless, which cannot be converted to",
+        ),
+        (
+            images,
+            na.ScalarArray.ones(scene.outputs.shape) * u.photon / u.s / u.cm**2,
+            "the guess is in units of `ph",
+        ),
     ],
     ids=[
         "images with an axis of the scene",
@@ -1111,11 +1198,13 @@ def test_dtype_without_operators() -> None:
 def test_dtype_fallback(
     images_fallback: na.FunctionArray[na.SpectralPositionalVectorArray, na.ScalarArray],
     guess: None | na.ScalarArray,
+    reason: str,
 ) -> None:
     """
     Single precision is refused whenever the iteration cannot run on the
     operators, and not only when the instrument does not provide them:
-    here because of the images, or because of the guess.
+    here because of the images, or because of the guess, and the error
+    says which.
     """
     a = ctis.inverters.MartInverter(
         instrument=instrument,
@@ -1124,8 +1213,10 @@ def test_dtype_fallback(
 
     assert not _uses_operators(a, images_fallback, guess)
 
-    with pytest.raises(ValueError, match="only available on the sparse matrices"):
+    with pytest.raises(ValueError, match="only available on the sparse") as info:
         a(images_fallback, guess=guess)
+
+    assert reason in str(info.value)
 
 
 def _assert_close(a: na.AbstractScalar, b: na.AbstractScalar) -> None:
@@ -1171,7 +1262,8 @@ def test__call__instrument_axis() -> None:
 
     assert not _uses_operators(a, images_time)
 
-    result = a(images_time)
+    with pytest.warns(UserWarning, match="its voxels has the axis 'time'"):
+        result = a(images_time)
     expected = ctis.inverters.MartInverter(
         instrument=instrument,
         threshold_convergence=1e-2,
@@ -1201,7 +1293,8 @@ def test__call__instrument_axis_frames() -> None:
         outputs=images_frames.outputs.add_axes("time"),
     )
 
-    result = a(images_time)
+    with pytest.warns(UserWarning, match="its voxels has the axis 'time'"):
+        result = a(images_time)
     expected = ctis.inverters.MartInverter(
         instrument=instrument,
         threshold_convergence=1e-2,
@@ -1248,7 +1341,8 @@ def test__call__instrument_axis_guess(
 
     assert not _uses_operators(a, images_time, guess)
 
-    result = a(images_time, guess=guess)
+    with pytest.warns(UserWarning, match="its voxels has the axis 'time'"):
+        result = a(images_time, guess=guess)
     expected = ctis.inverters.MartInverter(instrument=instrument, **kwargs)(
         images_frames,
         guess=guess,
@@ -1273,8 +1367,13 @@ def test__call__instrument_axis_many() -> None:
 
     a = ctis.inverters.MartInverter(instrument=instrument_time)
 
-    with pytest.raises(ValueError, match="not those of independent frames"):
-        a(images_time)
+    reason = "its voxels has the axis 'time'"
+
+    with pytest.warns(UserWarning, match=reason):
+        with pytest.raises(ValueError, match="not those of independent") as info:
+            a(images_time)
+
+    assert reason in str(info.value)
 
 
 def test__call__axis_scene() -> None:
@@ -1292,12 +1391,32 @@ def test__call__axis_scene() -> None:
     assert _uses_operators(a, images)
     assert not _uses_operators(a, images_wavelength)
 
-    result = a(images_wavelength)
+    reason = "the images have the axes ('wavelength',), which are axes of the"
+
+    with pytest.warns(UserWarning, match=re.escape(reason)):
+        result = a(images_wavelength)
+
     expected = a(images)
 
     assert result.num_iteration == expected.num_iteration
     assert result.success == expected.success
     _assert_close(result.solution.outputs, expected.solution.outputs)
+
+
+def test__call__axis_scene_many() -> None:
+    """
+    Images with more than one element along an axis named after one of the
+    scene are refused, with the reason that they cannot run on the matrices
+    of the instrument either.
+    """
+    images_wavelength = images.replace(
+        outputs=images.outputs * na.ScalarArray.ones(dict(wavelength=2)),
+    )
+    reason = "the images have the axes ('wavelength',), which are axes of the"
+
+    with pytest.warns(UserWarning, match=re.escape(reason)):
+        with pytest.raises(ValueError, match=re.escape(reason)):
+            inverter(images_wavelength)
 
 
 def test__call__axis_iteration() -> None:
@@ -1387,7 +1506,8 @@ def test__call__merit_replaced(name: str) -> None:
 
     assert not _uses_operators(a, images)
 
-    result = a(images)
+    with pytest.warns(UserWarning, match="a `Doubled`, replaces a merit"):
+        result = a(images)
     expected = ctis.inverters.MartInverter(
         instrument=instrument,
         threshold_convergence=1e-2,
@@ -1651,10 +1771,14 @@ def test__call__optika_energy_frames() -> None:
 
 
 @pytest.mark.parametrize(
-    argnames="material,unit",
+    argnames="material,unit,reason",
     argvalues=[
-        (None, u.electron),
-        (_MaterialPhotons(), unit_radiance),
+        (None, u.electron, "the guess is in units of `electron`, which cannot"),
+        (
+            _MaterialPhotons(),
+            unit_radiance,
+            "the guess is in units of energy, which the matrices of the",
+        ),
     ],
     ids=[
         "neither in photons nor in units of energy",
@@ -1664,10 +1788,12 @@ def test__call__optika_energy_frames() -> None:
 def test__call__optika_guess_unsupported(
     material: None | optika.sensors.materials.AbstractSensorMaterial,
     unit: u.UnitBase,
+    reason: str,
 ) -> None:
     """
     A guess which the matrices cannot take is left to the iteration on the
-    methods of the instrument, which raises the error it always has: a
+    methods of the instrument, with a warning which says why, and that
+    iteration raises the error it always has: a
     guess which is neither in photons nor in units of energy, and a guess
     in units of energy for an instrument whose sensor takes light in
     photons alone.
@@ -1682,8 +1808,9 @@ def test__call__optika_guess_unsupported(
 
     assert not _uses_operators(a, images_optika, guess)
 
-    with pytest.raises(u.UnitConversionError):
-        a(images_optika, guess=guess)
+    with pytest.warns(UserWarning, match=re.escape(reason)):
+        with pytest.raises(u.UnitConversionError):
+            a(images_optika, guess=guess)
 
 
 def test__call__optika_line() -> None:
