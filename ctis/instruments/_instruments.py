@@ -605,7 +605,7 @@ class AbstractInstrument(
         """
         return None
 
-    def _operators_reason(self, dtype: type = np.float64) -> None | str:
+    def _operators_reason(self, dtype: None | type = np.float64) -> None | str:
         """
         Why this instrument does not provide :meth:`_operators`,
         or :obj:`None` if it provides them.
@@ -619,7 +619,8 @@ class AbstractInstrument(
         ----------
         dtype
             The precision of the matrices and of the arrays they act on,
-            :obj:`numpy.float64` or :obj:`numpy.float32`.
+            :obj:`numpy.float64` or :obj:`numpy.float32`, or :obj:`None` for
+            the precision that they are kept in, as for :meth:`_operators`.
         """
         if self._operators(dtype) is not None:
             return None
@@ -798,7 +799,7 @@ class AbstractLinearInstrument(
 
         return operators if isinstance(operators, Operators) else None
 
-    def _operators_reason(self, dtype: type = np.float64) -> None | str:
+    def _operators_reason(self, dtype: None | type = np.float64) -> None | str:
         if self._operators(dtype) is not None:
             return None
 
@@ -806,9 +807,10 @@ class AbstractLinearInstrument(
             name = type(self).__name__
             return f"its class, `{name}`, replaces a method which they stand in for"
 
-        # the reason which was kept in place of the operators
+        # the reason which was kept in place of the operators, in the
+        # precision asked for, or in the one kept if none is
         kept = self._operators_kept
-        if kept is not None and kept[0] == np.dtype(dtype):
+        if kept is not None and (dtype is None or kept[0] == np.dtype(dtype)):
             if isinstance(kept[2], str):
                 return kept[2]
 
@@ -974,12 +976,9 @@ class AbstractLinearInstrument(
         # grids which cannot be expressed as plain arrays of positions on the
         # sensor, such as those with an axis of their own, are left to the
         # named arrays
-        if vertices_scene is None or vertices_sensor is None:
-            return (
-                "the vertices of its scene or of its sensor cannot be expressed "
-                "as plain arrays of positions on the sensor, as those of a grid "
-                "with an axis of its own cannot"
-            )
+        for name, values in (("scene", vertices_scene), ("sensor", vertices_sensor)):
+            if isinstance(values, str):
+                return f"the vertices of its {name} cannot be plain arrays: {values}"
 
         # the weight of every cell of the scene, if the weights have one,
         # kept as it broadcasts against the voxels, which is all that the
@@ -2534,7 +2533,7 @@ class OptikaInstrument(
         if not np.all(np.abs(vmr - middle) <= self._tolerance_vmr * middle):
             return (
                 f"the ratio of the variance of the noise of its sensor to its "
-                f"signal strays further than {self._tolerance_vmr:.1%} from "
+                f"signal strays further than {100 * self._tolerance_vmr:.2g}% from "
                 f"the middle of its range across the wavelengths of a line"
             )
 

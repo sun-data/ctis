@@ -403,7 +403,7 @@ def test__call__without_operators() -> None:
     with pytest.warns(UserWarning, match="slower than on its sparse") as record:
         result = a(images)
 
-    (warning,) = record
+    (warning,) = [w for w in record if "slower than on its sparse" in str(w.message)]
     reason = "since its quantum yield has the axis 'wavelength'"
 
     assert reason in str(warning.message)
@@ -458,7 +458,11 @@ def test__call__operators_undefined() -> None:
     with pytest.warns(UserWarning) as record:
         a(images)
 
-    messages = [str(warning.message) for warning in record]
+    # the warnings of the inverter, and not any other which the named
+    # arrays give
+    prefixes = ("This inversion runs on the", "Max number of iterations")
+    messages = [str(w.message) for w in record]
+    messages = [message for message in messages if message.startswith(prefixes)]
 
     assert len(messages) == 2
     assert messages[0].endswith(reason)
@@ -1141,8 +1145,8 @@ def test_dtype_guess(guess: na.ScalarArray | na.FunctionArray) -> None:
     assert values.ndarray.dtype == np.float64
 
 
-@pytest.mark.parametrize("dtype", [np.int32, np.float16, np.complex128])
-def test_dtype_invalid(dtype: type) -> None:
+@pytest.mark.parametrize("dtype", [np.int32, np.float16, np.complex128, None])
+def test_dtype_invalid(dtype: None | type) -> None:
     with pytest.raises(ValueError, match="dtype"):
         ctis.inverters.MartInverter(instrument=instrument, dtype=dtype)
 
@@ -1363,8 +1367,13 @@ def test__call__instrument_axis_many() -> None:
 
     a = ctis.inverters.MartInverter(instrument=instrument_time)
 
-    with pytest.raises(ValueError, match="not those of independent frames"):
-        a(images_time)
+    reason = "its voxels has the axis 'time'"
+
+    with pytest.warns(UserWarning, match=reason):
+        with pytest.raises(ValueError, match="not those of independent") as info:
+            a(images_time)
+
+    assert reason in str(info.value)
 
 
 def test__call__axis_scene() -> None:
@@ -1392,6 +1401,22 @@ def test__call__axis_scene() -> None:
     assert result.num_iteration == expected.num_iteration
     assert result.success == expected.success
     _assert_close(result.solution.outputs, expected.solution.outputs)
+
+
+def test__call__axis_scene_many() -> None:
+    """
+    Images with more than one element along an axis named after one of the
+    scene are refused, with the reason that they cannot run on the matrices
+    of the instrument either.
+    """
+    images_wavelength = images.replace(
+        outputs=images.outputs * na.ScalarArray.ones(dict(wavelength=2)),
+    )
+    reason = "the images have the axes ('wavelength',), which are axes of the"
+
+    with pytest.warns(UserWarning, match=re.escape(reason)):
+        with pytest.raises(ValueError, match=re.escape(reason)):
+            inverter(images_wavelength)
 
 
 def test__call__axis_iteration() -> None:

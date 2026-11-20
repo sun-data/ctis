@@ -127,7 +127,11 @@ def test_vertices_unsupported() -> None:
         y=na.linspace(2, 3, axis="y", num=2) * u.s,
     )
 
-    assert _operators.vertices(coordinates, shape=shape, unit=u.m) is None
+    result = _operators.vertices(coordinates, shape=shape, unit=u.m)
+
+    assert result == (
+        "their component 'y' is in units of `s`, which cannot be converted to `m`"
+    )
 
 
 @pytest.mark.parametrize(

@@ -1650,6 +1650,10 @@ class TestIdealInstrument(
         assert a._operators() is None
         assert "its quantum yield has the axis 'wavelength'" in a._operators_reason()
 
+        # without a precision, the reason is that of the precision kept
+        assert a._operators(np.float32) is None
+        assert a._operators_reason(None) == a._operators_reason(np.float32)
+
         a.quantum_yield = quantum_yield
 
         assert a._operators() is not None
@@ -1763,8 +1767,8 @@ class TestIdealInstrument(
         backprojected = a.backproject(image).outputs
 
         reasons = {
-            Scene: "the vertices of its scene or of its sensor cannot be",
-            Sensor: "the vertices of its scene or of its sensor cannot be",
+            Scene: "the vertices of its scene cannot be plain arrays: their",
+            Sensor: "the vertices of its sensor cannot be plain arrays: their",
             Weight: "the weight of the cells of its scene has the axis 'time'",
         }
 

@@ -128,7 +128,8 @@ class MartInverter(
 
     def __post_init__(self):
 
-        if np.dtype(self.dtype) not in (np.float32, np.float64):
+        # `None` is not a precision, though `numpy.dtype` takes it for one
+        if self.dtype is None or np.dtype(self.dtype) not in (np.float32, np.float64):
             raise ValueError(
                 f"`dtype` must be `numpy.float32` or `numpy.float64`, "
                 f"got {self.dtype}."
@@ -240,6 +241,16 @@ class MartInverter(
                 f"`backproject` methods of the instrument, in double precision."
             )
 
+        # the iteration on the methods of the instrument is much the slower
+        # of the two, so it is never run without saying so, and why, before
+        # the backprojection below, which is on those methods too
+        warnings.warn(
+            f"This inversion runs on the `image` and `backproject` methods of "
+            f"the instrument, which is slower than on its sparse matrices: "
+            f"{reason}.",
+            stacklevel=2,
+        )
+
         # the backprojection of one frame has every axis of the instrument
         # and of the scene, and none of the frames, and it is only needed
         # for images with axes of their own
@@ -261,19 +272,11 @@ class MartInverter(
             raise ValueError(
                 f"the images have the axes {shape_own}, which are also axes of "
                 f"the instrument or of the scene, so they are not those of "
-                f"independent frames, and an instrument which cannot be "
-                f"expressed as a pair of sparse matrices is inverted one "
-                f"element at a time along them."
+                f"independent frames, and the iteration on the methods of the "
+                f"instrument, which cannot stop them one element at a time, can "
+                f"take no more than one element along them. It runs on those "
+                f"methods since it cannot run on the sparse matrices: {reason}."
             )
-
-        # the iteration on the methods of the instrument is much the slower
-        # of the two, so it is never run without saying so, and why
-        warnings.warn(
-            f"This inversion runs on the `image` and `backproject` methods of "
-            f"the instrument, which is slower than on its sparse matrices: "
-            f"{reason}.",
-            stacklevel=2,
-        )
 
         if shape_frames:
             return self._call_frames(images, guess, verbose, shape_scene, shape_frames)
