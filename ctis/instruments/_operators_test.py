@@ -44,14 +44,32 @@ def test_aligned_dimensionless() -> None:
 
 
 @pytest.mark.parametrize(
-    argnames="a",
+    argnames="a,reason",
     argvalues=[
-        na.ScalarArray(np.ones(4), axes="z") * u.m,
-        na.ScalarArray(np.ones(4), axes="x") * u.m,
-        na.ScalarArray(np.ones(3), axes="x") * u.s,
-        na.ScalarArray(np.ones(3), axes="x"),
-        na.UniformUncertainScalarArray(1 * u.m, width=1 * u.m, num_distribution=3),
-        na.Cartesian2dVectorArray(1, 2) * u.m,
+        (
+            na.ScalarArray(np.ones(4), axes="z") * u.m,
+            "has the axis 'z', which is not one of ('x', 'y')",
+        ),
+        (
+            na.ScalarArray(np.ones(4), axes="x") * u.m,
+            "has 4 elements along 'x', and not 3",
+        ),
+        (
+            na.ScalarArray(np.ones(3), axes="x") * u.s,
+            "is in units of `s`, which cannot be converted to `m`",
+        ),
+        (
+            na.ScalarArray(np.ones(3), axes="x"),
+            "is dimensionless, which cannot be converted to `m`",
+        ),
+        (
+            na.UniformUncertainScalarArray(1 * u.m, width=1 * u.m, num_distribution=3),
+            "is a `UniformUncertainScalarArray`, and not an array of scalars",
+        ),
+        (
+            na.Cartesian2dVectorArray(1, 2) * u.m,
+            "is a `Cartesian2dVectorArray`, and not an array of scalars",
+        ),
     ],
     ids=[
         "another axis",
@@ -62,9 +80,28 @@ def test_aligned_dimensionless() -> None:
         "vector",
     ],
 )
-def test_aligned_unsupported(a: Any) -> None:
-    """An array which cannot be expressed as a plain array is left alone."""
+def test_aligned_unsupported(a: Any, reason: str) -> None:
+    """
+    An array which cannot be expressed as a plain array is left alone,
+    and :func:`ctis.instruments._operators.unaligned` says why.
+    """
     assert _operators.aligned(a, shape=shape, unit=u.m) is None
+    assert _operators.unaligned(a, shape=shape, unit=u.m) == reason
+
+
+def test_unaligned() -> None:
+    """
+    An array which can be expressed as a plain array has no reason that it
+    cannot, and one with a unit is not a dimensionless number.
+    """
+    a = na.ScalarArray(np.ones(3), axes="x") * u.m
+    unit = u.dimensionless_unscaled
+
+    assert _operators.unaligned(a, shape=shape, unit=u.cm) is None
+    assert _operators.unaligned(3, shape=shape, unit=unit) is None
+    assert _operators.unaligned(a, shape=shape, unit=unit) == (
+        "is in units of `m`, which cannot be converted to a dimensionless number"
+    )
 
 
 def test_vertices() -> None:

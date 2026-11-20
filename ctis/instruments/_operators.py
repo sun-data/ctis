@@ -17,6 +17,7 @@ __all__ = [
     "framed",
     "frames",
     "regridder",
+    "unaligned",
     "vertices",
 ]
 
@@ -74,6 +75,51 @@ def aligned(
         return None
 
     return np.asarray(result, dtype=dtype)
+
+
+def unaligned(
+    a: Any,
+    shape: dict[str, int],
+    unit: u.UnitBase,
+) -> None | str:
+    """
+    Why :func:`aligned` cannot express a named array as a plain array,
+    or :obj:`None` if it can.
+
+    The reason is what is said of the array, such as
+    ``"has the axis 'time', which is not one of ('channel', 'x')"``,
+    for the caller to name the array in front of.
+
+    Parameters
+    ----------
+    a
+        The array, or anything which can be converted to one.
+    shape
+        The axes that the array can have and the lengths it can have along
+        them.
+    unit
+        The unit that the array has to be convertible to.
+    """
+    a = na.as_named_array(a)
+
+    if not isinstance(a, na.AbstractScalarArray):
+        return f"is a `{type(a).__name__}`, and not an array of scalars"
+
+    a = a.explicit
+
+    for ax, num in a.shape.items():
+        if ax not in shape:
+            return f"has the axis {ax!r}, which is not one of {tuple(shape)}"
+        if num not in (1, shape[ax]):
+            return f"has {num} elements along {ax!r}, and not {shape[ax]}"
+
+    unit_a = na.unit_normalized(a)
+    if not unit_a.is_equivalent(unit):
+        name_a = f"in units of `{unit_a}`" if str(unit_a) else "dimensionless"
+        name = f"`{unit}`" if str(unit) else "a dimensionless number"
+        return f"is {name_a}, which cannot be converted to {name}"
+
+    return None
 
 
 def framed(
