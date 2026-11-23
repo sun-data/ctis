@@ -4,7 +4,6 @@ import abc
 import math
 import weakref
 import warnings
-import functools
 import dataclasses
 import numpy as np
 import scipy.ndimage
@@ -12,7 +11,9 @@ import astropy.units as u
 import astropy.constants
 import named_arrays as na
 import optika
+import regridding
 import ctis
+from ctis.instruments import _operators
 from ctis.instruments._operators import Operators
 
 
@@ -575,7 +576,7 @@ class AbstractTestAbstractInstrument(
             )
             == "it does not define any"
         )
-        assert ctis.instruments.AbstractLinearInstrument._weights_input(a) is None
+        assert ctis.instruments.AbstractLinearInstrument._weights_input(a, {}) is None
         assert ctis.instruments.AbstractLinearInstrument._fields_factors.fget(a) == ()
 
         shape_scene = operators.shape_scene
@@ -901,6 +902,114 @@ def _psf(a: ctis.instruments.IdealInstrument) -> na.ScalarArray:
     return result / result.sum((axis_x, axis_y))
 
 
+def _matrices_at_once(
+    a: ctis.instruments.AbstractLinearInstrument,
+    dtype: type,
+) -> tuple[regridding.Regridder, regridding.Regridder]:
+    """
+    The matrices of the operators of an instrument as they were assembled
+    before they were assembled a block at a time: that of the forward model
+    from all of its weights at once, with their exact zeros dropped, which
+    the blocks drop too, and its conservative transpose from the grids and
+    the weight of the cells of the whole scene.
+
+    Parameters
+    ----------
+    a
+        The instrument, which provides operators.
+    dtype
+        The precision of the matrices.
+    """
+    operators = a._operators(dtype)
+    shape_channel = operators.shape_channel
+    shape_line = operators.shape_line
+    shape_scene = operators.shape_scene
+    shape_sensor = operators.shape_sensor
+    axis_wavelength = a.axis_wavelength
+    shape_wavelength = {axis_wavelength: shape_scene[axis_wavelength]}
+    shape_scene_xy = {
+        ax: num
+        for ax, num in shape_scene.items()
+        if ax not in shape_line | shape_wavelength
+    }
+    shape_weights = shape_channel | shape_line | shape_wavelength
+    shape_input = shape_channel | shape_scene
+    shape_output = shape_channel | shape_line | {axis_wavelength: 1} | shape_sensor
+
+    array, shape_grid_input, shape_grid_output = a.weights
+    elements = array.ndarray_aligned(tuple(shape_weights))
+    kept = np.empty_like(elements)
+    for index in np.ndindex(*elements.shape):
+        indices_input, indices_output, values = elements[index]
+        nonzero = values != 0
+        kept[index] = (
+            indices_input[nonzero],
+            indices_output[nonzero],
+            values[nonzero],
+        )
+
+    num_orthogonal = len(shape_weights)
+    forward = regridding.Regridder.from_weights(
+        weights=(
+            kept,
+            kept.shape + tuple(shape_grid_input[ax] for ax in shape_scene_xy),
+            kept.shape + tuple(shape_grid_output[ax] for ax in shape_sensor),
+        ),
+        axis_input=tuple(range(num_orthogonal, len(shape_input))),
+        axis_output=tuple(range(num_orthogonal, len(shape_output))),
+        shape_input=tuple(shape_input.values()),
+        shape_output=tuple(shape_output.values()),
+        dtype=dtype,
+    )
+    forward = _operators.dimensionless(forward)
+
+    position_scene, position_sensor = a._grids_weights(dict())
+    unit = na.unit_normalized(position_sensor.x)
+    vertices_scene = _operators.vertices(
+        coordinates=position_scene,
+        shape=shape_weights | {ax: num + 1 for ax, num in shape_scene_xy.items()},
+        unit=unit,
+    )
+    vertices_sensor = _operators.vertices(
+        coordinates=position_sensor,
+        shape=shape_weights | {ax: num + 1 for ax, num in shape_sensor.items()},
+        unit=unit,
+    )
+    weights_scene = a._weights_input(dict())
+    if weights_scene is not None:
+        weights_scene = _operators.aligned(
+            a=weights_scene,
+            shape=shape_input,
+            unit=u.dimensionless_unscaled,
+        )
+
+    backward = forward.transpose_conservative(
+        coordinates_input=vertices_scene,
+        coordinates_output=vertices_sensor,
+        weights_input=weights_scene,
+    )
+
+    return forward, backward
+
+
+def _assert_same_matrix(
+    result: regridding.Regridder,
+    expected: regridding.Regridder,
+) -> None:
+    """
+    Assert that two matrices have the same shapes, the same entries in the
+    same places, and the same unit, bit for bit.
+    """
+    assert result.shape_input == expected.shape_input
+    assert result.shape_output == expected.shape_output
+    assert result.unit == expected.unit
+    assert result.data.dtype == expected.data.dtype
+    assert result.data.size > 0
+    assert np.array_equal(result.indptr, expected.indptr)
+    assert np.array_equal(result.indices, expected.indices)
+    assert np.array_equal(result.data, expected.data)
+
+
 class AbstractTestAbstractLinearInstrument(
     AbstractTestAbstractInstrument,
 ):
@@ -917,6 +1026,24 @@ class AbstractTestAbstractLinearInstrument(
         shape = a.weights[0].shape
 
         assert a.num_channel == math.prod(shape[ax] for ax in axis_channel)
+
+    @pytest.mark.parametrize("dtype", [np.float64, np.float32])
+    def test__operators_at_once(
+        self,
+        a: ctis.instruments.AbstractLinearInstrument,
+        dtype: type,
+    ) -> None:
+        """
+        The matrices assembled a block at a time are those assembled from all
+        of the weights at once, and its conservative transpose, bit for bit,
+        once the exact zeros are dropped from both.
+        """
+        a = dataclasses.replace(a)
+        operators = a._operators(dtype)
+        forward, backward = _matrices_at_once(a, dtype)
+
+        _assert_same_matrix(operators.forward, forward)
+        _assert_same_matrix(operators.backward, backward)
 
 
 velocity = na.linspace(-500, 500, axis="wavelength", num=21) * u.km / u.s
@@ -1169,28 +1296,38 @@ class TestIdealInstrument(
         assert a.weights[0].shape == shape
         assert "weights" in vars(a)
 
-    def test__operators_backward(
+    def test__operators_blocks(
         self,
         a: ctis.instruments.IdealInstrument,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """
-        The matrix of the backprojection is derived the first time it is
-        needed, which an image does not.
+        The two matrices are assembled together, from the weights of one
+        block at a time, each computed once to count its entries and once
+        more to place them, and never from the weights of the whole
+        instrument.
         """
         a = dataclasses.replace(a)
+        blocks = a._blocks()
+        computed = []
+        weights_block = a._weights_block
 
-        scene = _scene(a)
-        image = a.image(scene, noise=False)
+        def spy(
+            index: dict[str, slice],
+        ) -> tuple[na.AbstractScalar, dict[str, int], dict[str, int]]:
+            computed.append(index)
+            return weights_block(index)
+
+        monkeypatch.setattr(a, "_weights_block", spy)
+
         operators = a._operators()
 
-        assert operators._backward is None
-        assert "weights" not in vars(a)
-
-        a.backproject(image)
-        backward = operators._backward
-
-        assert backward is not None
-        assert operators.backward is backward
+        # a block for each wavelength of each spectral line
+        shape = a._shape_line | a._shape_wavelength
+        assert len(blocks) == math.prod(shape.values())
+        assert all(set(index) == set(shape) for index in blocks)
+        assert computed == blocks + blocks
+        assert isinstance(operators.backward, regridding.Regridder)
         assert "weights" not in vars(a)
         assert "weights_transpose" not in vars(a)
 
@@ -1596,7 +1733,7 @@ class TestIdealInstrument(
 
         operators = a._operators()
         a.backproject(a.image(scene, noise=False))
-        backward = operators._backward
+        backward = operators.backward
 
         assert backward is not None
         assert a._operators() is operators
@@ -1607,7 +1744,7 @@ class TestIdealInstrument(
 
         assert operators_new is not operators
         assert operators_new.forward is operators.forward
-        assert operators_new._backward is backward
+        assert operators_new.backward is backward
         assert a._operators() is operators_new
         assert "weights" not in vars(a)
 
@@ -1730,11 +1867,12 @@ class TestIdealInstrument(
 
             def _grids_weights(
                 self,
+                index: dict[str, slice],
             ) -> tuple[
                 na.AbstractCartesian2dVectorArray,
                 na.AbstractCartesian2dVectorArray,
             ]:
-                scene, sensor = super()._grids_weights()
+                scene, sensor = super()._grids_weights(index)
                 return scene.value * u.s, sensor
 
         @dataclasses.dataclass
@@ -1743,18 +1881,19 @@ class TestIdealInstrument(
 
             def _grids_weights(
                 self,
+                index: dict[str, slice],
             ) -> tuple[
                 na.AbstractCartesian2dVectorArray,
                 na.AbstractCartesian2dVectorArray,
             ]:
-                scene, sensor = super()._grids_weights()
+                scene, sensor = super()._grids_weights(index)
                 return scene, sensor + na.ScalarArray(np.zeros(2), axes="time") * u.pix
 
         @dataclasses.dataclass
         class Weight(ctis.instruments.IdealInstrument):
             """An instrument whose weight of the scene has an axis of its own."""
 
-            def _weights_input(self) -> na.AbstractScalar:
+            def _weights_input(self, index: dict[str, slice]) -> na.AbstractScalar:
                 return na.ScalarArray(np.ones(2), axes="time")
 
         kwargs = {
@@ -1779,7 +1918,10 @@ class TestIdealInstrument(
             assert b._operators() is None
             assert b._operators(np.float32) is None
             assert reasons[cls] in b._operators_reason()
-            assert "weights" in vars(b)
+
+            # which the first block alone was enough to tell, without the
+            # weights of the whole instrument
+            assert "weights" not in vars(b)
 
             assert b._image_matrices(scene, noise=False, uncertainty=False) is None
             assert b._backproject_matrices(image) is None
@@ -2162,20 +2304,20 @@ def test_operators_weights_unit() -> None:
     """
     An instrument whose weights are in a unit of their own, which a matrix
     that acts on plain arrays cannot carry, does not provide operators, and
-    keeps its weights, which its images are left to.
+    leaves its images to its weights.
     """
 
     @dataclasses.dataclass
     class Area(ctis.instruments.IdealInstrument):
         """An instrument whose weights are in units of area."""
 
-        @functools.cached_property
-        def weights(
+        def _weights_block(
             self,
+            index: dict[str, slice],
         ) -> tuple[na.AbstractScalar, dict[str, int], dict[str, int]]:
             return na.regridding.weights(
-                coordinates_input=self._coordinates_input.position,
-                coordinates_output=self._coordinates_output.position,
+                coordinates_input=self._coordinates_input[index].position,
+                coordinates_output=self._coordinates_output[index].position,
                 axis_input=self.axis_scene_xy,
                 axis_output=self.axis_sensor_xy,
                 weights_input=na.ScalarArray(2 * u.cm**2),
@@ -2195,7 +2337,6 @@ def test_operators_weights_unit() -> None:
     assert not Area._overridden()
     assert b._operators() is None
     assert "its weights are in a unit of their own" in b._operators_reason()
-    assert "weights" in vars(b)
     assert b._image_matrices(scene, noise=False, uncertainty=False) is None
     _assert_close(
         b.image(scene, noise=False).outputs,
@@ -2445,9 +2586,9 @@ def test_optika_operators_vignetted() -> None:
     a = _instrument_optika(vignetted=True)
     operators = a._operators()
 
+    # the vignetting weighs the cells of the scene unevenly
     assert operators is not None
-    assert operators.weights_scene is not None
-    assert np.ptp(operators.weights_scene) > 0
+    assert np.ptp(a._weights_input(dict()).ndarray) > 0
 
     # the field stop leaves some of the scene out of every image
     image = np.ones(tuple(operators.shape_images.values()) + (1,))
@@ -2895,7 +3036,7 @@ def test_optika_operators_assigned(nested: bool) -> None:
 
     assert operators_new is not operators
     assert operators_new.forward is operators.forward
-    assert operators_new._backward is backward
+    assert operators_new.backward is backward
     assert a._operators() is operators_new
     assert "weights" not in vars(a)
 
@@ -2935,32 +3076,34 @@ def test_optika_operators_assigned_unsupported() -> None:
 @pytest.mark.parametrize("vignetted", [False, True])
 def test_optika_operators_weights_scene(vignetted: bool) -> None:
     """
-    The weight of the scene is kept as it broadcasts against the voxels,
-    with a length of one along the axes it does not vary along, and gives
-    the matrix of the backprojection which a weight for every voxel gives.
+    The weight of the cells of the scene is given to the matrix of the
+    backprojection as it broadcasts against the voxels of each block, with a
+    length of one along the axes it does not vary along, and gives the
+    matrix which the weight of every voxel of the whole scene gives.
     """
     a = _instrument_optika(vignetted=vignetted)
     operators = a._operators()
-    weight = operators.weights_scene
 
-    shape = tuple((operators.shape_channel | operators.shape_scene).values())
+    shape = operators.shape_channel | operators.shape_scene
+    shape_scene_xy = {ax: shape[ax] for ax in a.axis_scene_xy}
+    shape_block = {ax: num for ax, num in shape.items() if ax not in shape_scene_xy}
+
+    _, _, weight = a._grids_block(
+        index=dict(),
+        shape_block=shape_block,
+        shape_scene_xy=shape_scene_xy,
+        shape_sensor=operators.shape_sensor,
+    )
 
     if vignetted:
-        assert weight.shape == (1,) + shape[1:]
+        assert weight.shape == (1,) + tuple(shape.values())[1:]
     else:
-        assert weight.shape == (1, shape[1], 1, 1)
+        assert weight.shape == (1, shape[a.axis_wavelength], 1, 1)
 
-    expected = operators.forward.transpose_conservative(
-        coordinates_input=operators.vertices_scene,
-        coordinates_output=operators.vertices_sensor,
-        weights_input=np.ascontiguousarray(np.broadcast_to(weight, shape)),
-    )
-    backward = operators.backward
+    forward, backward = _matrices_at_once(a, np.float64)
 
-    assert backward.data.sum() > 0
-    assert np.array_equal(backward.data, expected.data)
-    assert np.array_equal(backward.indices, expected.indices)
-    assert np.array_equal(backward.indptr, expected.indptr)
+    _assert_same_matrix(operators.forward, forward)
+    _assert_same_matrix(operators.backward, backward)
 
 
 @pytest.mark.parametrize(

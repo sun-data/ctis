@@ -1,7 +1,7 @@
 CPU and CUDA MART Roadmap
 =========================
 
-*As of 2026-11-13.*
+*As of 2026-11-23.*
 
 Every numerical piece of a fast MART now exists,
 and ``regridding.Regridder`` joins most of them:
@@ -11,10 +11,13 @@ assembled and applied on the host or on a GPU.
 for an :class:`~ctis.instruments.IdealInstrument`
 and for an :class:`~ctis.instruments.OptikaInstrument`,
 the model of an optical system and its sensor,
-with the spectral lines of a scene kept apart.
+with the spectral lines of a scene kept apart,
+on matrices assembled one wavelength at a time,
+so that the weights of the whole scene are never held at once.
+All seven spectral lines of ESIS now fit on the host at production:
+their matrices are built in 7.4 to 7.9 minutes, with a peak of 58 GB.
 What remains is the same loop on a GPU and, for the ESIS Level-4 product,
-a streaming build for weights too large to hold at once
-and the tied model of ESIS, which today lives in scripts.
+the tied model of ESIS, which today lives in scripts.
 The host comes first.
 The production grid of ESIS needs about 48.5 GB,
 which an 80 GB GPU holds and the 24 GB one of the workstation does not,
@@ -59,6 +62,14 @@ Where things stand
         with broadcasting declared by shapes, exact and conservative transposes,
         assembly on the host or GPU that agree bit for bit,
         and products in float32 where the matrix and the values both are
+    * - ``regridding.RegridderBuilder``
+      - `regridding #75 <https://github.com/sun-data/regridding/pull/75>`__
+      - Released in 3.8.0 on 2026-11-23
+      - The same operator and its conservative transpose,
+        assembled from weights given a block at a time, in two passes,
+        so that the weights are never held at once;
+        bit for bit what ``Regridder.from_weights()``
+        and ``Regridder.transpose_conservative()`` give, once exact zeros are dropped
     * - :class:`~ctis.inverters.MartInverter`
       - ctis 0.5.0
       - Released
@@ -77,7 +88,9 @@ Where things stand
       - The model of an optical system and its sensor on the same matrices:
         the gain of each wavelength folded into them,
         one variance-to-mean ratio for each spectral line,
-        and the lines of a scene along an axis the instrument names, ``axis_line``
+        and the lines of a scene along an axis the instrument names, ``axis_line``;
+        the matrices assembled one wavelength at a time,
+        which fits all seven lines of ESIS at production on the host
     * - ``torch`` ``Regridder``
       - ctis ``feature/parametric-inverter``, ``feature/elastic-net-inverter``
       - Unmerged
@@ -107,7 +120,7 @@ Where things stand
         the only home of the tied model of ESIS
     * - Distortion fit of the flight model
       - `esis #91 <https://github.com/esis-mission/esis/pull/91>`__
-      - Open
+      - Merged on 2026-11-23
       - The instrument a Level-4 model in the package is built from
     * - MART benchmarks
       - Local scripts
@@ -222,6 +235,18 @@ On the host alone it is 2.1 to 8 times faster than ctis.
   and those of two in 79 s and 24.8 GB, with a peak of 38.4 GB.
   A third of those weights are exact zeros, which the field stop leaves behind
   and the streamed build of M6 drops.
+- **All seven lines of ESIS fit at production, assembled a wavelength at a time.**
+  Built one wavelength of one spectral line at a time,
+  both matrices of the seven lines of the flight model,
+  2.13 billion entries each once the exact zeros are dropped,
+  took 7.4 to 7.9 minutes, the weights included, with a peak of 58 GB,
+  and take 41.6 GB in float32.
+  An iteration of MART took 5.4 to 6.1 s for one frame.
+  A block for each line was as fast and peaked as high,
+  since the peak comes as the backprojection is transposed, not while a block is held,
+  but a scene of one band is then one block:
+  the PSF tutorial took 6.8 GB with it,
+  against 5.6 GB on the matrices assembled at once and 5.1 GB a wavelength at a time.
 - **Building the weights was the expensive step at production scale.**
   Tempest needed about 1.3 TB of cached CPU weights and 1.2 TB jobs per frame.
   Built on the GPU, the 148M weights of the PSF tutorial and their transpose
@@ -409,10 +434,12 @@ which every gate compares against.
   which exist only while the block does.
   Exact zeros, which the field stop leaves behind, are dropped:
   a third of the weights of a spectral line at production.
-  Each block carries an explicit row and column offset and a scale,
-  so the tied lines of ESIS fold into their windows,
-  and a separate factor for the backprojection,
-  which sets how tied lines are weighted against each other.
+  A block is every channel of one wavelength of one spectral line,
+  which :mod:`optika` computes on its own,
+  and the builder of regridding takes no offsets, scale or factor of its own:
+  how the tied lines of ESIS fold into their windows,
+  and how their backprojections are weighted against each other,
+  are settled in ctis in M8.
   The first pass cannot be skipped.
   The counting pass of the clipping kernel gives only an upper bound,
   1.5 to 1.8 times the entries kept,
@@ -487,11 +514,12 @@ on the host first and then on a GPU.
 M5 is the first one users can run, and its host half is done:
 :class:`~ctis.inverters.MartInverter` runs on the ``Regridder`` on the host,
 and the ``device`` option, for a GPU, remains.
-The host half of M7 is done too, ahead of M6:
+The host halves of M7 and M6 are done too:
 :class:`~ctis.instruments.OptikaInstrument` provides its matrices,
-assembled from the weights of the whole scene at once,
-which two spectral lines of ESIS at production fit and seven do not.
-M1 shipped in regridding 3.5.1 and M3 in regridding 3.7.0, which M5 and M6 need.
+assembled one wavelength at a time,
+which all seven spectral lines of ESIS at production fit.
+M1 shipped in regridding 3.5.1, M3 in regridding 3.7.0, which M5 and M6 need,
+and the builder of M6 in regridding 3.8.0.
 M2 and M4 can start now, and the host needs neither.
 
 .. figure:: cuda-mart/milestones.png
@@ -502,7 +530,7 @@ M2 and M4 can start now, and the host needs neither.
     Arrows point from a milestone to the ones that need it.
     Each is one pull request, except M8, which is several.
 
-The path of the host is M3, M5, M6, M7 and M8, of which M6 and M8 remain.
+The path of the host is M3, M5, M6, M7 and M8, of which M8 remains.
 M4 only speeds up the build of the weights on a GPU,
 so M5 needs it for its GPU gate alone.
 M2 is off the path of MART, since the loop uses CSR products
@@ -516,6 +544,8 @@ which it generalizes.
 M6 builds the operators from blocks of weights produced on demand,
 since the production weights fit beside the matrices on no GPU,
 and on the host only barely.
+Its host half builds all seven lines of ESIS in 7.4 to 7.9 minutes,
+with a peak of 58 GB.
 M7 no longer waits for optika 4.0.
 It reads the gain of each wavelength and the noise of each spectral line
 from the sensor model of today,
@@ -728,8 +758,10 @@ That is twice what the table allows a line,
 since they keep the exact zeros of the field stop, a third of their entries,
 and the grids which their conservative transpose was scaled from.
 Seven lines built that way would take about 86 GB,
-and about 134 GB at the peak of their assembly, which the host does not have to spare,
-so all seven wait for the streamed build of M6.
+and about 134 GB at the peak of their assembly, which the host does not have to spare.
+Built one wavelength at a time by M6,
+without the exact zeros and without the grids,
+the matrices of all seven take 41.6 GB in float32, with a peak of 58 GB.
 
 Regenerate or cache
 -------------------
@@ -805,6 +837,9 @@ with the preparation of today a line takes 6.5 s on a GPU, so 1.5 minutes for bo
 Assembly adds 16 s on a GPU and,
 scaled from a matrix 14 times smaller, about half a minute on the host.
 Linearizing the optics takes another 6 s per line once, which esis already caches.
+On 2026-11-23, with optika 3.9.1 and regridding 3.8.0,
+the host built both matrices of all seven lines in 7.4 to 7.9 minutes,
+both passes and the assembly included.
 
 Risks and open questions
 ------------------------
@@ -834,16 +869,16 @@ The rest are questions to settle before the milestone that needs them.
   and the production cube against the FITS files,
   with the differences reported beside these changes.
   The first needs the script of tempest to run on today's versions, which is unchecked.
-- **The time of MART on the host is measured for two lines of seven (M8).**
-  On the matrices of M7 at production, an iteration takes 1.0 s for one spectral line
+- **The time of MART on the host (M8).**
+  On the matrices of M7 at production, an iteration took 1.0 s for one spectral line
   and 1.9 s for two, so about 6.5 s for the seven lines of ESIS:
   nearly three times the 2.3 s scaled before from a synthetic operator 14 times smaller.
-  A third of the entries of those matrices are exact zeros, which M6 drops,
-  and four frames at once take 0.6 of the time of the four one at a time.
+  On those of M6, without the exact zeros, an iteration takes 5.4 to 6.1 s
+  for all seven lines and one frame,
+  and four frames at once took 0.6 of the time of the four one at a time.
   At the iteration counts assumed before,
-  the 30 frames would take about 70 minutes one at a time
-  and about 45 in batches of four, against the hour of the gate of M8.
-  All seven lines have not been run, since their matrices wait for M6.
+  the 30 frames would take about 60 minutes one at a time
+  and about 40 in batches of four, against the hour of the gate of M8.
 - **A** ``device`` **option or a separate inverter (M5).**
   The design assumes the fast path goes inside :class:`~ctis.inverters.MartInverter`,
   on a GPU behind a ``device`` option, rather than in a separate inverter.
@@ -893,7 +928,8 @@ The rest are questions to settle before the milestone that needs them.
   and the ownership of M8 needs agreeing before it starts.
 - **How tied lines are weighted (M6, M8).**
   The weights of a tied line fold into the columns of its window with a fixed ratio,
-  which the offsets and the scale of a block express.
+  which ctis can express by moving and scaling the entries of a block
+  before the builder of regridding takes them.
   The backprojection is the open part.
   Tempest blends the conservative transposes of the lines of a window,
   each by its share of the flux of the window,
@@ -903,9 +939,9 @@ The rest are questions to settle before the milestone that needs them.
   since an entry summed over lines no longer says which line it came from.
   The scaling of a backprojection otherwise cancels in MART,
   so this weighting is the one choice in its values that changes the solution.
-  The builder of M6 therefore takes a factor for the backprojection with each block,
-  apart from the scale of the forward operator,
-  and M8 gives it the shares of tempest, found in the first pass.
+  The builder of M6 takes no factor for the backprojection,
+  so M8 scales the backprojection of each tied line by its share in ctis,
+  as tempest does, from totals found in the first pass.
   The loop over lines stays on the esis side,
   so regridding knows nothing of ESIS.
 - **GPU-built weights differ slightly (M4, M5, M7, M8).**

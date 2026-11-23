@@ -14,9 +14,10 @@ import regridding
 __all__ = [
     "Operators",
     "aligned",
+    "dimensionless",
     "framed",
     "frames",
-    "regridder",
+    "piece",
     "unaligned",
     "vertices",
 ]
@@ -219,25 +220,23 @@ def vertices(
     return tuple(result)
 
 
-def regridder(
+def piece(
     weights: tuple[na.AbstractScalarArray, dict[str, int], dict[str, int]],
     shape_input: dict[str, int],
     shape_output: dict[str, int],
-    dtype: type = np.float64,
-) -> None | regridding.Regridder:
+    shape_weights: dict[str, int],
+    index: dict[str, slice],
+) -> tuple[tuple[np.ndarray, tuple[int, ...], tuple[int, ...]], tuple[int, ...]]:
     """
-    Assemble weights computed by :func:`named_arrays.regridding.weights` into
-    one sparse matrix, which acts on plain arrays.
-
-    It is :obj:`None` if the weights are in a unit which is not
-    dimensionless, such as an area, which a matrix that acts on plain arrays
-    cannot carry.
-    The caller is expected to fall back on the named arrays themselves.
+    A block of weights computed by :func:`named_arrays.regridding.weights` as
+    a piece which :class:`regridding.RegridderBuilder` takes, with the index
+    of its first element.
 
     Parameters
     ----------
     weights
-        The weights, with the shapes of the grids they were computed for.
+        The weights of the block, with the shapes of the grids they were
+        computed for.
         The axes they are an array over are the orthogonal axes, and the
         other axes of the grids are the resampled axes.
     shape_input
@@ -252,22 +251,25 @@ def regridder(
         the output grid.
         An orthogonal axis can have a length of one, which sums what the
         elements of the weights along it give.
-    dtype
-        The type of the entries of the matrix, :obj:`numpy.float64` or
-        :obj:`numpy.float32`.
+    shape_weights
+        The orthogonal axes, in the same order as in `shape_input`, and the
+        length of all the weights along each, which is that of `shape_input`
+        or `shape_output`, or one if the weights do not vary along it.
+    index
+        The elements of the weights which the block holds, as a slice along
+        each orthogonal axis that it does not hold whole.
     """
     array, shape_grid_input, shape_grid_output = weights
 
     axis_input = tuple(ax for ax in shape_grid_input if ax not in array.shape)
     axis_output = tuple(ax for ax in shape_grid_output if ax not in array.shape)
-
-    num_orthogonal = len(shape_input) - len(axis_input)
-    axis_orthogonal = tuple(shape_input)[:num_orthogonal]
+    axis_orthogonal = tuple(shape_weights)
 
     if tuple(shape_input) != axis_orthogonal + axis_input:
         raise ValueError(
-            f"the input should have the resampled axes of its grid, "
-            f"{axis_input}, last, but its axes are {tuple(shape_input)}"
+            f"the input should have the orthogonal axes {axis_orthogonal}, "
+            f"followed by the resampled axes of its grid, {axis_input}, but its "
+            f"axes are {tuple(shape_input)}"
         )
     if tuple(shape_output) != axis_orthogonal + axis_output:
         raise ValueError(
@@ -277,35 +279,52 @@ def regridder(
 
     array = array.ndarray_aligned(axis_orthogonal)
 
-    result = regridding.Regridder.from_weights(
-        weights=(
-            array,
-            array.shape + tuple(shape_grid_input[ax] for ax in axis_input),
-            array.shape + tuple(shape_grid_output[ax] for ax in axis_output),
-        ),
-        axis_input=tuple(range(num_orthogonal, len(shape_input))),
-        axis_output=tuple(range(num_orthogonal, len(shape_output))),
-        shape_input=tuple(shape_input.values()),
-        shape_output=tuple(shape_output.values()),
-        dtype=dtype,
+    result = (
+        array,
+        array.shape + tuple(shape_grid_input[ax] for ax in axis_input),
+        array.shape + tuple(shape_grid_output[ax] for ax in axis_output),
+    )
+    start = tuple(
+        range(num)[index[ax]].start if ax in index else 0
+        for ax, num in shape_weights.items()
     )
 
-    # weights with a dimensionless unit, as those weighted by a vignetting
-    # model have, are given none, so that the products of the matrix are
-    # the plain arrays which the compiled code takes
-    unit = result.unit
-    if unit is not None:
-        try:
-            factor = unit.to(u.dimensionless_unscaled)
-        except u.UnitConversionError:
-            return None
+    return result, start
 
-        # only a unit such as a percentage changes the entries
-        if factor != 1:
-            result.data *= factor
-        result.unit = None
 
-    return result
+def dimensionless(
+    matrix: regridding.Regridder,
+) -> None | regridding.Regridder:
+    """
+    A matrix assembled from weights which have a dimensionless unit, as those
+    weighted by a vignetting model have, as the matrix without a unit, so that
+    its products are the plain arrays which the compiled code takes.
+
+    It is :obj:`None` if the weights are in a unit which is not
+    dimensionless, such as an area, which a matrix that acts on plain arrays
+    cannot carry.
+    The caller is expected to fall back on the named arrays themselves.
+
+    Parameters
+    ----------
+    matrix
+        The matrix, which is changed in place.
+    """
+    unit = matrix.unit
+    if unit is None:
+        return matrix
+
+    try:
+        factor = unit.to(u.dimensionless_unscaled)
+    except u.UnitConversionError:
+        return None
+
+    # only a unit such as a percentage changes the entries
+    if factor != 1:
+        matrix.data *= factor
+    matrix.unit = None
+
+    return matrix
 
 
 @numba.njit(cache=True, parallel=True)
@@ -506,9 +525,9 @@ class Operators:
     the instrument they came from, without the cost of the named arrays, and
     are what the inverters iterate on if the instrument provides them.
 
-    The matrix of the backprojection is derived from that of the forward
-    model the first time it is needed, so that an instrument which is only
-    used to image scenes holds one matrix and not two.
+    The two matrices are assembled together, from the weights of the
+    instrument a block at a time, with :class:`regridding.RegridderBuilder`,
+    so that the weights of the whole instrument are never held at once.
 
     A scene is an array of shape :attr:`shape_scene` in units of
     :attr:`unit_scene`, and the images are an array of shape
@@ -537,17 +556,18 @@ class Operators:
     channel, summed over wavelength, for each spectral line.
     """
 
-    vertices_scene: tuple[np.ndarray, ...]
+    backward: regridding.Regridder
     """
-    The components of the vertices of the cells of the scene, where each
-    channel puts them on the sensor at each wavelength, which
-    :attr:`backward` is derived from.
-    """
+    The matrix which spreads the signal in every pixel of every channel
+    over the voxels which could have contributed to it, for each channel.
 
-    vertices_sensor: tuple[np.ndarray, ...]
-    """
-    The components of the vertices of the pixels of the sensor, for each
-    channel and each wavelength, which :attr:`backward` is derived from.
+    It is the transpose of :attr:`forward`, normalized to conserve flux, as
+    :meth:`regridding.Regridder.transpose_conservative` computes it from the
+    vertices of the cells of the scene where each channel puts them on the
+    sensor at each wavelength, from those of the pixels of the sensor, and
+    from the weight :attr:`forward` gives each voxel beyond the fraction of
+    it which lands in each pixel, such as the effective area of the
+    instrument there, which it inverts.
     """
 
     scale: np.ndarray
@@ -612,20 +632,6 @@ class Operators:
     dictionary if the scene is one band of wavelengths.
     """
 
-    weights_scene: None | np.ndarray = None
-    """
-    The weight that :attr:`forward` gives every voxel of the scene, for each
-    channel, beyond the fraction of the voxel which lands in each pixel,
-    such as the effective area of the instrument there, or :obj:`None` if it
-    gives none.
-
-    It broadcasts against the channels and the scene: it has their axes,
-    each of length one if the weight does not vary along it.
-
-    The matrix of the backprojection inverts this weight, as
-    :func:`regridding.transpose_weights_conservative` does.
-    """
-
     energy: None | np.ndarray = None
     """
     The energy of one photon of each voxel, in units of :attr:`unit_energy`,
@@ -669,15 +675,6 @@ class Operators:
     _variance_read: np.ndarray = dataclasses.field(init=False, repr=False)
     """:attr:`variance_read` for each channel and each pixel."""
 
-    _backward: None | regridding.Regridder = dataclasses.field(
-        default=None,
-        init=False,
-        repr=False,
-    )
-    """
-    The matrix of the backprojection, once :attr:`backward` has derived it.
-    """
-
     def __post_init__(self) -> None:
 
         num_axis_channel = len(self.shape_channel)
@@ -715,23 +712,6 @@ class Operators:
         variance_read = np.ascontiguousarray(variance_read, dtype=np.float64)
 
         self._variance_read = variance_read.reshape(self.num_channel, -1)
-
-    @property
-    def backward(self) -> regridding.Regridder:
-        """
-        The matrix which spreads the signal in every pixel of every channel
-        over the voxels which could have contributed to it, for each channel.
-
-        It is the transpose of :attr:`forward`, normalized to conserve flux,
-        and it is derived the first time it is asked for.
-        """
-        if self._backward is None:
-            self._backward = self.forward.transpose_conservative(
-                coordinates_input=self.vertices_scene,
-                coordinates_output=self.vertices_sensor,
-                weights_input=self.weights_scene,
-            )
-        return self._backward
 
     @property
     def shape_images(self) -> dict[str, int]:
