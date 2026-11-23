@@ -437,6 +437,26 @@ which every gate compares against.
   The sensor supplies both of its transposes, as the ``Regridder`` does:
   the exact one for gradient inverters and the scaled one for MART.
   An optical PSF of ESIS, if one is added, goes the same way.
+- **Pixels left out of the fit, at ESIS scale.**
+  The mask over the storage region of each sensor of ESIS is slightly misaligned,
+  and shades a strip of active columns at the short-wavelength edge of the sensor:
+  about 8 to 22 of them, depending on the channel.
+  The optical model knows nothing of the strip and predicts He I 584 Å there,
+  so MART darkens the scene to match columns which were never lit.
+  Tempest measured the strip from the images,
+  and removed every weight which touches one of its pixels,
+  or a pixel within 4 of the edge of a sensor,
+  from the forward weights and from their transpose.
+  The model then sends no light to those pixels,
+  and the correction of a scene cell comes from the pixels it has left.
+  The matrices need nothing new for this.
+  The entries of those pixels are set to zero in each block of weights
+  before it is counted and placed, the same way in both passes,
+  and the builder drops exact zeros,
+  so the forward operator and the backprojection both lose them.
+  The images are set to zero there as well.
+  Which pixels to leave out is the business of esis, as the tied lines are,
+  so neither ctis nor regridding learns of the shadow.
 - **Spectral lines on their own axis, at ESIS scale.**
   The noise of the sensor and, from optika 4.0, its diffusion kernel
   depend on wavelength, but the forward product sums over it.
@@ -523,7 +543,9 @@ keeps the lines on their own axis,
 and its gate is one that ctis can run by itself.
 The comparison of frame 15 with tempest moves to M8,
 since it needs the tied model of ESIS, which only M8 builds.
-M8 is a port of the tempest scripts.
+M8 is a port of the tempest scripts,
+and with the tied model it brings the pixels which tempest left out of the fit:
+the shadow of the storage mask on each sensor, and a border of 4 pixels.
 It no longer waits for esis #70,
 which holds the untied model on a base that esis #91 superseded,
 while the distributed product used the tied one.
@@ -891,6 +913,32 @@ The rest are questions to settle before the milestone that needs them.
   and M8 ports the tempest scripts of the same teammate.
   M3 needs that teammate's review,
   and the ownership of M8 needs agreeing before it starts.
+- **Pixels the model does not describe (M6, M8).**
+  ctis has no way to leave a pixel out of an inversion,
+  and the product of tempest left out the shadow of the storage mask of each sensor
+  and a border of 4 pixels; see `Design`_.
+  M8 sets the weights of those pixels to zero, as tempest removed them,
+  which needs no new option on the inverter.
+  It does need the streamed build of M6 to hand each block of weights to its caller
+  before the block is counted and placed, which is not designed yet.
+  Three things are open.
+  A pixel without weights is still counted in :math:`\langle \chi^2 \rangle`
+  wherever the sensor has read noise, as a pixel which fits exactly,
+  so the merit of a channel falls with the share of its pixels left out
+  unless those pixels are kept out of the count as well.
+  Marking the pixels as not a number in the images does not work today:
+  the :math:`\langle \chi^2 \rangle` of the channel becomes not a number,
+  and each scene cell which touches such a pixel takes no correction from that channel,
+  where it should take one from the pixels it has left.
+  And the widths of the shadow, measured from the Level-1 images in July,
+  should be measured again, since those images have been reduced differently since.
+  Two other homes for the shadow were considered.
+  An option on :class:`~ctis.inverters.MartInverter` naming the pixels to leave out
+  would settle the count of :math:`\langle \chi^2 \rangle` too,
+  but is new public API, and the reference path would need it as well.
+  An aperture over the sensor in the optical model of esis
+  would put the shadow in the weights with no step in between,
+  though its width would still come from the images.
 - **How tied lines are weighted (M6, M8).**
   The weights of a tied line fold into the columns of its window with a fixed ratio,
   which the offsets and the scale of a block express.
