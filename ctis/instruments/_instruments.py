@@ -17,6 +17,7 @@ from ._operators import (
     frames,
     piece,
     unaligned,
+    unit_weights,
     vertices,
 )
 
@@ -48,6 +49,40 @@ def _incomplete(a: Any) -> bool:
         return any(_incomplete(component) for component in a.components.values())
 
     return a is None
+
+
+def _sliced(a: na.AbstractArray, index: dict[str, slice]) -> na.AbstractArray:
+    """
+    The part of an array which a block of the weights of an instrument is
+    computed from, see :meth:`AbstractLinearInstrument._blocks`.
+
+    The array is sliced along each axis of the block along which it has more
+    than one element.
+    Along an axis with one element it is kept whole, since that element
+    broadcasts against every block, as it does against the whole instrument.
+    A vector with a component that has one element along an axis along which
+    another has more is broadcast to its own shape first, so that the
+    component is not sliced past its end.
+
+    Parameters
+    ----------
+    a
+        The array.
+    index
+        The elements of the block, see
+        :meth:`AbstractLinearInstrument._weights_block`.
+    """
+    shape = na.shape(a)
+    index = {ax: index[ax] for ax in index if shape.get(ax, 1) > 1}
+    if not index:
+        return a
+
+    if isinstance(a, na.AbstractVectorArray):
+        components = a.cartesian_nd.components.values()
+        if any(na.shape(c).get(ax) == 1 for c in components for ax in index):
+            a = na.broadcast_to(a, shape)
+
+    return a[index]
 
 
 def _check_coordinates(
@@ -746,7 +781,9 @@ class AbstractLinearInstrument(
         They are therefore assembled from the weights a block at a time, see
         :meth:`_blocks`, without the weights of the whole instrument, and
         assembling them releases those weights if they were computed before,
-        which are computed again if they are needed.
+        once the first block has shown that the matrices can be assembled,
+        so an instrument which cannot be expressed as them keeps its weights.
+        Weights which were released are computed again if they are needed.
 
         The factors around the matrices follow the fields of this instrument
         that they are computed from, :attr:`_fields_factors`: if any of
@@ -891,12 +928,31 @@ class AbstractLinearInstrument(
         scene, see :attr:`axis_line`, so that the weights of every line,
         which can take as much memory again as the matrices, are never held
         at once, nor those of every wavelength of a scene of one band.
+        Every block holds whole any of those axes along which this instrument
+        cannot compute part of its weights without the rest, see
+        :attr:`_axes_whole`.
         """
+        axes_whole = self._axes_whole
         shape = self._shape_line | self._shape_wavelength
+        shape = {ax: num for ax, num in shape.items() if ax not in axes_whole}
         return [
-            {ax: slice(i, i + 1) for ax, i in zip(shape, index)}
-            for index in np.ndindex(*shape.values())
+            {ax: slice(i, i + 1) for ax, i in index.items()}
+            for index in na.ndindex(shape)
         ]
+
+    @property
+    def _axes_whole(self) -> tuple[str, ...]:
+        """
+        The axes which every block of :attr:`weights` holds whole, see
+        :meth:`_blocks`, since this instrument cannot compute the part of its
+        weights along them without the rest.
+
+        Only the axes of the spectral lines and of the wavelengths of the
+        scene are split into blocks, so any other axis named here changes
+        nothing.
+        By default there are none.
+        """
+        return ()
 
     @property
     def _shape_wavelength(self) -> dict[str, int]:
@@ -1042,10 +1098,16 @@ class AbstractLinearInstrument(
         axis_wavelength = self.axis_wavelength
         shape_line = self._shape_line
 
-        # weights computed before, for the named arrays, are released, so
-        # that the matrices do not have to fit in memory beside them
-        vars(self).pop("weights", None)
-        vars(self).pop("weights_transpose", None)
+        # the operators are assembled from weights and grids computed a block
+        # at a time, and an instrument which defines the factors around them,
+        # but does not compute those, is left to the named arrays
+        missing = dict(
+            _weights_block="it does not compute its weights a block at a time",
+            _grids_weights="it does not give the grids of its weights",
+        )
+        for name, reason in missing.items():
+            if getattr(type(self), name) is getattr(AbstractLinearInstrument, name):
+                return reason
 
         # the first block says which axes the weights have, and how long the
         # grids they were computed from are, and it is counted below as it is
@@ -1060,6 +1122,17 @@ class AbstractLinearInstrument(
             return (
                 f"its weights have the axes {tuple(array.shape)}, and not those "
                 f"of its channels and its wavelengths alone, {axes}"
+            )
+
+        # and so are weights in a unit of their own, which a matrix that acts
+        # on plain arrays cannot carry, as the first block is enough to tell
+        unit_values = unit_weights(first)
+        if unit_values is not None and not unit_values.is_equivalent(
+            u.dimensionless_unscaled
+        ):
+            return (
+                "its weights are in a unit of their own, which a matrix that "
+                "acts on plain arrays cannot carry"
             )
 
         shape_channel = {ax: array.shape[ax] for ax in axis_channel}
@@ -1118,6 +1191,13 @@ class AbstractLinearInstrument(
             return reason
         del reason
 
+        # weights computed before, for the named arrays, are released only
+        # now that the operators can be assembled, so that the matrices do not
+        # have to fit in memory beside them, and an instrument which cannot
+        # provide operators keeps them for the named arrays
+        vars(self).pop("weights", None)
+        vars(self).pop("weights_transpose", None)
+
         # the matrix takes a scene for each channel, rather than one shared
         # by the channels, so that its transpose gives a backprojection
         # for each channel, and it sums the images over wavelength, but not
@@ -1167,14 +1247,9 @@ class AbstractLinearInstrument(
 
         forward, backward = builder.build()
 
-        # weights in a unit of their own, which a matrix that acts on plain
-        # arrays cannot carry, are left to the named arrays too
+        # a dimensionless unit of the weights, such as a percentage, is folded
+        # into the entries of the matrix, which acts on plain arrays
         forward = dimensionless(forward)
-        if forward is None:
-            return (
-                "its weights are in a unit of their own, which a matrix that "
-                "acts on plain arrays cannot carry"
-            )
 
         return Operators(
             forward=forward,
@@ -1696,8 +1771,8 @@ class IdealInstrument(
         index: dict[str, slice],
     ) -> tuple[na.AbstractScalar, dict[str, int], dict[str, int]]:
 
-        coordinates_input = self._coordinates_input[index]
-        coordinates_output = self._coordinates_output[index]
+        coordinates_input = _sliced(self._coordinates_input, index)
+        coordinates_output = _sliced(self._coordinates_output, index)
 
         weights = na.regridding.weights(
             coordinates_input=coordinates_input.position,
@@ -1711,7 +1786,7 @@ class IdealInstrument(
         if psf is not None:
             weights = na.regridding.convolve_weights(
                 weights=weights,
-                kernel=psf[index],
+                kernel=_sliced(psf, index),
                 axis=dict(zip(self.axis_sensor_xy, self.axis_psf_xy)),
             )
 
@@ -1864,8 +1939,8 @@ class IdealInstrument(
         index: dict[str, slice],
     ) -> tuple[na.AbstractCartesian2dVectorArray, na.AbstractCartesian2dVectorArray]:
         return (
-            self._coordinates_input[index].position,
-            self._coordinates_output[index].position,
+            _sliced(self._coordinates_input, index).position,
+            _sliced(self._coordinates_output, index).position,
         )
 
     def image(
@@ -2431,6 +2506,18 @@ class OptikaInstrument(
             axis_field=self.axis_scene_xy,
         )
 
+    @property
+    def _axes_whole(self) -> tuple[str, ...]:
+        """
+        The axes along which :attr:`system` varies, which every block of
+        :attr:`weights` holds whole, see :meth:`_blocks`.
+
+        A block is computed from the whole system and the part of the scene
+        which the block holds, so the scene is not split along an axis of the
+        system, such as the spectral lines of a system with a model for each.
+        """
+        return tuple(self.system.shape)
+
     def _scene_block(
         self,
         index: dict[str, slice],
@@ -2448,8 +2535,9 @@ class OptikaInstrument(
         index = dict(index)
         ax = self.axis_wavelength
         if ax in index:
-            index[ax] = slice(index[ax].start, index[ax].stop + 1)
-        return self.coordinates_scene[index]
+            cells = range(self._shape_wavelength[ax])[index[ax]]
+            index[ax] = slice(cells.start, cells.stop + 1)
+        return _sliced(self.coordinates_scene, index)
 
     @functools.cached_property
     def weights_transpose(

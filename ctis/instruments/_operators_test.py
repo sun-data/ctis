@@ -397,7 +397,8 @@ def test_dimensionless_none() -> None:
 def test_dimensionless_unsupported() -> None:
     """
     A matrix assembled from weights in a unit which is not dimensionless,
-    which a matrix that acts on plain arrays cannot carry, is not given.
+    which a matrix that acts on plain arrays cannot carry, raises, since its
+    caller is expected to have told so from the weights first.
     """
     weights_input = na.ScalarArray(np.ones((4, 5)), axes=("x", "y")) * u.cm**2
 
@@ -409,7 +410,42 @@ def test_dimensionless_unsupported() -> None:
         blocks=[dict()],
     )
 
-    assert _operators.dimensionless(matrix) is None
+    with pytest.raises(u.UnitConversionError):
+        _operators.dimensionless(matrix)
+
+
+@pytest.mark.parametrize(
+    argnames="weight,unit",
+    argvalues=[
+        (None, None),
+        (2 * u.cm**2, u.cm**2),
+        (50 * u.percent, u.percent),
+    ],
+    ids=["none", "area", "percent"],
+)
+def test_unit_weights(
+    weight: None | u.Quantity,
+    unit: None | u.UnitBase,
+) -> None:
+    """
+    The unit of the values of weights is that of the weight of their cells,
+    or none if the cells have no weight.
+    """
+    weights_input = None
+    if weight is not None:
+        weights_input = na.ScalarArray(np.ones((4, 5)), axes=("x", "y")) * weight
+
+    assert _operators.unit_weights(_weights(weights_input)) == unit
+
+
+def test_unit_weights_empty() -> None:
+    """Weights without any element have no unit to give."""
+    weights_input = na.ScalarArray(np.ones((4, 5)), axes=("x", "y")) * u.cm**2
+    array, shape_grid_input, shape_grid_output = _weights(weights_input)
+    empty = array[dict(channel=slice(0, 0))]
+
+    assert empty.shape == dict(channel=0)
+    assert _operators.unit_weights((empty, shape_grid_input, shape_grid_output)) is None
 
 
 @pytest.mark.parametrize("dtype", [np.float64, np.float32])

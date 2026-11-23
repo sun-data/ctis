@@ -19,6 +19,7 @@ __all__ = [
     "frames",
     "piece",
     "unaligned",
+    "unit_weights",
     "vertices",
 ]
 
@@ -292,32 +293,56 @@ def piece(
     return result, start
 
 
+def unit_weights(
+    weights: tuple[na.AbstractScalarArray, dict[str, int], dict[str, int]],
+) -> None | u.UnitBase:
+    """
+    The unit of the values of weights computed by
+    :func:`named_arrays.regridding.weights`, or :obj:`None` if they have none.
+
+    The values of every element are in the same unit, as
+    :class:`regridding.RegridderBuilder` requires of the weights it takes,
+    so this is the unit of the first.
+
+    Parameters
+    ----------
+    weights
+        The weights, with the shapes of the grids they were computed for.
+    """
+    array, _, _ = weights
+
+    for _, _, values in np.ravel(array.ndarray):
+        return getattr(values, "unit", None)
+
+    return None
+
+
 def dimensionless(
     matrix: regridding.Regridder,
-) -> None | regridding.Regridder:
+) -> regridding.Regridder:
     """
     A matrix assembled from weights which have a dimensionless unit, as those
     weighted by a vignetting model have, as the matrix without a unit, so that
     its products are the plain arrays which the compiled code takes.
 
-    It is :obj:`None` if the weights are in a unit which is not
-    dimensionless, such as an area, which a matrix that acts on plain arrays
-    cannot carry.
-    The caller is expected to fall back on the named arrays themselves.
-
     Parameters
     ----------
     matrix
         The matrix, which is changed in place.
+
+    Raises
+    ------
+    astropy.units.UnitConversionError
+        If the weights are in a unit which is not dimensionless, such as an
+        area, which a matrix that acts on plain arrays cannot carry.
+        The caller is expected to tell this from :func:`unit_weights` before
+        assembling the matrix, and to fall back on the named arrays.
     """
     unit = matrix.unit
     if unit is None:
         return matrix
 
-    try:
-        factor = unit.to(u.dimensionless_unscaled)
-    except u.UnitConversionError:
-        return None
+    factor = unit.to(u.dimensionless_unscaled)
 
     # only a unit such as a percentage changes the entries
     if factor != 1:

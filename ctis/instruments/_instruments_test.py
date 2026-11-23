@@ -1331,6 +1331,25 @@ class TestIdealInstrument(
         assert "weights" not in vars(a)
         assert "weights_transpose" not in vars(a)
 
+    def test__operators_singleton(
+        self,
+        a: ctis.instruments.IdealInstrument,
+    ) -> None:
+        """
+        A point-spread function with one element along the wavelengths, and
+        along the spectral lines if the scene has several, broadcasts against
+        every block, as it does against the whole instrument, so the matrices
+        are those assembled from all of the weights at once.
+        """
+        axes = (a.axis_wavelength, *a._shape_line)
+        b = dataclasses.replace(a, psf=_psf(a).add_axes(axes))
+
+        operators = b._operators()
+        forward, backward = _matrices_at_once(b, np.float64)
+
+        _assert_same_matrix(operators.forward, forward)
+        _assert_same_matrix(operators.backward, backward)
+
     def test__operators_photons(
         self,
         a: ctis.instruments.IdealInstrument,
@@ -2300,11 +2319,13 @@ def test_num_channel_axes_shared() -> None:
     assert num_channel == a.weights[0].shape[a.axis_channel]
 
 
-def test_operators_weights_unit() -> None:
+def test_operators_weights_unit(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     An instrument whose weights are in a unit of their own, which a matrix
     that acts on plain arrays cannot carry, does not provide operators, and
     leaves its images to its weights.
+    The first block is enough to tell, and weights which were computed
+    before are kept for the named arrays.
     """
 
     @dataclasses.dataclass
@@ -2333,15 +2354,98 @@ def test_operators_weights_unit() -> None:
     scene = _scene(a)
 
     b = Area(**kwargs)
+    weights = b.weights
+    computed = []
+    weights_block = b._weights_block
+
+    def spy(
+        index: dict[str, slice],
+    ) -> tuple[na.AbstractScalar, dict[str, int], dict[str, int]]:
+        computed.append(index)
+        return weights_block(index)
+
+    monkeypatch.setattr(b, "_weights_block", spy)
 
     assert not Area._overridden()
     assert b._operators() is None
+    assert computed == b._blocks()[:1]
+    assert vars(b)["weights"] is weights
     assert "its weights are in a unit of their own" in b._operators_reason()
     assert b._image_matrices(scene, noise=False, uncertainty=False) is None
     _assert_close(
         b.image(scene, noise=False).outputs,
         a.image(scene, noise=False).outputs * (2 * u.cm**2),
     )
+
+
+def test_operators_singleton_vector() -> None:
+    """
+    A vector with a component which has one element along the spectral
+    lines, where another has one for each line, is broadcast before it is
+    sliced into blocks, so that the component is not sliced past its end,
+    and the matrices are those assembled from all of the weights at once.
+    """
+    position_ref = na.Cartesian2dVectorArray(
+        x=32 * u.pix,
+        y=na.ScalarArray(32 * u.pix).add_axes("line"),
+    )
+    a = dataclasses.replace(instrument_lines, position_ref=position_ref)
+
+    operators = a._operators()
+    forward, backward = _matrices_at_once(a, np.float64)
+
+    _assert_same_matrix(operators.forward, forward)
+    _assert_same_matrix(operators.backward, backward)
+
+
+@pytest.mark.parametrize(
+    argnames="name,reason",
+    argvalues=[
+        ("_weights_block", "it does not compute its weights a block at a time"),
+        ("_grids_weights", "it does not give the grids of its weights"),
+    ],
+)
+def test_operators_hooks(name: str, reason: str) -> None:
+    """
+    A subclass which defines the factors around the operators, but not one
+    of the methods which compute the weights and the grids they are
+    assembled from, a block at a time, does not provide them, and says why
+    rather than raising.
+    """
+
+    @dataclasses.dataclass
+    class Partial(ctis.instruments.IdealInstrument):
+        """An instrument which defines its factors, but not all it needs."""
+
+        def _factors(
+            self,
+            shape_channel: dict[str, int],
+            shape_line: dict[str, int],
+            shape_scene: dict[str, int],
+            shape_sensor: dict[str, int],
+            dtype: np.dtype,
+        ) -> str | dict[str, np.ndarray | u.UnitBase]:
+            return super()._factors(  # pragma: nocover
+                shape_channel=shape_channel,
+                shape_line=shape_line,
+                shape_scene=shape_scene,
+                shape_sensor=shape_sensor,
+                dtype=dtype,
+            )
+
+    setattr(Partial, name, getattr(ctis.instruments.AbstractLinearInstrument, name))
+
+    a = instrument_ideal
+    kwargs = {
+        field.name: getattr(a, field.name)
+        for field in dataclasses.fields(a)
+        if field.init
+    }
+    b = Partial(**kwargs)
+
+    assert not Partial._overridden()
+    assert b._operators() is None
+    assert reason in b._operators_reason()
 
 
 def _instrument_optika(
@@ -2741,7 +2845,8 @@ def test_optika_operators_subclass() -> None:
 def test_optika_operators_unsupported() -> None:
     """
     An instrument whose sensor cannot be expressed as the factors of the
-    operators, here one whose read noise has no unit, provides none.
+    operators, here one whose read noise has no unit, provides none, and
+    keeps the weights it computed before for the named arrays.
     """
     a = _instrument_optika()
     sensor = dataclasses.replace(a.system.sensor, read_noise=0)
@@ -2749,9 +2854,67 @@ def test_optika_operators_unsupported() -> None:
         a,
         system=dataclasses.replace(a.system, sensor=sensor),
     )
+    weights = a.weights
 
     assert a._operators() is None
     assert "the read noise of its sensor is dimensionless" in a._operators_reason()
+    assert vars(a)["weights"] is weights
+
+
+@pytest.mark.parametrize("model", ["distortion", "field_stop"])
+def test_optika_operators_system_lines(model: str) -> None:
+    """
+    A system with a model for each spectral line is evaluated for every line
+    at once, so every block holds the lines whole, and the matrices are
+    those assembled from all of the weights at once.
+    """
+    a = _instrument_optika(lines=[0, 60] * u.nm)
+    system = a.system
+    if model == "distortion":
+        plate_scale = na.ScalarArray([0.75, 0.76] * u.arcsec / u.pix, axes="line")
+        distortion = dataclasses.replace(system.distortion, plate_scale=plate_scale)
+        system = dataclasses.replace(system, distortion=distortion)
+    else:
+        radius = na.ScalarArray([15, 16] * u.arcsec, axes="line")
+        field_stop = optika.apertures.CircularAperture(radius=radius)
+        system = dataclasses.replace(system, field_stop=field_stop)
+    a = dataclasses.replace(a, system=system)
+
+    blocks = a._blocks()
+
+    assert "line" in a._axes_whole
+    assert len(blocks) == a._shape_wavelength["wavelength"]
+    assert all(set(index) == {"wavelength"} for index in blocks)
+
+    operators = a._operators()
+    forward, backward = _matrices_at_once(a, np.float64)
+
+    _assert_same_matrix(operators.forward, forward)
+    _assert_same_matrix(operators.backward, backward)
+
+
+@pytest.mark.parametrize(
+    argnames="cells,vertices",
+    argvalues=[
+        (slice(1, 2), slice(1, 3)),
+        (slice(1, None), slice(1, None)),
+        (slice(-2, -1), slice(-3, -1)),
+    ],
+    ids=["one", "open", "from the end"],
+)
+def test_optika_scene_block(cells: slice, vertices: slice) -> None:
+    """
+    The part of the scene which a block is computed from is the vertices of
+    the cells it holds, also for a slice which is open or counts from the
+    end.
+    """
+    a = _instrument_optika()
+
+    result = a._scene_block(dict(wavelength=cells)).wavelength
+    expected = a.coordinates_scene[dict(wavelength=vertices)].wavelength
+
+    assert result.shape == expected.shape
+    assert np.all((result == expected).ndarray)
 
 
 def test_optika_operators_response_axis() -> None:

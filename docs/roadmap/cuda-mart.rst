@@ -76,20 +76,26 @@ Where things stand
       - The reference algorithm, on the host through :mod:`named_arrays`,
         with PSF support in :class:`~ctis.instruments.IdealInstrument`
     * - :class:`~ctis.inverters.MartInverter` on the ``Regridder``
-      - ctis main
-      - Unreleased
+      - `ctis #40 <https://github.com/sun-data/ctis/pull/40>`__
+      - Released in 0.6.0 on 2026-11-16
       - The same algorithm on the host, on raw arrays and compiled code,
         for an :class:`~ctis.instruments.IdealInstrument`:
         frames solved together, float32 as an option,
         and the reference path kept for the instruments without matrices
     * - :class:`~ctis.instruments.OptikaInstrument` on the ``Regridder``
-      - ctis main
-      - Unreleased
+      - `ctis #41 <https://github.com/sun-data/ctis/pull/41>`__
+      - Released in 0.6.0 on 2026-11-16
       - The model of an optical system and its sensor on the same matrices:
         the gain of each wavelength folded into them,
         one variance-to-mean ratio for each spectral line,
-        and the lines of a scene along an axis the instrument names, ``axis_line``;
-        the matrices assembled one wavelength at a time,
+        and the lines of a scene along an axis the instrument names, ``axis_line``
+    * - Matrices assembled a wavelength at a time
+      - `ctis #54 <https://github.com/sun-data/ctis/pull/54>`__
+      - Unreleased
+      - The matrices of :class:`~ctis.instruments.IdealInstrument`
+        and :class:`~ctis.instruments.OptikaInstrument`
+        built with ``regridding.RegridderBuilder``,
+        one wavelength of one spectral line at a time,
         which fits all seven lines of ESIS at production on the host
     * - ``torch`` ``Regridder``
       - ctis ``feature/parametric-inverter``, ``feature/elastic-net-inverter``
