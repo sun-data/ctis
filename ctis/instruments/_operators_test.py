@@ -3,6 +3,7 @@ import pytest
 import numpy as np
 import astropy.units as u
 import named_arrays as na
+import regridding
 from ctis.instruments import _operators
 
 shape = dict(x=3, y=2)
@@ -191,57 +192,51 @@ def _weights(
     )
 
 
-@pytest.mark.parametrize(
-    argnames="half",
-    argvalues=[50 * u.percent, 0.5 * u.dimensionless_unscaled],
-    ids=["percent", "dimensionless"],
-)
-def test_regridder_unit(half: u.Quantity) -> None:
+def _matrix(
+    weights: tuple[na.AbstractScalarArray, dict[str, int], dict[str, int]],
+    shape_input: dict[str, int],
+    shape_output: dict[str, int],
+    shape_weights: dict[str, int],
+    blocks: list[dict[str, slice]],
+) -> regridding.Regridder:
     """
-    Weights with a dimensionless unit are assembled into a matrix without
-    one, scaled by the unit, so that its products are plain arrays.
+    Assemble weights into a matrix with :class:`regridding.RegridderBuilder`,
+    from the pieces that :func:`ctis.instruments._operators.piece` makes of
+    the blocks of the weights.
+
+    Parameters
+    ----------
+    weights
+        All of the weights, which each block is a slice of.
+    shape_input
+        The shape of the arrays the matrix is applied to.
+    shape_output
+        The shape of the arrays the matrix returns.
+    shape_weights
+        The orthogonal axes and the length of the weights along each.
+    blocks
+        The elements of each block.
     """
-    shape_input = dict(channel=3, x=4, y=5)
-    shape_output = dict(channel=3, u=6, v=4)
-
-    weights_input = na.ScalarArray(np.ones((4, 5)), axes=("x", "y")) * half
-
-    matrix = _operators.regridder(
-        weights=_weights(weights_input),
+    array, shape_grid_input, shape_grid_output = weights
+    num_orthogonal = len(shape_weights)
+    builder = regridding.RegridderBuilder(
+        shape_input=tuple(shape_input.values()),
+        shape_output=tuple(shape_output.values()),
+        axis_input=tuple(range(num_orthogonal, len(shape_input))),
+        axis_output=tuple(range(num_orthogonal, len(shape_output))),
+        shape_weights=tuple(shape_weights.values()),
+    )
+    kwargs = dict(
         shape_input=shape_input,
         shape_output=shape_output,
+        shape_weights=shape_weights,
     )
-    unweighted = _operators.regridder(
-        weights=_weights(),
-        shape_input=shape_input,
-        shape_output=shape_output,
-    )
-
-    rng = np.random.default_rng(0)
-    values = rng.uniform(size=tuple(shape_input.values()))
-
-    result = matrix(values)
-
-    assert matrix.unit is None
-    assert not isinstance(result, u.Quantity)
-    assert result.sum() > 0
-    assert np.allclose(result, unweighted(values) / 2, rtol=1e-12, atol=1e-12)
-
-
-def test_regridder_unit_unsupported() -> None:
-    """
-    Weights in a unit which is not dimensionless, which a matrix that acts
-    on plain arrays cannot carry, are not assembled into one.
-    """
-    weights_input = na.ScalarArray(np.ones((4, 5)), axes=("x", "y")) * u.cm**2
-
-    result = _operators.regridder(
-        weights=_weights(weights_input),
-        shape_input=dict(channel=3, x=4, y=5),
-        shape_output=dict(channel=3, u=6, v=4),
-    )
-
-    assert result is None
+    for place in (builder.count, builder.place):
+        for index in blocks:
+            block = (array[index], shape_grid_input, shape_grid_output)
+            place(*_operators.piece(block, index=index, **kwargs))
+    result, _ = builder.build()
+    return result
 
 
 @pytest.mark.parametrize(
@@ -253,24 +248,36 @@ def test_regridder_unit_unsupported() -> None:
     ],
     ids=["each", "shared", "summed"],
 )
-def test_regridder(
+@pytest.mark.parametrize(
+    argnames="blocks",
+    argvalues=[
+        [dict()],
+        [dict(channel=slice(c, c + 1)) for c in range(3)],
+        [dict(channel=slice(0, 2)), dict(channel=slice(2, 3))],
+    ],
+    ids=["one block", "a block for each channel", "blocks of two and one"],
+)
+def test_piece(
     shape_input: dict[str, int],
     shape_output: dict[str, int],
+    blocks: list[dict[str, slice]],
 ) -> None:
     """
-    The matrix gives what the weights give, with an input shared by the
-    channels if it has only one, and summed over the channels if the output
-    has only one.
+    The matrix assembled from the blocks of the weights gives what the
+    weights give, with an input shared by the channels if it has only one,
+    and summed over the channels if the output has only one.
     """
     weights = _weights()
 
     rng = np.random.default_rng(0)
     values = rng.uniform(size=tuple(shape_input.values()))
 
-    result = _operators.regridder(
+    result = _matrix(
         weights=weights,
         shape_input=shape_input,
         shape_output=shape_output,
+        shape_weights=dict(channel=3),
+        blocks=blocks,
     )(values)
 
     expected = na.regridding.regrid_from_weights(
@@ -288,6 +295,29 @@ def test_regridder(
     assert np.allclose(result, expected, rtol=1e-12, atol=1e-12)
 
 
+def test_piece_start() -> None:
+    """
+    A block starts at the start of its slice along each orthogonal axis
+    that it does not hold whole, and at zero along the others.
+    """
+    weights = _weights()
+    array, shape_grid_input, shape_grid_output = weights
+    index = dict(channel=slice(1, 3))
+
+    (result, shape_piece_input, shape_piece_output), start = _operators.piece(
+        weights=(array[index], shape_grid_input, shape_grid_output),
+        shape_input=dict(channel=3, x=4, y=5),
+        shape_output=dict(channel=3, u=6, v=4),
+        shape_weights=dict(channel=3),
+        index=index,
+    )
+
+    assert start == (1,)
+    assert result.shape == (2,)
+    assert shape_piece_input == (2, 4, 5)
+    assert shape_piece_output == (2, 6, 4)
+
+
 @pytest.mark.parametrize(
     argnames="shape_input,shape_output",
     argvalues=[
@@ -297,17 +327,125 @@ def test_regridder(
         (dict(channel=3, x=4, y=5), dict(channel=3, v=4, u=6)),
     ],
 )
-def test_regridder_axes(
+def test_piece_axes(
     shape_input: dict[str, int],
     shape_output: dict[str, int],
 ) -> None:
     """The orthogonal axes come first, and the resampled axes in grid order."""
     with pytest.raises(ValueError, match="axes"):
-        _operators.regridder(
+        _operators.piece(
             weights=_weights(),
             shape_input=shape_input,
             shape_output=shape_output,
+            shape_weights=dict(channel=3),
+            index=dict(),
         )
+
+
+@pytest.mark.parametrize(
+    argnames="half",
+    argvalues=[50 * u.percent, 0.5 * u.dimensionless_unscaled],
+    ids=["percent", "dimensionless"],
+)
+def test_dimensionless(half: u.Quantity) -> None:
+    """
+    A matrix assembled from weights with a dimensionless unit is given none,
+    and scaled by the unit, so that its products are plain arrays.
+    """
+    kwargs = dict(
+        shape_input=dict(channel=3, x=4, y=5),
+        shape_output=dict(channel=3, u=6, v=4),
+        shape_weights=dict(channel=3),
+        blocks=[dict()],
+    )
+
+    weights_input = na.ScalarArray(np.ones((4, 5)), axes=("x", "y")) * half
+
+    matrix = _matrix(weights=_weights(weights_input), **kwargs)
+    unweighted = _matrix(weights=_weights(), **kwargs)
+
+    assert matrix.unit is not None
+    assert _operators.dimensionless(matrix) is matrix
+
+    rng = np.random.default_rng(0)
+    values = rng.uniform(size=(3, 4, 5))
+
+    result = matrix(values)
+
+    assert matrix.unit is None
+    assert not isinstance(result, u.Quantity)
+    assert result.sum() > 0
+    assert np.allclose(result, unweighted(values) / 2, rtol=1e-12, atol=1e-12)
+
+
+def test_dimensionless_none() -> None:
+    """A matrix without a unit is given back as it is."""
+    matrix = _matrix(
+        weights=_weights(),
+        shape_input=dict(channel=3, x=4, y=5),
+        shape_output=dict(channel=3, u=6, v=4),
+        shape_weights=dict(channel=3),
+        blocks=[dict()],
+    )
+    data = matrix.data.copy()
+
+    assert matrix.unit is None
+    assert _operators.dimensionless(matrix) is matrix
+    assert np.array_equal(matrix.data, data)
+
+
+def test_dimensionless_unsupported() -> None:
+    """
+    A matrix assembled from weights in a unit which is not dimensionless,
+    which a matrix that acts on plain arrays cannot carry, raises, since its
+    caller is expected to have told so from the weights first.
+    """
+    weights_input = na.ScalarArray(np.ones((4, 5)), axes=("x", "y")) * u.cm**2
+
+    matrix = _matrix(
+        weights=_weights(weights_input),
+        shape_input=dict(channel=3, x=4, y=5),
+        shape_output=dict(channel=3, u=6, v=4),
+        shape_weights=dict(channel=3),
+        blocks=[dict()],
+    )
+
+    with pytest.raises(u.UnitConversionError):
+        _operators.dimensionless(matrix)
+
+
+@pytest.mark.parametrize(
+    argnames="weight,unit",
+    argvalues=[
+        (None, None),
+        (2 * u.cm**2, u.cm**2),
+        (50 * u.percent, u.percent),
+    ],
+    ids=["none", "area", "percent"],
+)
+def test_unit_weights(
+    weight: None | u.Quantity,
+    unit: None | u.UnitBase,
+) -> None:
+    """
+    The unit of the values of weights is that of the weight of their cells,
+    or none if the cells have no weight.
+    """
+    weights_input = None
+    if weight is not None:
+        weights_input = na.ScalarArray(np.ones((4, 5)), axes=("x", "y")) * weight
+
+    assert _operators.unit_weights(_weights(weights_input)) == unit
+
+
+def test_unit_weights_empty() -> None:
+    """Weights without any element have no unit to give."""
+    weights_input = na.ScalarArray(np.ones((4, 5)), axes=("x", "y")) * u.cm**2
+    array, shape_grid_input, shape_grid_output = _weights(weights_input)
+    empty = array[dict(channel=slice(0, 0))]
+
+    assert empty.shape == dict(channel=0)
+    assert _operators.unit_weights((empty, shape_grid_input, shape_grid_output)) is None
 
 
 @pytest.mark.parametrize("dtype", [np.float64, np.float32])

@@ -23,8 +23,8 @@ dependencies = [
     # 2.12.1 is the first release to require a version of numpy it works with
     "named-arrays>=2.13.0,<3",
     "optika>=2.1,<4",
-    # 3.7.0 is the first release with `regridding.Regridder`
-    "regridding>=3.7,<4",
+    # 3.8.0 is the first release with `regridding.RegridderBuilder`
+    "regridding>=3.8,<4",
 ]
 dynamic = ["version"]
 
